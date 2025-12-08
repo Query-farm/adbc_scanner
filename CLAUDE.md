@@ -119,7 +119,7 @@ Tests are written as [SQLLogicTests](https://duckdb.org/dev/sqllogictest/intro.h
 
 - **Extension entry point**: `src/adbc_extension.cpp` - Registers all functions with DuckDB via `LoadInternal()`
 - **ADBC functions**: `src/adbc_functions.cpp` - Implements connection management, scanning, catalog, and execute functions
-- **Extension class**: `src/include/adbc_extension.hpp` - Defines `AdbcExtension` class inheriting from `duckdb::Extension`
+- **Extension class**: `src/include/adbc_scanner_extension.hpp` - Defines `AdbcScannerExtension` class inheriting from `duckdb::Extension`
 - **Configuration**: `extension_config.cmake` - Tells DuckDB build system to load this extension
 - **Dependencies**: `vcpkg.json` - Depends on `arrow-adbc` via vcpkg with custom overlay ports in `vcpkg-overlay/`
 

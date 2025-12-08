@@ -1,6 +1,6 @@
 #define DUCKDB_EXTENSION_MAIN
 
-#include "adbc_extension.hpp"
+#include "adbc_scanner_extension.hpp"
 #include "adbc_functions.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
@@ -27,15 +27,15 @@ static void LoadInternal(ExtensionLoader &loader) {
 	QueryFarmSendTelemetry(loader, "adbc", "2025120801");
 }
 
-void AdbcExtension::Load(ExtensionLoader &loader) {
+void AdbcScannerExtension::Load(ExtensionLoader &loader) {
 	LoadInternal(loader);
 }
 
-std::string AdbcExtension::Name() {
+std::string AdbcScannerExtension::Name() {
 	return "adbc";
 }
 
-std::string AdbcExtension::Version() const {
+std::string AdbcScannerExtension::Version() const {
 	return "2025120801";
 }
 
@@ -43,7 +43,7 @@ std::string AdbcExtension::Version() const {
 
 extern "C" {
 
-DUCKDB_CPP_EXTENSION_ENTRY(adbc, loader) {
+DUCKDB_CPP_EXTENSION_ENTRY(adbc_scanner, loader) {
 	duckdb::LoadInternal(loader);
 }
 }

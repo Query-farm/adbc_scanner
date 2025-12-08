@@ -1,12 +1,12 @@
-# DuckDB ADBC Extension
+# DuckDB ADBC Scanner Extension
 
-The ADBC extension by [Query.Farm](https://query.farm) enables DuckDB to connect to external databases using [Arrow Database Connectivity (ADBC)](https://arrow.apache.org/adbc/), a column-oriented API standard for database access. ADBC provides efficient data transfer using Apache Arrow's columnar format.
+The ADBC Scanner extension by [Query.Farm](https://query.farm) enables DuckDB to connect to external databases using [Arrow Database Connectivity (ADBC)](https://arrow.apache.org/adbc/), a column-oriented API standard for database access. ADBC provides efficient data transfer using Apache Arrow's columnar format.
 
 ## Installation
 
 ```sql
-INSTALL adbc FROM community;
-LOAD adbc;
+INSTALL adbc_scanner FROM community;
+LOAD adbc_scanner;
 ```
 
 ## Quick Start

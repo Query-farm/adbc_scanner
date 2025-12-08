@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.5)
 
 # Set extension name here
-set(TARGET_NAME adbc)
+set(TARGET_NAME adbc_scanner)
 
 find_package(tomlplusplus REQUIRED)
 find_package(AdbcDriverManager CONFIG REQUIRED)
@@ -14,7 +14,7 @@ project(${TARGET_NAME})
 include_directories(src/include)
 
 set(EXTENSION_SOURCES
-    src/adbc_extension.cpp
+    src/adbc_scanner_extension.cpp
     src/adbc_functions.cpp
     src/adbc_scan.cpp
     src/adbc_catalog.cpp

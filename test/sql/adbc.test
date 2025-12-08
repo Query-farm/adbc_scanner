@@ -9,7 +9,7 @@ SELECT adbc_connect({'driver': 'test'});
 Catalog Error: Scalar Function with name adbc_connect does not exist!
 
 # Require statement will ensure this test is run with this extension loaded
-require adbc
+require adbc_scanner
 
 # Test that adbc_connect requires 'driver' option (STRUCT syntax)
 statement error

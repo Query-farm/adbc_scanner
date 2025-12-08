@@ -18,6 +18,11 @@ The extension provides the following functions:
 - `adbc_connect(options)` - Connect to an ADBC data source. Returns a connection handle (BIGINT). Options can be passed as a STRUCT (preferred) or MAP. The `driver` option is required.
 - `adbc_disconnect(handle)` - Disconnect from an ADBC data source. Returns true on success.
 
+### Transaction Control
+- `adbc_set_autocommit(handle, enabled)` - Enable or disable autocommit mode. When disabled, changes require explicit commit.
+- `adbc_commit(handle)` - Commit the current transaction.
+- `adbc_rollback(handle)` - Rollback the current transaction, discarding all uncommitted changes.
+
 ### Query Execution
 - `adbc_scan(handle, query, [params := row(...)])` - Execute a SELECT query and return results as a table. Supports parameterized queries via the optional `params` named parameter.
 - `adbc_execute(handle, query)` - Execute DDL/DML statements (CREATE, INSERT, UPDATE, DELETE). Returns affected row count.
@@ -55,6 +60,13 @@ SELECT * FROM adbc_tables(getvariable('conn')::BIGINT);
 SELECT * FROM adbc_table_types(getvariable('conn')::BIGINT);
 SELECT * FROM adbc_columns(getvariable('conn')::BIGINT, table_name := 'test');
 SELECT * FROM adbc_schema(getvariable('conn')::BIGINT, 'test');
+
+-- Transaction control
+SELECT adbc_set_autocommit(getvariable('conn')::BIGINT, false);  -- Start transaction
+SELECT adbc_execute(getvariable('conn')::BIGINT, 'INSERT INTO test VALUES (2, ''world'')');
+SELECT adbc_commit(getvariable('conn')::BIGINT);  -- Commit changes
+-- Or: SELECT adbc_rollback(getvariable('conn')::BIGINT);  -- Discard changes
+SELECT adbc_set_autocommit(getvariable('conn')::BIGINT, true);  -- Back to autocommit
 
 -- Disconnect
 SELECT adbc_disconnect(getvariable('conn')::BIGINT);

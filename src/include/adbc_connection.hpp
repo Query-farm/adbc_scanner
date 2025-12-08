@@ -179,6 +179,26 @@ public:
         CheckAdbc(status, error.Get(), "Failed to get table schema", GetDriverName());
     }
 
+    // Transaction support
+    void Commit() {
+        AdbcErrorGuard error;
+        auto status = AdbcConnectionCommit(&connection, error.Get());
+        CheckAdbc(status, error.Get(), "Failed to commit transaction", GetDriverName());
+    }
+
+    void Rollback() {
+        AdbcErrorGuard error;
+        auto status = AdbcConnectionRollback(&connection, error.Get());
+        CheckAdbc(status, error.Get(), "Failed to rollback transaction", GetDriverName());
+    }
+
+    void SetAutocommit(bool enabled) {
+        AdbcErrorGuard error;
+        const char *value = enabled ? ADBC_OPTION_VALUE_ENABLED : ADBC_OPTION_VALUE_DISABLED;
+        auto status = AdbcConnectionSetOption(&connection, ADBC_CONNECTION_OPTION_AUTOCOMMIT, value, error.Get());
+        CheckAdbc(status, error.Get(), "Failed to set autocommit", GetDriverName());
+    }
+
     // Non-copyable
     AdbcConnectionWrapper(const AdbcConnectionWrapper &) = delete;
     AdbcConnectionWrapper &operator=(const AdbcConnectionWrapper &) = delete;

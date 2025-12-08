@@ -369,8 +369,7 @@ static void AdbcScanFunction(ClientContext &context, TableFunctionInput &data, D
         ArrowTableFunction::ArrowToDuckDB(local_state,
                                           bind_data.arrow_table.GetColumns(),
                                           output,
-                                          0,      // start
-                                          false); // arrow_scan_is_projected = false
+                                          false); // arrow_scan_is_projected = false (no projection pushdown)
     }
 
     local_state.chunk_offset += output.size();

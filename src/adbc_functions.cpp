@@ -149,6 +149,56 @@ static void AdbcDisconnectFunction(DataChunk &args, ExpressionState &state, Vect
     });
 }
 
+// adbc_commit(connection_id BIGINT) -> BOOLEAN
+// Commits the current transaction
+static void AdbcCommitFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+    auto &connection_vector = args.data[0];
+
+    UnaryExecutor::Execute<int64_t, bool>(connection_vector, result, args.size(), [&](int64_t connection_id) {
+        auto &registry = ConnectionRegistry::Get();
+        auto connection = registry.Get(connection_id);
+        if (!connection) {
+            throw InvalidInputException("adbc_commit: Invalid connection handle: " + to_string(connection_id));
+        }
+        connection->Commit();
+        return true;
+    });
+}
+
+// adbc_rollback(connection_id BIGINT) -> BOOLEAN
+// Rolls back the current transaction
+static void AdbcRollbackFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+    auto &connection_vector = args.data[0];
+
+    UnaryExecutor::Execute<int64_t, bool>(connection_vector, result, args.size(), [&](int64_t connection_id) {
+        auto &registry = ConnectionRegistry::Get();
+        auto connection = registry.Get(connection_id);
+        if (!connection) {
+            throw InvalidInputException("adbc_rollback: Invalid connection handle: " + to_string(connection_id));
+        }
+        connection->Rollback();
+        return true;
+    });
+}
+
+// adbc_set_autocommit(connection_id BIGINT, enabled BOOLEAN) -> BOOLEAN
+// Sets the autocommit mode for the connection
+static void AdbcSetAutocommitFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+    auto &connection_vector = args.data[0];
+    auto &enabled_vector = args.data[1];
+
+    BinaryExecutor::Execute<int64_t, bool, bool>(connection_vector, enabled_vector, result, args.size(),
+        [&](int64_t connection_id, bool enabled) {
+            auto &registry = ConnectionRegistry::Get();
+            auto connection = registry.Get(connection_id);
+            if (!connection) {
+                throw InvalidInputException("adbc_set_autocommit: Invalid connection handle: " + to_string(connection_id));
+            }
+            connection->SetAutocommit(enabled);
+            return true;
+        });
+}
+
 // Register the ADBC scalar functions using ExtensionLoader
 void RegisterAdbcScalarFunctions(DatabaseInstance &db) {
     ExtensionLoader loader(db, "adbc");
@@ -171,6 +221,33 @@ void RegisterAdbcScalarFunctions(DatabaseInstance &db) {
         AdbcDisconnectFunction
     );
     loader.RegisterFunction(adbc_disconnect_function);
+
+    // adbc_commit: Commit the current transaction
+    auto adbc_commit_function = ScalarFunction(
+        "adbc_commit",
+        {LogicalType::BIGINT},
+        LogicalType::BOOLEAN,
+        AdbcCommitFunction
+    );
+    loader.RegisterFunction(adbc_commit_function);
+
+    // adbc_rollback: Rollback the current transaction
+    auto adbc_rollback_function = ScalarFunction(
+        "adbc_rollback",
+        {LogicalType::BIGINT},
+        LogicalType::BOOLEAN,
+        AdbcRollbackFunction
+    );
+    loader.RegisterFunction(adbc_rollback_function);
+
+    // adbc_set_autocommit: Set autocommit mode
+    auto adbc_set_autocommit_function = ScalarFunction(
+        "adbc_set_autocommit",
+        {LogicalType::BIGINT, LogicalType::BOOLEAN},
+        LogicalType::BOOLEAN,
+        AdbcSetAutocommitFunction
+    );
+    loader.RegisterFunction(adbc_set_autocommit_function);
 }
 
 } // namespace adbc

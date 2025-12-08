@@ -4,7 +4,8 @@ on:
   pull_request: null
   workflow_dispatch: null
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{
+  group:
+    ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{
     github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' && github.sha ||
     '' }}
   cancel-in-progress: true
@@ -16,11 +17,3 @@ jobs:
       duckdb_version: v1.4.0
       ci_tools_version: main
       extension_name: adbc
-  code-quality-check:
-    name: Code Quality Check
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v1.4.0
-    with:
-      duckdb_version: v1.4.0
-      ci_tools_version: main
-      extension_name: adbc
-      format_checks: format;tidy

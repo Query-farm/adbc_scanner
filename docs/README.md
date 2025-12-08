@@ -264,6 +264,59 @@ Output:
 └────────────┘
 ```
 
+### adbc_columns
+
+Returns column metadata for tables in the connected database.
+
+```sql
+adbc_columns(connection_id, [catalog:=], [schema:=], [table_name:=], [column_name:=]) -> TABLE
+```
+
+**Parameters:**
+- `connection_id`: Connection handle from `adbc_connect`
+- `catalog` (optional): Filter by catalog name pattern
+- `schema` (optional): Filter by schema name pattern
+- `table_name` (optional): Filter by table name pattern
+- `column_name` (optional): Filter by column name pattern
+
+**Returns:** A table with columns:
+- `catalog_name`: Catalog containing the table
+- `schema_name`: Schema containing the table
+- `table_name`: Name of the table
+- `column_name`: Name of the column
+- `ordinal_position`: Column position (1-based)
+- `remarks`: Database-specific description
+- `type_name`: Data type name (e.g., "INTEGER", "TEXT")
+- `is_nullable`: Whether the column allows NULL values
+
+**Examples:**
+
+```sql
+-- Get all columns for a specific table
+SELECT * FROM adbc_columns(getvariable('conn')::BIGINT, table_name := 'users');
+
+-- Get specific column
+SELECT * FROM adbc_columns(getvariable('conn')::BIGINT,
+    table_name := 'users',
+    column_name := 'email');
+
+-- List all columns in the database
+SELECT table_name, column_name, type_name
+FROM adbc_columns(getvariable('conn')::BIGINT)
+ORDER BY table_name, ordinal_position;
+```
+
+Output:
+```
+┌──────────────┬─────────────┬────────────┬─────────────┬──────────────────┬─────────┬───────────┬─────────────┐
+│ catalog_name │ schema_name │ table_name │ column_name │ ordinal_position │ remarks │ type_name │ is_nullable │
+├──────────────┼─────────────┼────────────┼─────────────┼──────────────────┼─────────┼───────────┼─────────────┤
+│ main         │ NULL        │ users      │ id          │                1 │ NULL    │ INTEGER   │ true        │
+│ main         │ NULL        │ users      │ name        │                2 │ NULL    │ TEXT      │ true        │
+│ main         │ NULL        │ users      │ email       │                3 │ NULL    │ TEXT      │ true        │
+└──────────────┴─────────────┴────────────┴─────────────┴──────────────────┴─────────┴───────────┴─────────────┘
+```
+
 ## ADBC Drivers
 
 ADBC drivers are available for many databases. Here are some common ones:

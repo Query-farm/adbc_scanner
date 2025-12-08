@@ -181,6 +181,41 @@ SELECT * FROM adbc_table_types(12345);
 Invalid Input Error: adbc_table_types: Invalid connection handle: 12345
 
 # ============================================
+# adbc_columns Tests
+# ============================================
+
+# Create a table so we have columns to query
+statement ok
+SET VARIABLE col_conn = (SELECT adbc_connect({'driver': getvariable('sqlite_driver'), 'uri': ':memory:'}));
+
+statement ok
+SELECT adbc_execute(getvariable('col_conn')::BIGINT, 'CREATE TABLE test_cols (id INTEGER PRIMARY KEY, name TEXT NOT NULL, value REAL)');
+
+# Test adbc_columns - basic query
+query IIII
+SELECT table_name, column_name, ordinal_position, type_name FROM adbc_columns(getvariable('col_conn')::BIGINT, table_name := 'test_cols') ORDER BY ordinal_position;
+----
+test_cols	id	1	INTEGER
+test_cols	name	2	TEXT
+test_cols	value	3	REAL
+
+# Test adbc_columns - filter by column_name
+query II
+SELECT table_name, column_name FROM adbc_columns(getvariable('col_conn')::BIGINT, table_name := 'test_cols', column_name := 'name');
+----
+test_cols	name
+
+# Test adbc_columns with invalid connection handle
+statement error
+SELECT * FROM adbc_columns(12345);
+----
+Invalid Input Error: adbc_columns: Invalid connection handle: 12345
+
+# Clean up
+statement ok
+SELECT adbc_disconnect(getvariable('col_conn')::BIGINT);
+
+# ============================================
 # adbc_execute Tests (DDL/DML)
 # ============================================
 

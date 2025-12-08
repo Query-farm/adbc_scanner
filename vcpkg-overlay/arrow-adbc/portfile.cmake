@@ -2,12 +2,14 @@ vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO apache/arrow-adbc
     REF apache-arrow-adbc-${VERSION}
-    SHA512 59cccbeeefa295d69cacfa8851b621376106aca57ebd94291523fcca314c0bd10c1d296801d1eacce9edddd46a8c87deaf3d8367e32ba5fd5b322b34c6af8625
+    SHA512 74d9dedd15bce71bfbc5bce00ad1aa91be84623010e2a01e6846343a7acc93e36fb263a08cc8437a9467bf63a2c7aca4b14d413325d5afb96b590408d918b27e
     HEAD_REF main
     PATCHES
-        fix_static_build.patch
-        fix_windows_build.patch
-        unvendor.patch
+        toml.patch
+#    PATCHES
+#        fix_static_build.patch
+#        fix_windows_build.patch
+#        unvendor.patch
 )
 file(REMOVE_RECURSE "${SOURCE_PATH}/c/vendor")
 
@@ -22,6 +24,7 @@ vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
 
 string(COMPARE EQUAL ${VCPKG_LIBRARY_LINKAGE} "dynamic" ADBC_BUILD_SHARED)
 string(COMPARE EQUAL ${VCPKG_LIBRARY_LINKAGE} "static" ADBC_BUILD_STATIC)
+
 
 vcpkg_cmake_configure(
     SOURCE_PATH ${SOURCE_PATH}/c
@@ -55,6 +58,7 @@ if("sqlite" IN_LIST FEATURES)
         DO_NOT_DELETE_PARENT_CONFIG_PATH
     )
 endif()
+
 vcpkg_fixup_pkgconfig()
 
 file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/lib/cmake")

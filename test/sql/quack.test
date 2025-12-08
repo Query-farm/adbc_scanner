@@ -1,23 +1,108 @@
-# name: test/sql/quack.test
-# description: test quack extension
+# name: test/sql/adbc.test
+# description: test adbc extension
 # group: [sql]
 
 # Before we load the extension, this will fail
 statement error
-SELECT quack('Sam');
+SELECT adbc_connect(MAP {'driver': 'test'});
 ----
-Catalog Error: Scalar Function with name quack does not exist!
+Catalog Error: Scalar Function with name adbc_connect does not exist!
 
 # Require statement will ensure this test is run with this extension loaded
-require quack
+require adbc
 
-# Confirm the extension works
-query I
-SELECT quack('Sam');
+# Test that adbc_connect requires 'driver' option
+statement error
+SELECT adbc_connect(MAP {'uri': 'test'});
 ----
-Quack Sam 🐥
+Invalid Input Error: adbc_connect: 'driver' option is required
 
+# Test disconnect with invalid handle
+statement error
+SELECT adbc_disconnect(12345);
+----
+Invalid Input Error: adbc_disconnect: Invalid connection handle: 12345
+
+# Test adbc_scan with invalid connection handle
+statement error
+SELECT * FROM adbc_scan(12345, 'SELECT 1');
+----
+Invalid Input Error: adbc_scan: Invalid connection handle: 12345
+
+# SQLite driver tests - skip if driver not installed
+# The driver path may vary by installation, so we use a require statement
+
+require-env ADBC_SQLITE_DRIVER
+
+# Connect to SQLite in-memory database
+statement ok
+SET VARIABLE sqlite_driver = '${ADBC_SQLITE_DRIVER}';
+
+statement ok
+SET VARIABLE conn_id = (SELECT adbc_connect(MAP {'driver': getvariable('sqlite_driver'), 'uri': ':memory:'}));
+
+# Test simple SELECT
+query II
+SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT 1 AS a, 2 AS b');
+----
+1	2
+
+# Test multiple rows
+query II
+SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT,
+    'SELECT 1 AS id, ''hello'' AS name UNION ALL SELECT 2, ''world'' UNION ALL SELECT 3, ''test'''
+) ORDER BY id;
+----
+1	hello
+2	world
+3	test
+
+# Test various data types
+query IIRR
+SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT,
+    'SELECT 42 AS int_col, 9223372036854775807 AS bigint_col, 3.14 AS float_col, 2.718281828 AS double_col'
+);
+----
+42	9223372036854775807	3.14	2.718281828
+
+# Test NULL values
+query II
+SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT,
+    'SELECT 1 AS a, NULL AS b UNION ALL SELECT NULL, ''test'''
+) ORDER BY a NULLS LAST;
+----
+1	NULL
+NULL	test
+
+# Test empty result set
 query I
-SELECT quack_openssl_version('Michael') ILIKE 'Quack Michael, my linked OpenSSL version is OpenSSL%';
+SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT,
+    'SELECT 1 AS a WHERE 1 = 0'
+);
+----
+
+# Test large result set (more than 4000 rows to test multiple batches)
+# SQLite's WITH RECURSIVE generates a sequence of numbers
+query II
+SELECT COUNT(*), SUM(n) FROM adbc_scan(getvariable('conn_id')::BIGINT,
+    'WITH RECURSIVE cnt(n) AS (
+        SELECT 1
+        UNION ALL
+        SELECT n + 1 FROM cnt WHERE n < 5000
+    )
+    SELECT n, n * 2 AS doubled FROM cnt'
+);
+----
+5000	12502500
+
+# Test disconnect
+query I
+SELECT adbc_disconnect(getvariable('conn_id')::BIGINT);
 ----
 true
+
+# Test that connection is invalid after disconnect
+statement error
+SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT 1');
+----
+Invalid Input Error: adbc_scan: Invalid connection handle

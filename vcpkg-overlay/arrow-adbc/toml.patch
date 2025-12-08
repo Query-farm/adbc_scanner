@@ -1,0 +1,17 @@
+diff --git a/c/driver_manager/CMakeLists.txt b/c/driver_manager/CMakeLists.txt
+index 198c3f979..a5cb2499e 100644
+--- a/c/driver_manager/CMakeLists.txt
++++ b/c/driver_manager/CMakeLists.txt
+@@ -15,8 +15,10 @@
+ # specific language governing permissions and limitations
+ # under the License.
+
+-set(ADBC_DRIVER_MANAGER_SHARED_LINK_LIBS ${CMAKE_DL_LIBS})
+-set(ADBC_DRIVER_MANAGER_STATIC_LINK_LIBS ${CMAKE_DL_LIBS})
++find_package(tomlplusplus CONFIG REQUIRED)
++set(ADBC_DRIVER_MANAGER_SHARED_LINK_LIBS ${CMAKE_DL_LIBS} tomlplusplus::tomlplusplus)
++set(ADBC_DRIVER_MANAGER_STATIC_LINK_LIBS ${CMAKE_DL_LIBS} tomlplusplus::tomlplusplus)
++
+ # std::filesystem with old g++/clang++ require libstdc++fs/libc++fs.
+ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+   if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS "9")

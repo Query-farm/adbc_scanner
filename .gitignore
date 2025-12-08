@@ -1,3 +1,4 @@
+vcpkg_installed/
 build
 .idea
 cmake-build-debug
@@ -6,3 +7,4 @@ duckdb_unittest_tempdir/
 testext
 test/python/__pycache__/
 .Rhistory
+vcpkg

@@ -1,39 +1,33 @@
 #define DUCKDB_EXTENSION_MAIN
 
 #include "adbc_extension.hpp"
+#include "adbc_functions.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
-#include "duckdb/function/scalar_function.hpp"
-#include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 
 namespace duckdb {
 
-inline void AdbcScannerScalarFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &name_vector = args.data[0];
-	UnaryExecutor::Execute<string_t, string_t>(name_vector, result, args.size(), [&](string_t name) {
-		return StringVector::AddString(result, "AdbcScanner " + name.GetString() + " 🐥");
-	});
-}
-
 static void LoadInternal(ExtensionLoader &loader) {
-	// Register a scalar function
-	auto adbc_scalar_function =
-	    ScalarFunction("adbc", {LogicalType::VARCHAR}, LogicalType::VARCHAR, AdbcScannerScalarFun);
-	loader.RegisterFunction(adbc_scalar_function);
+    // Register ADBC scalar functions (adbc_connect, adbc_disconnect)
+    adbc::RegisterAdbcScalarFunctions(loader.GetDatabaseInstance());
+
+    // Register ADBC table functions (adbc_scan)
+    adbc::RegisterAdbcTableFunctions(loader.GetDatabaseInstance());
 }
 
 void AdbcExtension::Load(ExtensionLoader &loader) {
-	LoadInternal(loader);
+    LoadInternal(loader);
 }
+
 std::string AdbcExtension::Name() {
-	return "adbc";
+    return "adbc";
 }
 
 std::string AdbcExtension::Version() const {
-#ifdef EXT_VERSION_QUACK
-	return EXT_VERSION_QUACK;
+#ifdef EXT_VERSION_ADBC
+    return EXT_VERSION_ADBC;
 #else
-	return "";
+    return "";
 #endif
 }
 
@@ -42,6 +36,6 @@ std::string AdbcExtension::Version() const {
 extern "C" {
 
 DUCKDB_CPP_EXTENSION_ENTRY(adbc, loader) {
-	duckdb::LoadInternal(loader);
+    duckdb::LoadInternal(loader);
 }
 }

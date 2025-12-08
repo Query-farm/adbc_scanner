@@ -11,6 +11,8 @@ Catalog Error: Scalar Function with name adbc_connect does not exist!
 # Require statement will ensure this test is run with this extension loaded
 require adbc_scanner
 
+require-env HAS_ADBC_SQLITE_DRIVER
+
 # Test that adbc_connect requires 'driver' option (STRUCT syntax)
 statement error
 SELECT adbc_connect({'uri': 'test'});
@@ -38,14 +40,8 @@ Invalid Input Error: adbc_scan: Invalid connection handle: 12345
 # SQLite driver tests - skip if driver not installed
 # The driver path may vary by installation, so we use a require statement
 
-require-env ADBC_SQLITE_DRIVER
-
-# Connect to SQLite in-memory database using STRUCT syntax (preferred)
 statement ok
-SET VARIABLE sqlite_driver = '${ADBC_SQLITE_DRIVER}';
-
-statement ok
-SET VARIABLE conn_id = (SELECT adbc_connect({'driver': getvariable('sqlite_driver'), 'uri': ':memory:'}));
+SET VARIABLE conn_id = (SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:'}));
 
 # Test simple SELECT
 query II
@@ -144,7 +140,7 @@ true
 # Test adbc_tables with empty database (no tables created yet in this connection)
 # First get a fresh connection to an in-memory database using MAP syntax (for backwards compatibility testing)
 statement ok
-SET VARIABLE fresh_conn = (SELECT adbc_connect(MAP {'driver': getvariable('sqlite_driver'), 'uri': ':memory:'}));
+SET VARIABLE fresh_conn = (SELECT adbc_connect(MAP {'driver': 'sqlite', 'uri': ':memory:'}));
 
 query I
 SELECT COUNT(*) FROM adbc_tables(getvariable('fresh_conn')::BIGINT);
@@ -186,7 +182,7 @@ Invalid Input Error: adbc_table_types: Invalid connection handle: 12345
 
 # Create a table so we have columns to query
 statement ok
-SET VARIABLE col_conn = (SELECT adbc_connect({'driver': getvariable('sqlite_driver'), 'uri': ':memory:'}));
+SET VARIABLE col_conn = (SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:'}));
 
 statement ok
 SELECT adbc_execute(getvariable('col_conn')::BIGINT, 'CREATE TABLE test_cols (id INTEGER PRIMARY KEY, name TEXT NOT NULL, value REAL)');
@@ -221,7 +217,7 @@ SELECT adbc_disconnect(getvariable('col_conn')::BIGINT);
 
 # Create a connection and table for schema tests
 statement ok
-SET VARIABLE schema_conn = (SELECT adbc_connect({'driver': getvariable('sqlite_driver'), 'uri': ':memory:'}));
+SET VARIABLE schema_conn = (SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:'}));
 
 statement ok
 SELECT adbc_execute(getvariable('schema_conn')::BIGINT, 'CREATE TABLE schema_test (id INTEGER, name TEXT, value REAL)');
@@ -250,7 +246,7 @@ SELECT adbc_disconnect(getvariable('schema_conn')::BIGINT);
 
 # Create a connection for insert tests
 statement ok
-SET VARIABLE insert_conn = (SELECT adbc_connect({'driver': getvariable('sqlite_driver'), 'uri': ':memory:'}));
+SET VARIABLE insert_conn = (SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:'}));
 
 # Create source data (20,000 rows to test multiple batches)
 statement ok
@@ -305,7 +301,7 @@ DROP TABLE insert_source;
 
 # Get a fresh connection for DDL/DML tests
 statement ok
-SET VARIABLE exec_conn = (SELECT adbc_connect({'driver': getvariable('sqlite_driver'), 'uri': ':memory:'}));
+SET VARIABLE exec_conn = (SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:'}));
 
 # Test CREATE TABLE
 query I
@@ -384,7 +380,7 @@ Invalid Input Error: adbc_set_autocommit: Invalid connection handle: 12345
 
 # Create a connection for transaction tests
 statement ok
-SET VARIABLE tx_conn = (SELECT adbc_connect({'driver': getvariable('sqlite_driver'), 'uri': ':memory:'}));
+SET VARIABLE tx_conn = (SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:'}));
 
 # Create a test table
 statement ok

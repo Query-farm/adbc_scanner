@@ -15,8 +15,33 @@ There is also a checkout of the Airport DuckDB extension under ./airport. The Ai
 The extension provides the following functions:
 
 ### Connection Management
-- `adbc_connect(options)` - Connect to an ADBC data source. Returns a connection handle (BIGINT). Options can be passed as a STRUCT (preferred) or MAP. The `driver` option is required.
+- `adbc_connect(options)` - Connect to an ADBC data source. Returns a connection handle (BIGINT). Options can be passed as a STRUCT (preferred) or MAP.
+  - **Required options:**
+    - `driver` - Driver name, path to shared library, or path to manifest file (.toml)
+  - **Optional options:**
+    - `entrypoint` - Custom entry point function name
+    - `search_paths` - Additional paths to search for driver manifests (colon-separated on Unix, semicolon on Windows)
+    - `use_manifests` - Enable/disable manifest search (default: 'true'). Set to 'false' to only use direct library paths.
+    - Other options are passed directly to the ADBC driver
 - `adbc_disconnect(handle)` - Disconnect from an ADBC data source. Returns true on success.
+
+#### Driver Manifest Support
+The extension supports ADBC driver manifests, which allow referencing drivers by name instead of full paths. When `use_manifests` is enabled (default), the driver manager searches for manifests in these locations:
+
+**macOS/Linux:**
+1. `ADBC_DRIVER_PATH` environment variable (colon-separated paths)
+2. `$VIRTUAL_ENV/etc/adbc/drivers` (if in a virtual environment)
+3. `$CONDA_PREFIX/etc/adbc/drivers` (if in a Conda environment)
+4. `~/.config/adbc/drivers` (Linux) or `~/Library/Application Support/ADBC/Drivers` (macOS)
+5. `/etc/adbc/drivers`
+
+**Windows:**
+1. `ADBC_DRIVER_PATH` environment variable (semicolon-separated paths)
+2. Registry: `HKEY_CURRENT_USER\SOFTWARE\ADBC\Drivers\{name}`
+3. `%LOCAL_APPDATA%\ADBC\Drivers`
+4. Registry: `HKEY_LOCAL_MACHINE\SOFTWARE\ADBC\Drivers\{name}`
+
+A manifest file is a TOML file (e.g., `sqlite.toml`) containing driver metadata and the path to the shared library.
 
 ### Transaction Control
 - `adbc_set_autocommit(handle, enabled)` - Enable or disable autocommit mode. When disabled, changes require explicit commit.
@@ -24,7 +49,7 @@ The extension provides the following functions:
 - `adbc_rollback(handle)` - Rollback the current transaction, discarding all uncommitted changes.
 
 ### Query Execution
-- `adbc_scan(handle, query, [params := row(...)])` - Execute a SELECT query and return results as a table. Supports parameterized queries via the optional `params` named parameter.
+- `adbc_scan(handle, query, [params := row(...)], [batch_size := N])` - Execute a SELECT query and return results as a table. Supports parameterized queries via the optional `params` named parameter. The optional `batch_size` parameter hints to the driver how many rows to return per batch (default: driver-specific, typically 2048). This is a best-effort hint that may be ignored by drivers that don't support it.
 - `adbc_execute(handle, query)` - Execute DDL/DML statements (CREATE, INSERT, UPDATE, DELETE). Returns affected row count.
 - `adbc_insert(handle, table_name, <table>, [mode := ...])` - Bulk insert data from a subquery. Modes: 'create', 'append', 'replace', 'create_append'.
 
@@ -38,14 +63,23 @@ The extension provides the following functions:
 ### Example Usage
 
 ```sql
--- Connect to SQLite (driver path varies by installation)
+-- Connect using a driver manifest (if sqlite.toml is installed in a search path)
+SET VARIABLE conn = (SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:'}));
+
+-- Connect with explicit driver path (traditional method)
 SET VARIABLE conn = (SELECT adbc_connect({'driver': '/path/to/libadbc_driver_sqlite.dylib', 'uri': ':memory:'}));
+
+-- Connect with additional search paths
+SET VARIABLE conn = (SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:', 'search_paths': '/opt/adbc/drivers'}));
 
 -- Query data
 SELECT * FROM adbc_scan(getvariable('conn')::BIGINT, 'SELECT 1 AS a, 2 AS b');
 
 -- Parameterized query
 SELECT * FROM adbc_scan(getvariable('conn')::BIGINT, 'SELECT ? AS value', params := row(42));
+
+-- Query with batch size hint (for network drivers, larger batches reduce round-trips)
+SELECT * FROM adbc_scan(getvariable('conn')::BIGINT, 'SELECT * FROM large_table', batch_size := 65536);
 
 -- Execute DDL/DML
 SELECT adbc_execute(getvariable('conn')::BIGINT, 'CREATE TABLE test (id INTEGER, name TEXT)');
@@ -103,9 +137,11 @@ make test
 # Run debug tests
 make test_debug
 
-# Run tests with SQLite driver (requires ADBC_SQLITE_DRIVER env var)
-ADBC_SQLITE_DRIVER="/path/to/libadbc_driver_sqlite.dylib" make test
+# Run tests with SQLite driver (requires both environment variables)
+HAS_ADBC_SQLITE_DRIVER=1 make test
 ```
+
+**Note:** Tests that use the SQLite ADBC driver require the `HAS_ADBC_SQLITE_DRIVER` environment variable to be set (to any value) in addition to `ADBC_SQLITE_DRIVER` pointing to the driver library path.
 
 Tests are written as [SQLLogicTests](https://duckdb.org/dev/sqllogictest/intro.html) in `test/sql/`.
 

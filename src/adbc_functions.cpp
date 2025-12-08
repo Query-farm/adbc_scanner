@@ -8,246 +8,249 @@ namespace adbc {
 
 // Helper to extract key-value pairs from either a STRUCT or MAP
 static vector<pair<string, string>> ExtractOptions(Vector &options_vector, idx_t row_idx) {
-    vector<pair<string, string>> options;
-    auto value = options_vector.GetValue(row_idx);
-    auto &type = value.type();
+	vector<pair<string, string>> options;
+	auto value = options_vector.GetValue(row_idx);
+	auto &type = value.type();
 
-    if (type.id() == LogicalTypeId::STRUCT) {
-        // Handle STRUCT - iterate over named fields
-        auto &children = StructValue::GetChildren(value);
-        for (idx_t i = 0; i < children.size(); i++) {
-            auto key = StructType::GetChildName(type, i);
-            auto &child_value = children[i];
-            if (!child_value.IsNull()) {
-                options.emplace_back(key, child_value.ToString());
-            }
-        }
-    } else if (type.id() == LogicalTypeId::MAP) {
-        // Handle MAP - iterate over key-value pairs
-        auto &map_children = MapValue::GetChildren(value);
-        for (auto &entry : map_children) {
-            auto &entry_children = StructValue::GetChildren(entry);
-            if (entry_children.size() == 2 && !entry_children[0].IsNull()) {
-                auto key = entry_children[0].ToString();
-                auto val = entry_children[1].IsNull() ? "" : entry_children[1].ToString();
-                options.emplace_back(key, val);
-            }
-        }
-    } else {
-        throw InvalidInputException("adbc_connect: options must be a STRUCT or MAP, got " + type.ToString());
-    }
+	if (type.id() == LogicalTypeId::STRUCT) {
+		// Handle STRUCT - iterate over named fields
+		auto &children = StructValue::GetChildren(value);
+		for (idx_t i = 0; i < children.size(); i++) {
+			auto key = StructType::GetChildName(type, i);
+			auto &child_value = children[i];
+			if (!child_value.IsNull()) {
+				options.emplace_back(key, child_value.ToString());
+			}
+		}
+	} else if (type.id() == LogicalTypeId::MAP) {
+		// Handle MAP - iterate over key-value pairs
+		auto &map_children = MapValue::GetChildren(value);
+		for (auto &entry : map_children) {
+			auto &entry_children = StructValue::GetChildren(entry);
+			if (entry_children.size() == 2 && !entry_children[0].IsNull()) {
+				auto key = entry_children[0].ToString();
+				auto val = entry_children[1].IsNull() ? "" : entry_children[1].ToString();
+				options.emplace_back(key, val);
+			}
+		}
+	} else {
+		throw InvalidInputException("adbc_connect: options must be a STRUCT or MAP, got " + type.ToString());
+	}
 
-    return options;
+	return options;
 }
 
 // Helper to create a connection from options
 static int64_t CreateConnection(const vector<pair<string, string>> &options) {
-    string driver;
-    string entrypoint;
-    vector<pair<string, string>> db_options;
-    vector<pair<string, string>> conn_options;
+	string driver;
+	string entrypoint;
+	string search_paths;
+	bool use_manifests = true;  // Enable manifest search by default
+	vector<pair<string, string>> db_options;
+	vector<pair<string, string>> conn_options;
 
-    for (const auto &opt : options) {
-        if (opt.first == "driver") {
-            driver = opt.second;
-        } else if (opt.first == "entrypoint") {
-            entrypoint = opt.second;
-        } else {
-            // All other options go to database (driver-specific options)
-            db_options.emplace_back(opt.first, opt.second);
-        }
-    }
+	for (const auto &opt : options) {
+		if (opt.first == "driver") {
+			driver = opt.second;
+		} else if (opt.first == "entrypoint") {
+			entrypoint = opt.second;
+		} else if (opt.first == "search_paths") {
+			// Additional paths to search for driver manifests
+			search_paths = opt.second;
+		} else if (opt.first == "use_manifests") {
+			// Allow disabling manifest search (e.g., for direct library paths)
+			use_manifests = (opt.second == "true" || opt.second == "1");
+		} else {
+			// All other options go to database (driver-specific options)
+			db_options.emplace_back(opt.first, opt.second);
+		}
+	}
 
-    // Validate required options
-    if (driver.empty()) {
-        throw InvalidInputException("adbc_connect: 'driver' option is required");
-    }
+	// Validate required options
+	if (driver.empty()) {
+		throw InvalidInputException("adbc_connect: 'driver' option is required");
+	}
 
-    // Create database wrapper
-    auto database = make_shared_ptr<AdbcDatabaseWrapper>();
-    database->Init();
+	// Create database wrapper
+	auto database = make_shared_ptr<AdbcDatabaseWrapper>();
+	database->Init();
 
-    // Set driver (required)
-    database->SetOption("driver", driver);
+	// Enable manifest-based driver discovery by default
+	// This allows using driver names like "sqlite" instead of full paths
+	if (use_manifests) {
+		database->SetLoadFlags(ADBC_LOAD_FLAG_DEFAULT);
+	} else {
+		database->SetLoadFlags(ADBC_LOAD_FLAG_ALLOW_RELATIVE_PATHS);
+	}
 
-    // Store driver name for error messages
-    database->SetDriverName(driver);
+	// Set additional search paths if provided
+	if (!search_paths.empty()) {
+		database->SetAdditionalSearchPaths(search_paths);
+	}
 
-    // Set entrypoint if provided
-    if (!entrypoint.empty()) {
-        database->SetOption("entrypoint", entrypoint);
-    }
+	// Set driver (required) - can be a name, path, or manifest file
+	database->SetOption("driver", driver);
 
-    // Set driver-specific database options
-    for (const auto &opt : db_options) {
-        database->SetOption(opt.first, opt.second);
-    }
+	// Store driver name for error messages
+	database->SetDriverName(driver);
 
-    // Initialize database
-    database->Initialize();
+	// Set entrypoint if provided
+	if (!entrypoint.empty()) {
+		database->SetOption("entrypoint", entrypoint);
+	}
 
-    // Create connection wrapper
-    auto connection = make_shared_ptr<AdbcConnectionWrapper>(database);
-    connection->Init();
+	// Set driver-specific database options
+	for (const auto &opt : db_options) {
+		database->SetOption(opt.first, opt.second);
+	}
 
-    // Set connection options
-    for (const auto &opt : conn_options) {
-        connection->SetOption(opt.first, opt.second);
-    }
+	// Initialize database
+	database->Initialize();
 
-    // Initialize connection
-    connection->Initialize();
+	// Create connection wrapper
+	auto connection = make_shared_ptr<AdbcConnectionWrapper>(database);
+	connection->Init();
 
-    // Register connection and return handle
-    auto &registry = ConnectionRegistry::Get();
-    return registry.Add(std::move(connection));
+	// Set connection options
+	for (const auto &opt : conn_options) {
+		connection->SetOption(opt.first, opt.second);
+	}
+
+	// Initialize connection
+	connection->Initialize();
+
+	// Register connection and return handle
+	auto &registry = ConnectionRegistry::Get();
+	return registry.Add(std::move(connection));
 }
 
 // adbc_connect(options STRUCT or MAP) -> BIGINT
 // Returns a connection handle that can be used with other ADBC functions
 static void AdbcConnectFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-    auto &options_vector = args.data[0];
-    auto count = args.size();
+	auto &options_vector = args.data[0];
+	auto count = args.size();
 
-    // Handle constant input (for constant folding optimization)
-    if (options_vector.GetVectorType() == VectorType::CONSTANT_VECTOR) {
-        if (ConstantVector::IsNull(options_vector)) {
-            result.SetVectorType(VectorType::CONSTANT_VECTOR);
-            ConstantVector::SetNull(result, true);
-        } else {
-            auto options = ExtractOptions(options_vector, 0);
-            auto conn_id = CreateConnection(options);
-            result.SetVectorType(VectorType::CONSTANT_VECTOR);
-            ConstantVector::GetData<int64_t>(result)[0] = conn_id;
-        }
-        return;
-    }
+	// Handle constant input (for constant folding optimization)
+	if (options_vector.GetVectorType() == VectorType::CONSTANT_VECTOR) {
+		if (ConstantVector::IsNull(options_vector)) {
+			result.SetVectorType(VectorType::CONSTANT_VECTOR);
+			ConstantVector::SetNull(result, true);
+		} else {
+			auto options = ExtractOptions(options_vector, 0);
+			auto conn_id = CreateConnection(options);
+			result.SetVectorType(VectorType::CONSTANT_VECTOR);
+			ConstantVector::GetData<int64_t>(result)[0] = conn_id;
+		}
+		return;
+	}
 
-    // Handle flat/dictionary vectors
-    result.SetVectorType(VectorType::FLAT_VECTOR);
-    auto result_data = FlatVector::GetData<int64_t>(result);
+	// Handle flat/dictionary vectors
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+	auto result_data = FlatVector::GetData<int64_t>(result);
 
-    for (idx_t row_idx = 0; row_idx < count; row_idx++) {
-        auto options = ExtractOptions(options_vector, row_idx);
-        result_data[row_idx] = CreateConnection(options);
-    }
+	for (idx_t row_idx = 0; row_idx < count; row_idx++) {
+		auto options = ExtractOptions(options_vector, row_idx);
+		result_data[row_idx] = CreateConnection(options);
+	}
 }
 
 // adbc_disconnect(connection_id BIGINT) -> BOOLEAN
 // Disconnects and removes a connection from the registry
 static void AdbcDisconnectFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-    auto &connection_vector = args.data[0];
+	auto &connection_vector = args.data[0];
 
-    UnaryExecutor::Execute<int64_t, bool>(connection_vector, result, args.size(), [&](int64_t connection_id) {
-        auto &registry = ConnectionRegistry::Get();
-        auto connection = registry.Remove(connection_id);
-        if (!connection) {
-            throw InvalidInputException("adbc_disconnect: Invalid connection handle: " + to_string(connection_id));
-        }
-        // Connection is automatically released when shared_ptr goes out of scope
-        return true;
-    });
+	UnaryExecutor::Execute<int64_t, bool>(connection_vector, result, args.size(), [&](int64_t connection_id) {
+		auto &registry = ConnectionRegistry::Get();
+		auto connection = registry.Remove(connection_id);
+		if (!connection) {
+			throw InvalidInputException("adbc_disconnect: Invalid connection handle: " + to_string(connection_id));
+		}
+		// Connection is automatically released when shared_ptr goes out of scope
+		return true;
+	});
 }
 
 // adbc_commit(connection_id BIGINT) -> BOOLEAN
 // Commits the current transaction
 static void AdbcCommitFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-    auto &connection_vector = args.data[0];
+	auto &connection_vector = args.data[0];
 
-    UnaryExecutor::Execute<int64_t, bool>(connection_vector, result, args.size(), [&](int64_t connection_id) {
-        auto &registry = ConnectionRegistry::Get();
-        auto connection = registry.Get(connection_id);
-        if (!connection) {
-            throw InvalidInputException("adbc_commit: Invalid connection handle: " + to_string(connection_id));
-        }
-        connection->Commit();
-        return true;
-    });
+	UnaryExecutor::Execute<int64_t, bool>(connection_vector, result, args.size(), [&](int64_t connection_id) {
+		auto &registry = ConnectionRegistry::Get();
+		auto connection = registry.Get(connection_id);
+		if (!connection) {
+			throw InvalidInputException("adbc_commit: Invalid connection handle: " + to_string(connection_id));
+		}
+		connection->Commit();
+		return true;
+	});
 }
 
 // adbc_rollback(connection_id BIGINT) -> BOOLEAN
 // Rolls back the current transaction
 static void AdbcRollbackFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-    auto &connection_vector = args.data[0];
+	auto &connection_vector = args.data[0];
 
-    UnaryExecutor::Execute<int64_t, bool>(connection_vector, result, args.size(), [&](int64_t connection_id) {
-        auto &registry = ConnectionRegistry::Get();
-        auto connection = registry.Get(connection_id);
-        if (!connection) {
-            throw InvalidInputException("adbc_rollback: Invalid connection handle: " + to_string(connection_id));
-        }
-        connection->Rollback();
-        return true;
-    });
+	UnaryExecutor::Execute<int64_t, bool>(connection_vector, result, args.size(), [&](int64_t connection_id) {
+		auto &registry = ConnectionRegistry::Get();
+		auto connection = registry.Get(connection_id);
+		if (!connection) {
+			throw InvalidInputException("adbc_rollback: Invalid connection handle: " + to_string(connection_id));
+		}
+		connection->Rollback();
+		return true;
+	});
 }
 
 // adbc_set_autocommit(connection_id BIGINT, enabled BOOLEAN) -> BOOLEAN
 // Sets the autocommit mode for the connection
 static void AdbcSetAutocommitFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-    auto &connection_vector = args.data[0];
-    auto &enabled_vector = args.data[1];
+	auto &connection_vector = args.data[0];
+	auto &enabled_vector = args.data[1];
 
-    BinaryExecutor::Execute<int64_t, bool, bool>(connection_vector, enabled_vector, result, args.size(),
-        [&](int64_t connection_id, bool enabled) {
-            auto &registry = ConnectionRegistry::Get();
-            auto connection = registry.Get(connection_id);
-            if (!connection) {
-                throw InvalidInputException("adbc_set_autocommit: Invalid connection handle: " + to_string(connection_id));
-            }
-            connection->SetAutocommit(enabled);
-            return true;
-        });
+	BinaryExecutor::Execute<int64_t, bool, bool>(
+	    connection_vector, enabled_vector, result, args.size(), [&](int64_t connection_id, bool enabled) {
+		    auto &registry = ConnectionRegistry::Get();
+		    auto connection = registry.Get(connection_id);
+		    if (!connection) {
+			    throw InvalidInputException("adbc_set_autocommit: Invalid connection handle: " +
+			                                to_string(connection_id));
+		    }
+		    connection->SetAutocommit(enabled);
+		    return true;
+	    });
 }
 
 // Register the ADBC scalar functions using ExtensionLoader
 void RegisterAdbcScalarFunctions(DatabaseInstance &db) {
-    ExtensionLoader loader(db, "adbc");
+	ExtensionLoader loader(db, "adbc");
 
-    // adbc_connect: Create a new ADBC connection
-    // Accepts either STRUCT or MAP with string keys/values
-    auto adbc_connect_function = ScalarFunction(
-        "adbc_connect",
-        {LogicalType::ANY},
-        LogicalType::BIGINT,
-        AdbcConnectFunction
-    );
-    loader.RegisterFunction(adbc_connect_function);
+	// adbc_connect: Create a new ADBC connection
+	// Accepts either STRUCT or MAP with string keys/values
+	auto adbc_connect_function =
+	    ScalarFunction("adbc_connect", {LogicalType::ANY}, LogicalType::BIGINT, AdbcConnectFunction);
+	loader.RegisterFunction(adbc_connect_function);
 
-    // adbc_disconnect: Close an ADBC connection
-    auto adbc_disconnect_function = ScalarFunction(
-        "adbc_disconnect",
-        {LogicalType::BIGINT},
-        LogicalType::BOOLEAN,
-        AdbcDisconnectFunction
-    );
-    loader.RegisterFunction(adbc_disconnect_function);
+	// adbc_disconnect: Close an ADBC connection
+	auto adbc_disconnect_function =
+	    ScalarFunction("adbc_disconnect", {LogicalType::BIGINT}, LogicalType::BOOLEAN, AdbcDisconnectFunction);
+	loader.RegisterFunction(adbc_disconnect_function);
 
-    // adbc_commit: Commit the current transaction
-    auto adbc_commit_function = ScalarFunction(
-        "adbc_commit",
-        {LogicalType::BIGINT},
-        LogicalType::BOOLEAN,
-        AdbcCommitFunction
-    );
-    loader.RegisterFunction(adbc_commit_function);
+	// adbc_commit: Commit the current transaction
+	auto adbc_commit_function =
+	    ScalarFunction("adbc_commit", {LogicalType::BIGINT}, LogicalType::BOOLEAN, AdbcCommitFunction);
+	loader.RegisterFunction(adbc_commit_function);
 
-    // adbc_rollback: Rollback the current transaction
-    auto adbc_rollback_function = ScalarFunction(
-        "adbc_rollback",
-        {LogicalType::BIGINT},
-        LogicalType::BOOLEAN,
-        AdbcRollbackFunction
-    );
-    loader.RegisterFunction(adbc_rollback_function);
+	// adbc_rollback: Rollback the current transaction
+	auto adbc_rollback_function =
+	    ScalarFunction("adbc_rollback", {LogicalType::BIGINT}, LogicalType::BOOLEAN, AdbcRollbackFunction);
+	loader.RegisterFunction(adbc_rollback_function);
 
-    // adbc_set_autocommit: Set autocommit mode
-    auto adbc_set_autocommit_function = ScalarFunction(
-        "adbc_set_autocommit",
-        {LogicalType::BIGINT, LogicalType::BOOLEAN},
-        LogicalType::BOOLEAN,
-        AdbcSetAutocommitFunction
-    );
-    loader.RegisterFunction(adbc_set_autocommit_function);
+	// adbc_set_autocommit: Set autocommit mode
+	auto adbc_set_autocommit_function =
+	    ScalarFunction("adbc_set_autocommit", {LogicalType::BIGINT, LogicalType::BOOLEAN}, LogicalType::BOOLEAN,
+	                   AdbcSetAutocommitFunction);
+	loader.RegisterFunction(adbc_set_autocommit_function);
 }
 
 } // namespace adbc

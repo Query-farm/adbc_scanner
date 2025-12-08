@@ -408,28 +408,29 @@ Output:
 
 ADBC drivers are available for many databases. Here are some common ones:
 
-| Database | Driver | Notes |
-|----------|--------|-------|
-| SQLite | `libadbc_driver_sqlite.dylib` | Lightweight, file-based |
-| PostgreSQL | `libadbc_driver_postgresql.dylib` | Full-featured RDBMS |
-| Snowflake | `libadbc_driver_snowflake.dylib` | Cloud data warehouse |
-| Flight SQL | `libadbc_driver_flightsql.dylib` | Arrow Flight SQL servers |
-| DuckDB | `libadbc_driver_duckdb.dylib` | Connect to other DuckDB instances |
+• `bigquery` - An ADBC driver for Google BigQuery developed by the ADBC Driver Foundry
+• `duckdb` - An ADBC driver for DuckDB developed by the DuckDB Foundation - **but this would be kind of silly to use in DuckDB**.
+• `flightsql` - An ADBC driver for Apache Arrow Flight SQL developed under the Apache Software Foundation
+• `mssql` - An ADBC driver for Microsoft SQL Server developed by Columnar
+• `mysql` - An ADBC Driver for MySQL developed by the ADBC Driver Foundry
+• `postgresql` - An ADBC driver for PostgreSQL developed under the Apache Software Foundation
+• `redshift` - An ADBC driver for Amazon Redshift developed by Columnar
+• `snowflake` - An ADBC driver for Snowflake developed under the Apache Software Foundation
+• `sqlite` - An ADBC driver for SQLite developed under the Apache Software Foundation
 
 ### Installing Drivers
 
-ADBC drivers can be installed from the [Apache Arrow ADBC releases](https://github.com/apache/arrow-adbc/releases) or built from source.
+There are a few options for installing drivers:
 
-On macOS with Homebrew:
-```bash
-brew install apache-arrow-adbc
-```
+1. [Columnar's `dbc`](https://columnar.tech/dbc/) is a command-line tool that makes installing and managing ADBC drivers easy.
+2. ADBC drivers can be installed from the [Apache Arrow ADBC releases](https://github.com/apache/arrow-adbc/releases) or built from source.
+3. On macOS with Homebrew: ```brew install apache-arrow-adbc```
 
 ## Complete Example
 
 ```sql
 -- Load the extension
-LOAD adbc;
+LOAD adbc_scanner;
 
 -- Connect to SQLite
 SET VARIABLE sqlite_conn = (SELECT adbc_connect({
@@ -502,7 +503,6 @@ SELECT adbc_connect({'uri': ':memory:'});
 - ADBC connections are not automatically closed; always call `adbc_disconnect()` when done
 - The `rows_affected` count from `adbc_execute` depends on driver support; some drivers return 0 for all operations
 - Parameterized queries in `adbc_scan` require the `params` named parameter syntax
-- Connection handles are process-global; be careful with concurrent access from multiple threads
 
 ## Building from Source
 

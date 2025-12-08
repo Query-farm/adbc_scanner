@@ -31,6 +31,8 @@ struct AdbcScanBindData : public TableFunctionData {
     vector<Value> params;
     vector<LogicalType> param_types;
     bool has_params = false;
+    // Batch size hint for the driver (0 = use driver default)
+    idx_t batch_size = 0;
 };
 
 // Global state for adbc_scan - holds the Arrow stream and statement
@@ -155,6 +157,19 @@ static unique_ptr<FunctionData> AdbcScanBind(ClientContext &context, TableFuncti
         }
     }
 
+    // Check for batch_size named parameter
+    auto batch_size_it = input.named_parameters.find("batch_size");
+    if (batch_size_it != input.named_parameters.end()) {
+        auto &batch_size_value = batch_size_it->second;
+        if (!batch_size_value.IsNull()) {
+            auto batch_size = batch_size_value.GetValue<int64_t>();
+            if (batch_size < 0) {
+                throw InvalidInputException("adbc_scan: 'batch_size' must be a positive integer");
+            }
+            bind_data->batch_size = static_cast<idx_t>(batch_size);
+        }
+    }
+
     // Look up connection in registry
     auto &registry = ConnectionRegistry::Get();
     bind_data->connection = registry.Get(bind_data->connection_id);
@@ -266,6 +281,19 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanInitGlobal(ClientContext &co
     // Create fresh statement for this scan (allows multiple scans of same bind_data)
     global_state->statement = make_shared_ptr<AdbcStatementWrapper>(bind_data.connection);
     global_state->statement->Init();
+
+    // Set batch size hint if provided (best-effort, driver-specific)
+    // Different drivers may use different option names, so we try common ones
+    if (bind_data.batch_size > 0) {
+        string batch_size_str = to_string(bind_data.batch_size);
+        // Try common batch size option names - ignore errors as not all drivers support these
+        try {
+            global_state->statement->SetOption("adbc.statement.batch_size", batch_size_str);
+        } catch (...) {
+            // Option not supported by this driver, ignore
+        }
+    }
+
     global_state->statement->SetSqlQuery(bind_data.query);
     global_state->statement->Prepare();
 
@@ -421,6 +449,11 @@ static InsertionOrderPreservingMap<string> AdbcScanToString(TableFunctionToStrin
         result["Parameters"] = to_string(bind_data.params.size());
     }
 
+    // Show batch size if set
+    if (bind_data.batch_size > 0) {
+        result["BatchSize"] = to_string(bind_data.batch_size);
+    }
+
     // Show connection ID for debugging
     result["Connection"] = to_string(bind_data.connection_id);
 
@@ -436,6 +469,9 @@ void RegisterAdbcTableFunctions(DatabaseInstance &db) {
 
     // Add named parameter for bind parameters (accepts a STRUCT from row(...))
     adbc_scan_function.named_parameters["params"] = LogicalType::ANY;
+
+    // Add named parameter for batch size hint (driver-specific, best-effort)
+    adbc_scan_function.named_parameters["batch_size"] = LogicalType::BIGINT;
 
     // Disable projection pushdown - we always return all columns from the ADBC query
     adbc_scan_function.projection_pushdown = false;

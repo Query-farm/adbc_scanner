@@ -49,6 +49,22 @@ public:
         CheckAdbc(status, error.Get(), "Failed to set database option '" + key + "'", driver_name);
     }
 
+    // Set load flags for manifest-based driver discovery
+    // Default enables all search paths (env, user, system) and relative paths
+    void SetLoadFlags(AdbcLoadFlags flags = ADBC_LOAD_FLAG_DEFAULT) {
+        AdbcErrorGuard error;
+        auto status = AdbcDriverManagerDatabaseSetLoadFlags(&database, flags, error.Get());
+        CheckAdbc(status, error.Get(), "Failed to set load flags", driver_name);
+    }
+
+    // Set additional search paths for driver manifests (colon-separated on Unix, semicolon on Windows)
+    void SetAdditionalSearchPaths(const string &path_list) {
+        AdbcErrorGuard error;
+        auto status = AdbcDriverManagerDatabaseSetAdditionalSearchPathList(
+            &database, path_list.c_str(), error.Get());
+        CheckAdbc(status, error.Get(), "Failed to set additional search paths", driver_name);
+    }
+
     void Initialize() {
         AdbcErrorGuard error;
         auto status = AdbcDatabaseInit(&database, error.Get());

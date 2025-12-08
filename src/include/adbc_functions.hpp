@@ -14,5 +14,8 @@ void RegisterAdbcTableFunctions(DatabaseInstance &db);
 // Register catalog functions (adbc_info, adbc_tables)
 void RegisterAdbcCatalogFunctions(DatabaseInstance &db);
 
+// Register execute function (adbc_execute for DDL/DML)
+void RegisterAdbcExecuteFunction(DatabaseInstance &db);
+
 } // namespace adbc
 } // namespace duckdb

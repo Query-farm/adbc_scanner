@@ -167,6 +167,67 @@ SELECT * FROM adbc_info(12345);
 ----
 Invalid Input Error: adbc_info: Invalid connection handle: 12345
 
+# ============================================
+# adbc_execute Tests (DDL/DML)
+# ============================================
+
+# Get a fresh connection for DDL/DML tests
+statement ok
+SET VARIABLE exec_conn = (SELECT adbc_connect({'driver': getvariable('sqlite_driver'), 'uri': ':memory:'}));
+
+# Test CREATE TABLE
+query I
+SELECT adbc_execute(getvariable('exec_conn')::BIGINT, 'CREATE TABLE exec_test (id INTEGER PRIMARY KEY, name TEXT)');
+----
+0
+
+# Test INSERT
+query I
+SELECT adbc_execute(getvariable('exec_conn')::BIGINT, 'INSERT INTO exec_test VALUES (1, ''hello''), (2, ''world'')');
+----
+0
+
+# Verify data was inserted
+query II
+SELECT * FROM adbc_scan(getvariable('exec_conn')::BIGINT, 'SELECT * FROM exec_test ORDER BY id');
+----
+1	hello
+2	world
+
+# Test UPDATE
+query I
+SELECT adbc_execute(getvariable('exec_conn')::BIGINT, 'UPDATE exec_test SET name = ''updated'' WHERE id = 1');
+----
+0
+
+# Verify update worked
+query II
+SELECT * FROM adbc_scan(getvariable('exec_conn')::BIGINT, 'SELECT * FROM exec_test WHERE id = 1');
+----
+1	updated
+
+# Test DELETE
+query I
+SELECT adbc_execute(getvariable('exec_conn')::BIGINT, 'DELETE FROM exec_test WHERE id = 2');
+----
+0
+
+# Verify delete worked
+query I
+SELECT COUNT(*) FROM adbc_scan(getvariable('exec_conn')::BIGINT, 'SELECT * FROM exec_test');
+----
+1
+
+# Test adbc_execute with invalid connection handle
+statement error
+SELECT adbc_execute(12345, 'SELECT 1');
+----
+Invalid Input Error: adbc_execute: Invalid connection handle: 12345
+
+# Clean up exec_conn
+statement ok
+SELECT adbc_disconnect(getvariable('exec_conn')::BIGINT);
+
 # Test disconnect
 query I
 SELECT adbc_disconnect(getvariable('conn_id')::BIGINT);

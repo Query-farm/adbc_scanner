@@ -1,181 +1,351 @@
-# DuckDB Extension Template
+# DuckDB ADBC Extension
 
-This repository contains a template for creating a DuckDB extension. The main goal of this template is to allow users to easily develop, test and distribute their own DuckDB extension. The main branch of the template is always based on the latest stable DuckDB allowing you to try out your extension right away.
+The ADBC extension by [Query.Farm](https://query.farm) enables DuckDB to connect to external databases using [Arrow Database Connectivity (ADBC)](https://arrow.apache.org/adbc/), a column-oriented API standard for database access. ADBC provides efficient data transfer using Apache Arrow's columnar format.
 
-## Getting started
+## Installation
 
-First step to getting started is to create your own repo from this template by clicking `Use this template`. Then clone your new repository using
-
-```sh
-git clone --recurse-submodules https://github.com/<you>/<your-new-extension-repo>.git
+```sql
+INSTALL adbc FROM community;
+LOAD adbc;
 ```
 
-Note that `--recurse-submodules` will ensure DuckDB is pulled which is required to build the extension.
+## Quick Start
 
-## Building
+```sql
+-- Connect to a SQLite database
+SET VARIABLE conn = (SELECT adbc_connect({
+    'driver': '/path/to/libadbc_driver_sqlite.dylib',
+    'uri': ':memory:'
+}));
 
-### Managing dependencies
+-- Query data
+SELECT * FROM adbc_scan(getvariable('conn')::BIGINT, 'SELECT * FROM my_table');
 
-DuckDB extensions uses VCPKG for dependency management. Enabling VCPKG is very simple: follow the [installation instructions](https://vcpkg.io/en/getting-started) or just run the following:
+-- Execute DDL/DML
+SELECT adbc_execute(getvariable('conn')::BIGINT, 'CREATE TABLE users (id INT, name TEXT)');
+SELECT adbc_execute(getvariable('conn')::BIGINT, 'INSERT INTO users VALUES (1, ''Alice'')');
 
-```shell
-cd <your-working-dir-not-the-plugin-repo>
-git clone https://github.com/Microsoft/vcpkg.git
-sh ./vcpkg/scripts/bootstrap.sh -disableMetrics
-export VCPKG_TOOLCHAIN_PATH=`pwd`/vcpkg/scripts/buildsystems/vcpkg.cmake
+-- Disconnect when done
+SELECT adbc_disconnect(getvariable('conn')::BIGINT);
 ```
 
-Note: VCPKG is only required for extensions that want to rely on it for dependency management. If you want to develop an extension without dependencies, or want to do your own dependency management, just skip this step. Note that the example extension uses VCPKG to build with a dependency for instructive purposes, so when skipping this step the build may not work without removing the dependency.
+## Functions
 
-### Build steps
+### adbc_connect
 
-Now to build the extension, run:
+Creates a connection to an external database via ADBC.
 
-```sh
-make
+```sql
+adbc_connect(options) -> BIGINT
 ```
 
-The main binaries that will be built are:
+**Parameters:**
+- `options`: A STRUCT or MAP containing connection options
 
-```sh
-./build/release/duckdb
-./build/release/test/unittest
-./build/release/extension/<extension_name>/<extension_name>.duckdb_extension
+**Required Options:**
+- `driver`: Path to the ADBC driver shared library
+
+**Common Options:**
+- `uri`: Connection URI (driver-specific)
+- `username`: Database username
+- `password`: Database password
+- `entrypoint`: Driver entrypoint function name (rarely needed)
+
+**Returns:** A connection handle (BIGINT) used with other ADBC functions.
+
+**Examples:**
+
+```sql
+-- Using STRUCT syntax (preferred)
+SELECT adbc_connect({
+    'driver': '/path/to/libadbc_driver_sqlite.dylib',
+    'uri': '/path/to/database.db'
+});
+
+-- Using MAP syntax
+SELECT adbc_connect(MAP {
+    'driver': '/path/to/libadbc_driver_postgresql.dylib',
+    'uri': 'postgresql://localhost:5432/mydb',
+    'username': 'user',
+    'password': 'pass'
+});
+
+-- Store connection handle in a variable for reuse
+SET VARIABLE conn = (SELECT adbc_connect({
+    'driver': '/path/to/driver.dylib',
+    'uri': ':memory:'
+}));
 ```
 
-- `duckdb` is the binary for the duckdb shell with the extension code automatically loaded.
-- `unittest` is the test runner of duckdb. Again, the extension is already linked into the binary.
-- `<extension_name>.duckdb_extension` is the loadable binary as it would be distributed.
+### adbc_disconnect
 
-### Tips for speedy builds
+Closes an ADBC connection and releases resources.
 
-DuckDB extensions currently rely on DuckDB's build system to provide easy testing and distributing. This does however come at the downside of requiring the template to build DuckDB and its unittest binary every time you build your extension. To mitigate this, we highly recommend installing [ccache](https://ccache.dev/) and [ninja](https://ninja-build.org/). This will ensure you only need to build core DuckDB once and allows for rapid rebuilds.
+```sql
+adbc_disconnect(connection_id) -> BOOLEAN
+```
 
-To build using ninja and ccache ensure both are installed and run:
+**Parameters:**
+- `connection_id`: Connection handle from `adbc_connect`
 
-```sh
+**Returns:** `true` on success.
+
+**Example:**
+
+```sql
+SELECT adbc_disconnect(getvariable('conn')::BIGINT);
+```
+
+### adbc_scan
+
+Executes a SELECT query and returns the results as a table.
+
+```sql
+adbc_scan(connection_id, query, [params := row(...)]) -> TABLE
+```
+
+**Parameters:**
+- `connection_id`: Connection handle from `adbc_connect`
+- `query`: SQL SELECT query to execute
+- `params` (optional): Query parameters as a STRUCT created with `row(...)`
+
+**Returns:** A table with columns matching the query result.
+
+**Examples:**
+
+```sql
+-- Simple query
+SELECT * FROM adbc_scan(getvariable('conn')::BIGINT, 'SELECT * FROM users');
+
+-- Query with parameters
+SELECT * FROM adbc_scan(
+    getvariable('conn')::BIGINT,
+    'SELECT * FROM users WHERE id = ? AND status = ?',
+    params := row(42, 'active')
+);
+
+-- Aggregate results
+SELECT COUNT(*), AVG(price)
+FROM adbc_scan(getvariable('conn')::BIGINT, 'SELECT * FROM orders');
+```
+
+### adbc_execute
+
+Executes DDL or DML statements (CREATE, INSERT, UPDATE, DELETE).
+
+```sql
+adbc_execute(connection_id, statement) -> BIGINT
+```
+
+**Parameters:**
+- `connection_id`: Connection handle from `adbc_connect`
+- `statement`: SQL DDL or DML statement to execute
+
+**Returns:** Number of rows affected (or 0 if not reported by driver).
+
+**Examples:**
+
+```sql
+-- Create a table
+SELECT adbc_execute(getvariable('conn')::BIGINT,
+    'CREATE TABLE products (id INT PRIMARY KEY, name TEXT, price DECIMAL)');
+
+-- Insert data
+SELECT adbc_execute(getvariable('conn')::BIGINT,
+    'INSERT INTO products VALUES (1, ''Widget'', 9.99), (2, ''Gadget'', 19.99)');
+
+-- Update data
+SELECT adbc_execute(getvariable('conn')::BIGINT,
+    'UPDATE products SET price = 14.99 WHERE id = 1');
+
+-- Delete data
+SELECT adbc_execute(getvariable('conn')::BIGINT,
+    'DELETE FROM products WHERE id = 2');
+```
+
+### adbc_info
+
+Returns driver and database information for a connection.
+
+```sql
+adbc_info(connection_id) -> TABLE(info_name VARCHAR, info_value VARCHAR)
+```
+
+**Parameters:**
+- `connection_id`: Connection handle from `adbc_connect`
+
+**Returns:** A table with info_name and info_value columns.
+
+**Common Info Names:**
+- `vendor_name`: Database vendor (e.g., "SQLite", "PostgreSQL")
+- `vendor_version`: Database version
+- `driver_name`: ADBC driver name
+- `driver_version`: Driver version
+- `driver_arrow_version`: Arrow version used by driver
+
+**Example:**
+
+```sql
+SELECT * FROM adbc_info(getvariable('conn')::BIGINT);
+```
+
+Output:
+```
+┌──────────────────────┬────────────────────┐
+│      info_name       │     info_value     │
+├──────────────────────┼────────────────────┤
+│ vendor_name          │ SQLite             │
+│ vendor_version       │ 3.50.4             │
+│ driver_name          │ ADBC SQLite Driver │
+│ driver_version       │ (unknown)          │
+│ driver_arrow_version │ 0.7.0              │
+└──────────────────────┴────────────────────┘
+```
+
+### adbc_tables
+
+Lists tables in the connected database with optional filtering.
+
+```sql
+adbc_tables(connection_id, [catalog:=], [schema:=], [table_name:=]) -> TABLE
+```
+
+**Parameters:**
+- `connection_id`: Connection handle from `adbc_connect`
+- `catalog` (optional): Filter by catalog name pattern
+- `schema` (optional): Filter by schema name pattern
+- `table_name` (optional): Filter by table name pattern
+
+**Returns:** A table with columns:
+- `catalog_name`: Catalog containing the table
+- `schema_name`: Schema containing the table
+- `table_name`: Name of the table
+- `table_type`: Type (e.g., "table", "view")
+
+**Examples:**
+
+```sql
+-- List all tables
+SELECT * FROM adbc_tables(getvariable('conn')::BIGINT);
+
+-- Filter by table name pattern
+SELECT * FROM adbc_tables(getvariable('conn')::BIGINT, table_name := 'user%');
+
+-- Filter by schema
+SELECT * FROM adbc_tables(getvariable('conn')::BIGINT, schema := 'public');
+```
+
+## ADBC Drivers
+
+ADBC drivers are available for many databases. Here are some common ones:
+
+| Database | Driver | Notes |
+|----------|--------|-------|
+| SQLite | `libadbc_driver_sqlite.dylib` | Lightweight, file-based |
+| PostgreSQL | `libadbc_driver_postgresql.dylib` | Full-featured RDBMS |
+| Snowflake | `libadbc_driver_snowflake.dylib` | Cloud data warehouse |
+| Flight SQL | `libadbc_driver_flightsql.dylib` | Arrow Flight SQL servers |
+| DuckDB | `libadbc_driver_duckdb.dylib` | Connect to other DuckDB instances |
+
+### Installing Drivers
+
+ADBC drivers can be installed from the [Apache Arrow ADBC releases](https://github.com/apache/arrow-adbc/releases) or built from source.
+
+On macOS with Homebrew:
+```bash
+brew install apache-arrow-adbc
+```
+
+## Complete Example
+
+```sql
+-- Load the extension
+LOAD adbc;
+
+-- Connect to SQLite
+SET VARIABLE sqlite_conn = (SELECT adbc_connect({
+    'driver': '/opt/homebrew/lib/libadbc_driver_sqlite.dylib',
+    'uri': '/tmp/example.db'
+}));
+
+-- Check connection info
+SELECT * FROM adbc_info(getvariable('sqlite_conn')::BIGINT);
+
+-- Create a table
+SELECT adbc_execute(getvariable('sqlite_conn')::BIGINT,
+    'CREATE TABLE IF NOT EXISTS employees (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        department TEXT,
+        salary REAL
+    )');
+
+-- Insert data
+SELECT adbc_execute(getvariable('sqlite_conn')::BIGINT,
+    'INSERT INTO employees VALUES
+        (1, ''Alice'', ''Engineering'', 95000),
+        (2, ''Bob'', ''Sales'', 75000),
+        (3, ''Charlie'', ''Engineering'', 105000)');
+
+-- Query with DuckDB operations
+SELECT department, AVG(salary) as avg_salary, COUNT(*) as count
+FROM adbc_scan(getvariable('sqlite_conn')::BIGINT, 'SELECT * FROM employees')
+GROUP BY department
+ORDER BY avg_salary DESC;
+
+-- List tables
+SELECT * FROM adbc_tables(getvariable('sqlite_conn')::BIGINT);
+
+-- Parameterized query
+SELECT * FROM adbc_scan(
+    getvariable('sqlite_conn')::BIGINT,
+    'SELECT * FROM employees WHERE department = ? AND salary > ?',
+    params := row('Engineering', 90000.0)
+);
+
+-- Clean up
+SELECT adbc_disconnect(getvariable('sqlite_conn')::BIGINT);
+```
+
+## Error Handling
+
+ADBC functions throw exceptions on errors with descriptive messages:
+
+```sql
+-- Invalid connection handle
+SELECT * FROM adbc_scan(12345, 'SELECT 1');
+-- Error: Invalid Input Error: adbc_scan: Invalid connection handle: 12345
+
+-- SQL syntax error
+SELECT adbc_execute(getvariable('conn')::BIGINT, 'INVALID SQL');
+-- Error: adbc_execute: Failed to prepare statement: ... [Query: INVALID SQL]
+
+-- Missing driver option
+SELECT adbc_connect({'uri': ':memory:'});
+-- Error: Invalid Input Error: adbc_connect: 'driver' option is required
+```
+
+## Limitations
+
+- ADBC connections are not automatically closed; always call `adbc_disconnect()` when done
+- The `rows_affected` count from `adbc_execute` depends on driver support; some drivers return 0 for all operations
+- Parameterized queries in `adbc_scan` require the `params` named parameter syntax
+- Connection handles are process-global; be careful with concurrent access from multiple threads
+
+## Building from Source
+
+See the [development documentation](../CLAUDE.md) for build instructions.
+
+```bash
+# Clone with submodules
+git clone --recurse-submodules https://github.com/your-repo/adbc_scanner.git
+
+# Set up vcpkg
+export VCPKG_TOOLCHAIN_PATH=/path/to/vcpkg/scripts/buildsystems/vcpkg.cmake
+
+# Build
 GEN=ninja make
-```
 
-## Running the extension
-
-To run the extension code, simply start the shell with `./build/release/duckdb`. This shell will have the extension pre-loaded.
-
-Now we can use the features from the extension directly in DuckDB. The template contains a single scalar function `adbc()` that takes a string arguments and returns a string:
-
-```
-D select adbc('Jane') as result;
-┌───────────────┐
-│    result     │
-│    varchar    │
-├───────────────┤
-│ AdbcScanner Jane 🐥 │
-└───────────────┘
-```
-
-## Running the tests
-
-Different tests can be created for DuckDB extensions. The primary way of testing DuckDB extensions should be the SQL tests in `./test/sql`. These SQL tests can be run using:
-
-```sh
+# Test
 make test
 ```
-
-## Getting started with your own extension
-
-After creating a repository from this template, the first step is to name your extension. To rename the extension, run:
-
-```
-python3 ./scripts/bootstrap-template.py <extension_name_you_want>
-```
-
-Feel free to delete the script after this step.
-
-Now you're good to go! After a (re)build, you should now be able to use your duckdb extension:
-
-```
-./build/release/duckdb
-D select <extension_name_you_chose>('Jane') as result;
-┌─────────────────────────────────────┐
-│                result               │
-│               varchar               │
-├─────────────────────────────────────┤
-│ <extension_name_you_chose> Jane 🐥  │
-└─────────────────────────────────────┘
-```
-
-For inspiration/examples on how to extend DuckDB in a more meaningful way, check out the [test extensions](https://github.com/duckdb/duckdb/blob/main/test/extension),
-the [in-tree extensions](https://github.com/duckdb/duckdb/tree/main/extension), and the [out-of-tree extensions](https://github.com/duckdblabs).
-
-## Distributing your extension
-
-To distribute your extension binaries, there are a few options.
-
-### Community extensions
-
-The recommended way of distributing extensions is through the [community extensions repository](https://github.com/duckdb/community-extensions).
-This repository is designed specifically for extensions that are built using this extension template, meaning that as long as your extension can be
-built using the default CI in this template, submitting it to the community extensions is a very simple process. The process works similarly to popular
-package managers like homebrew and vcpkg, where a PR containing a descriptor file is submitted to the package manager repository. After the CI in the
-community extensions repository completes, the extension can be installed and loaded in DuckDB with:
-
-```SQL
-INSTALL <my_extension> FROM community;
-LOAD <my_extension>
-```
-
-For more information, see the [community extensions documentation](https://duckdb.org/community_extensions/documentation).
-
-### Downloading artifacts from GitHub
-
-The default CI in this template will automatically upload the binaries for every push to the main branch as GitHub Actions artifacts. These
-can be downloaded manually and then loaded directly using:
-
-```SQL
-LOAD '/path/to/downloaded/extension.duckdb_extension';
-```
-
-Note that this will require starting DuckDB with the
-`allow_unsigned_extensions` option set to true. How to set this will depend on the client you're using. For the CLI it is done like:
-
-```shell
-duckdb -unsigned
-```
-
-### Uploading to a custom repository
-
-If for some reason distributing through community extensions is not an option, extensions can also be uploaded to a custom extension repository.
-This will give some more control over where and how the extensions are distributed, but comes with the downside of requiring the `allow_unsigned_extensions`
-option to be set. For examples of how to configure a manual GitHub Actions deploy pipeline, check out the extension deploy script in https://github.com/duckdb/extension-ci-tools.
-Some examples of extensions that use this CI/CD workflow check out [spatial](https://github.com/duckdblabs/duckdb_spatial) or [aws](https://github.com/duckdb/duckdb_aws).
-
-Extensions in custom repositories can be installed and loaded using:
-
-```SQL
-INSTALL <my_extension> FROM 'http://my-custom-repo'
-LOAD <my_extension>
-```
-
-### Versioning of your extension
-
-Extension binaries will only work for the specific DuckDB version they were built for. The version of DuckDB that is targeted
-is set to the latest stable release for the main branch of the template so initially that is all you need. As new releases
-of DuckDB are published however, the extension repository will need to be updated. The template comes with a workflow set-up
-that will automatically build the binaries for all DuckDB target architectures that are available in the corresponding DuckDB
-version. This workflow is found in `.github/workflows/MainDistributionPipeline.yml`. It is up to the extension developer to keep
-this up to date with DuckDB. Note also that its possible to distribute binaries for multiple DuckDB versions in this workflow
-by simply duplicating the jobs.
-
-## Setting up CLion
-
-### Opening project
-
-Configuring CLion with the extension template requires a little work. Firstly, make sure that the DuckDB submodule is available.
-Then make sure to open `./duckdb/CMakeLists.txt` (so not the top level `CMakeLists.txt` file from this repo) as a project in CLion.
-Now to fix your project path go to `tools->CMake->Change Project Root`([docs](https://www.jetbrains.com/help/clion/change-project-root-directory.html)) to set the project root to the root dir of this repo.
-
-### Debugging
-
-To set up debugging in CLion, there are two simple steps required. Firstly, in `CLion -> Settings / Preferences -> Build, Execution, Deploy -> CMake` you will need to add the desired builds (e.g. Debug, Release, RelDebug, etc). There's different ways to configure this, but the easiest is to leave all empty, except the `build path`, which needs to be set to `../build/{build type}`. Now on a clean repository you will first need to run `make {build type}` to initialize the CMake build directory. After running make, you will be able to (re)build from CLion by using the build target we just created. If you use the CLion editor, you can create a CLion CMake profiles matching the CMake variables that are described in the makefile, and then you don't need to invoke the Makefile.
-
-The second step is to configure the unittest runner as a run/debug configuration. To do this, go to `Run -> Edit Configurations` and click `+ -> Cmake Application`. The target and executable should be `unittest`. This will run all the DuckDB tests. To specify only running the extension specific tests, add `--test-dir ../../.. [sql]` to the `Program Arguments`. Note that it is recommended to use the `unittest` executable for testing/development within CLion. The actual DuckDB CLI currently does not reliably work as a run target in CLion.

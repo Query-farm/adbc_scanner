@@ -16,6 +16,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 
     // Register ADBC catalog functions (adbc_info, adbc_tables)
     adbc::RegisterAdbcCatalogFunctions(loader.GetDatabaseInstance());
+
+    // Register ADBC execute function (adbc_execute for DDL/DML)
+    adbc::RegisterAdbcExecuteFunction(loader.GetDatabaseInstance());
 }
 
 void AdbcExtension::Load(ExtensionLoader &loader) {

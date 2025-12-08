@@ -447,5 +447,135 @@ void RegisterAdbcTableFunctions(DatabaseInstance &db) {
     loader.RegisterFunction(adbc_scan_function);
 }
 
+// ============================================================================
+// adbc_execute - Execute DDL/DML statements (CREATE, INSERT, UPDATE, DELETE)
+// ============================================================================
+
+// Bind data for adbc_execute
+struct AdbcExecuteBindData : public FunctionData {
+    int64_t connection_id;
+    string query;
+    shared_ptr<AdbcConnectionWrapper> connection;
+    vector<Value> params;
+    vector<LogicalType> param_types;
+    bool has_params = false;
+
+    unique_ptr<FunctionData> Copy() const override {
+        auto copy = make_uniq<AdbcExecuteBindData>();
+        copy->connection_id = connection_id;
+        copy->query = query;
+        copy->connection = connection;
+        copy->params = params;
+        copy->param_types = param_types;
+        copy->has_params = has_params;
+        return copy;
+    }
+
+    bool Equals(const FunctionData &other_p) const override {
+        auto &other = other_p.Cast<AdbcExecuteBindData>();
+        return connection_id == other.connection_id && query == other.query;
+    }
+};
+
+// Bind function for adbc_execute
+static unique_ptr<FunctionData> AdbcExecuteBind(ClientContext &context, ScalarFunction &bound_function,
+                                                 vector<unique_ptr<Expression>> &arguments) {
+    auto bind_data = make_uniq<AdbcExecuteBindData>();
+    return bind_data;
+}
+
+// Helper to execute a single DDL/DML statement and return rows affected
+static int64_t ExecuteStatement(int64_t connection_id, const string &query) {
+    // Look up connection in registry
+    auto &registry = ConnectionRegistry::Get();
+    auto connection = registry.Get(connection_id);
+    if (!connection) {
+        throw InvalidInputException("adbc_execute: Invalid connection handle: " + to_string(connection_id));
+    }
+
+    // Validate connection is still active
+    if (!connection->IsInitialized()) {
+        throw InvalidInputException(FormatError("adbc_execute: Connection has been closed", query));
+    }
+
+    // Create and prepare statement
+    auto statement = make_shared_ptr<AdbcStatementWrapper>(connection);
+    statement->Init();
+    statement->SetSqlQuery(query);
+
+    try {
+        statement->Prepare();
+    } catch (Exception &e) {
+        throw InvalidInputException(FormatError("adbc_execute: Failed to prepare statement: " + string(e.what()), query));
+    }
+
+    // Execute the statement
+    ArrowArrayStream stream;
+    memset(&stream, 0, sizeof(stream));
+    int64_t rows_affected = -1;
+
+    try {
+        statement->ExecuteQuery(&stream, &rows_affected);
+    } catch (Exception &e) {
+        throw IOException(FormatError("adbc_execute: Failed to execute statement: " + string(e.what()), query));
+    }
+
+    // Release the stream if it was created (DDL/DML may or may not create one)
+    if (stream.release) {
+        stream.release(&stream);
+    }
+
+    // Return rows affected (or 0 if not available)
+    return rows_affected >= 0 ? rows_affected : 0;
+}
+
+// Execute function - runs DDL/DML and returns rows affected
+static void AdbcExecuteFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+    auto &conn_vector = args.data[0];
+    auto &query_vector = args.data[1];
+    auto count = args.size();
+
+    // Handle constant input (for constant folding optimization)
+    if (conn_vector.GetVectorType() == VectorType::CONSTANT_VECTOR &&
+        query_vector.GetVectorType() == VectorType::CONSTANT_VECTOR) {
+        if (ConstantVector::IsNull(conn_vector) || ConstantVector::IsNull(query_vector)) {
+            result.SetVectorType(VectorType::CONSTANT_VECTOR);
+            ConstantVector::SetNull(result, true);
+        } else {
+            auto connection_id = conn_vector.GetValue(0).GetValue<int64_t>();
+            auto query = query_vector.GetValue(0).GetValue<string>();
+            auto rows_affected = ExecuteStatement(connection_id, query);
+            result.SetVectorType(VectorType::CONSTANT_VECTOR);
+            ConstantVector::GetData<int64_t>(result)[0] = rows_affected;
+        }
+        return;
+    }
+
+    // Handle flat/dictionary vectors
+    result.SetVectorType(VectorType::FLAT_VECTOR);
+    auto result_data = FlatVector::GetData<int64_t>(result);
+
+    for (idx_t row_idx = 0; row_idx < count; row_idx++) {
+        auto connection_id = conn_vector.GetValue(row_idx).GetValue<int64_t>();
+        auto query = query_vector.GetValue(row_idx).GetValue<string>();
+        result_data[row_idx] = ExecuteStatement(connection_id, query);
+    }
+}
+
+// Register adbc_execute scalar function
+void RegisterAdbcExecuteFunction(DatabaseInstance &db) {
+    ExtensionLoader loader(db, "adbc");
+
+    ScalarFunction adbc_execute_function(
+        "adbc_execute",
+        {LogicalType::BIGINT, LogicalType::VARCHAR},
+        LogicalType::BIGINT,
+        AdbcExecuteFunction,
+        AdbcExecuteBind
+    );
+
+    loader.RegisterFunction(adbc_execute_function);
+}
+
 } // namespace adbc
 } // namespace duckdb

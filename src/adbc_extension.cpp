@@ -4,37 +4,36 @@
 #include "adbc_functions.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
+#include "query_farm_telemetry.hpp"
 
 namespace duckdb {
 
 static void LoadInternal(ExtensionLoader &loader) {
-    // Register ADBC scalar functions (adbc_connect, adbc_disconnect)
-    adbc::RegisterAdbcScalarFunctions(loader.GetDatabaseInstance());
+	// Register ADBC scalar functions (adbc_connect, adbc_disconnect)
+	adbc::RegisterAdbcScalarFunctions(loader.GetDatabaseInstance());
 
-    // Register ADBC table functions (adbc_scan)
-    adbc::RegisterAdbcTableFunctions(loader.GetDatabaseInstance());
+	// Register ADBC table functions (adbc_scan)
+	adbc::RegisterAdbcTableFunctions(loader.GetDatabaseInstance());
 
-    // Register ADBC catalog functions (adbc_info, adbc_tables)
-    adbc::RegisterAdbcCatalogFunctions(loader.GetDatabaseInstance());
+	// Register ADBC catalog functions (adbc_info, adbc_tables)
+	adbc::RegisterAdbcCatalogFunctions(loader.GetDatabaseInstance());
 
-    // Register ADBC execute function (adbc_execute for DDL/DML)
-    adbc::RegisterAdbcExecuteFunction(loader.GetDatabaseInstance());
+	// Register ADBC execute function (adbc_execute for DDL/DML)
+	adbc::RegisterAdbcExecuteFunction(loader.GetDatabaseInstance());
+
+	QueryFarmSendTelemetry(loader, "adbc", "2025120801");
 }
 
 void AdbcExtension::Load(ExtensionLoader &loader) {
-    LoadInternal(loader);
+	LoadInternal(loader);
 }
 
 std::string AdbcExtension::Name() {
-    return "adbc";
+	return "adbc";
 }
 
 std::string AdbcExtension::Version() const {
-#ifdef EXT_VERSION_ADBC
-    return EXT_VERSION_ADBC;
-#else
-    return "";
-#endif
+	return "2025120801";
 }
 
 } // namespace duckdb
@@ -42,6 +41,6 @@ std::string AdbcExtension::Version() const {
 extern "C" {
 
 DUCKDB_CPP_EXTENSION_ENTRY(adbc, loader) {
-    duckdb::LoadInternal(loader);
+	duckdb::LoadInternal(loader);
 }
 }

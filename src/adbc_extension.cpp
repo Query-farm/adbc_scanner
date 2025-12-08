@@ -13,6 +13,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 
     // Register ADBC table functions (adbc_scan)
     adbc::RegisterAdbcTableFunctions(loader.GetDatabaseInstance());
+
+    // Register ADBC catalog functions (adbc_info, adbc_tables)
+    adbc::RegisterAdbcCatalogFunctions(loader.GetDatabaseInstance());
 }
 
 void AdbcExtension::Load(ExtensionLoader &loader) {

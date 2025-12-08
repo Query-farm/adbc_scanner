@@ -119,6 +119,48 @@ SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT ? AS a, ? AS b',
 ----
 NULL	99
 
+# ============================================
+# Catalog Functions Tests
+# ============================================
+
+# Test adbc_info - returns driver/database info
+query II
+SELECT * FROM adbc_info(getvariable('conn_id')::BIGINT) WHERE info_name = 'vendor_name';
+----
+vendor_name	SQLite
+
+# Test adbc_info - all required info fields should be present
+query I
+SELECT COUNT(*) >= 3 FROM adbc_info(getvariable('conn_id')::BIGINT);
+----
+true
+
+# Test adbc_tables with empty database (no tables created yet in this connection)
+# First get a fresh connection to an in-memory database
+statement ok
+SET VARIABLE fresh_conn = (SELECT adbc_connect(MAP {'driver': getvariable('sqlite_driver'), 'uri': ':memory:'}));
+
+query I
+SELECT COUNT(*) FROM adbc_tables(getvariable('fresh_conn')::BIGINT);
+----
+0
+
+# Disconnect fresh connection
+statement ok
+SELECT adbc_disconnect(getvariable('fresh_conn')::BIGINT);
+
+# Test adbc_tables with invalid connection handle
+statement error
+SELECT * FROM adbc_tables(12345);
+----
+Invalid Input Error: adbc_tables: Invalid connection handle: 12345
+
+# Test adbc_info with invalid connection handle
+statement error
+SELECT * FROM adbc_info(12345);
+----
+Invalid Input Error: adbc_info: Invalid connection handle: 12345
+
 # Test disconnect
 query I
 SELECT adbc_disconnect(getvariable('conn_id')::BIGINT);

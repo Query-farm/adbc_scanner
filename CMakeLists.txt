@@ -16,6 +16,7 @@ set(EXTENSION_SOURCES
     src/adbc_extension.cpp
     src/adbc_functions.cpp
     src/adbc_scan.cpp
+    src/adbc_catalog.cpp
 )
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})

@@ -129,6 +129,33 @@ public:
         return database;
     }
 
+    // Get connection info (vendor name, driver version, etc.)
+    // info_codes can be NULL to get all info, or an array of specific codes
+    void GetInfo(const uint32_t *info_codes, size_t info_codes_length, ArrowArrayStream *out) {
+        AdbcErrorGuard error;
+        auto status = AdbcConnectionGetInfo(&connection, info_codes, info_codes_length, out, error.Get());
+        CheckAdbc(status, error.Get(), "Failed to get connection info");
+    }
+
+    // Get database objects (catalogs, schemas, tables, columns)
+    // depth: 0=all, 1=catalogs, 2=schemas, 3=tables
+    // Other parameters can be NULL for no filtering, or search patterns
+    void GetObjects(int depth, const char *catalog, const char *db_schema,
+                    const char *table_name, const char **table_types,
+                    const char *column_name, ArrowArrayStream *out) {
+        AdbcErrorGuard error;
+        auto status = AdbcConnectionGetObjects(&connection, depth, catalog, db_schema,
+                                                table_name, table_types, column_name, out, error.Get());
+        CheckAdbc(status, error.Get(), "Failed to get database objects");
+    }
+
+    // Get table types (e.g., "TABLE", "VIEW", etc.)
+    void GetTableTypes(ArrowArrayStream *out) {
+        AdbcErrorGuard error;
+        auto status = AdbcConnectionGetTableTypes(&connection, out, error.Get());
+        CheckAdbc(status, error.Get(), "Failed to get table types");
+    }
+
     // Non-copyable
     AdbcConnectionWrapper(const AdbcConnectionWrapper &) = delete;
     AdbcConnectionWrapper &operator=(const AdbcConnectionWrapper &) = delete;

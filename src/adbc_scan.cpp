@@ -3,10 +3,12 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
 #include "duckdb/common/arrow/arrow_converter.hpp"
+#include "duckdb/common/arrow/arrow_appender.hpp"
 #include "duckdb/function/table/arrow.hpp"
 #include "duckdb/function/table/arrow/arrow_duck_schema.hpp"
 #include "duckdb/storage/statistics/node_statistics.hpp"
 #include "duckdb/common/insertion_order_preserving_map.hpp"
+#include "duckdb/main/client_context.hpp"
 
 namespace duckdb {
 namespace adbc {
@@ -23,6 +25,10 @@ struct AdbcScanBindData : public TableFunctionData {
     ArrowSchemaWrapper schema_root;
     // Arrow table schema for type conversion
     ArrowTableSchema arrow_table;
+    // Bound parameters (if any)
+    vector<Value> params;
+    vector<LogicalType> param_types;
+    bool has_params = false;
 };
 
 // Global state for adbc_scan - holds the Arrow stream and statement
@@ -74,6 +80,45 @@ static string FormatError(const string &message, const string &query) {
     return result;
 }
 
+// Helper to bind parameters to a statement
+// Converts DuckDB Values to Arrow format and calls AdbcStatementBind
+static void BindParameters(ClientContext &context, AdbcStatementWrapper &statement,
+                           const vector<Value> &params, const vector<LogicalType> &param_types) {
+    if (params.empty()) {
+        return;
+    }
+
+    // Create column names for the parameters (p0, p1, p2, ...)
+    vector<string> names;
+    for (idx_t i = 0; i < params.size(); i++) {
+        names.push_back("p" + to_string(i));
+    }
+
+    // Create a DataChunk with the parameter values
+    DataChunk chunk;
+    chunk.Initialize(Allocator::DefaultAllocator(), param_types);
+    chunk.SetCardinality(1);
+
+    for (idx_t i = 0; i < params.size(); i++) {
+        chunk.SetValue(i, 0, params[i]);
+    }
+
+    // Convert to Arrow schema
+    ArrowSchema arrow_schema;
+    memset(&arrow_schema, 0, sizeof(arrow_schema));
+    ClientProperties options = context.GetClientProperties();
+    ArrowConverter::ToArrowSchema(&arrow_schema, param_types, names, options);
+
+    // Convert to Arrow array
+    ArrowArray arrow_array;
+    memset(&arrow_array, 0, sizeof(arrow_array));
+    unordered_map<idx_t, const shared_ptr<ArrowTypeExtensionData>> extension_type_cast;
+    ArrowConverter::ToArrowArray(chunk, &arrow_array, options, extension_type_cast);
+
+    // Bind to statement (statement takes ownership)
+    statement.Bind(&arrow_array, &arrow_schema);
+}
+
 // Bind function - validates inputs and gets schema
 static unique_ptr<FunctionData> AdbcScanBind(ClientContext &context, TableFunctionBindInput &input,
                                               vector<LogicalType> &return_types, vector<string> &names) {
@@ -84,6 +129,29 @@ static unique_ptr<FunctionData> AdbcScanBind(ClientContext &context, TableFuncti
 
     // Get SQL query from second argument
     bind_data->query = input.inputs[1].GetValue<string>();
+
+    // Check for params named parameter
+    auto params_it = input.named_parameters.find("params");
+    if (params_it != input.named_parameters.end()) {
+        auto &params_value = params_it->second;
+        if (!params_value.IsNull()) {
+            // params should be a STRUCT (created by row(...))
+            auto &params_type = params_value.type();
+            if (params_type.id() != LogicalTypeId::STRUCT) {
+                throw InvalidInputException("adbc_scan: 'params' must be a STRUCT (use row(...) to create it)");
+            }
+
+            // Extract child values and types from the STRUCT
+            auto &children = StructValue::GetChildren(params_value);
+            auto &child_types = StructType::GetChildTypes(params_type);
+
+            for (idx_t i = 0; i < children.size(); i++) {
+                bind_data->params.push_back(children[i]);
+                bind_data->param_types.push_back(child_types[i].second);
+            }
+            bind_data->has_params = true;
+        }
+    }
 
     // Look up connection in registry
     auto &registry = ConnectionRegistry::Get();
@@ -106,6 +174,15 @@ static unique_ptr<FunctionData> AdbcScanBind(ClientContext &context, TableFuncti
         statement->Prepare();
     } catch (Exception &e) {
         throw InvalidInputException(FormatError("adbc_scan: Failed to prepare statement: " + string(e.what()), bind_data->query));
+    }
+
+    // Bind parameters if present (needed for schema inference)
+    if (bind_data->has_params) {
+        try {
+            BindParameters(context, *statement, bind_data->params, bind_data->param_types);
+        } catch (Exception &e) {
+            throw InvalidInputException(FormatError("adbc_scan: Failed to bind parameters: " + string(e.what()), bind_data->query));
+        }
     }
 
     // Try to get schema without executing using ExecuteSchema (ADBC 1.1.0+)
@@ -189,6 +266,15 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanInitGlobal(ClientContext &co
     global_state->statement->Init();
     global_state->statement->SetSqlQuery(bind_data.query);
     global_state->statement->Prepare();
+
+    // Bind parameters if present
+    if (bind_data.has_params) {
+        try {
+            BindParameters(context, *global_state->statement, bind_data.params, bind_data.param_types);
+        } catch (Exception &e) {
+            throw InvalidInputException(FormatError("adbc_scan: Failed to bind parameters: " + string(e.what()), bind_data.query));
+        }
+    }
 
     // Execute the statement and capture row count if available
     memset(&global_state->stream, 0, sizeof(global_state->stream));
@@ -329,6 +415,11 @@ static InsertionOrderPreservingMap<string> AdbcScanToString(TableFunctionToStrin
         result["Query"] = bind_data.query;
     }
 
+    // Show number of bound parameters if any
+    if (bind_data.has_params) {
+        result["Parameters"] = to_string(bind_data.params.size());
+    }
+
     // Show connection ID for debugging
     result["Connection"] = to_string(bind_data.connection_id);
 
@@ -341,6 +432,9 @@ void RegisterAdbcTableFunctions(DatabaseInstance &db) {
 
     TableFunction adbc_scan_function("adbc_scan", {LogicalType::BIGINT, LogicalType::VARCHAR}, AdbcScanFunction,
                                       AdbcScanBind, AdbcScanInitGlobal, AdbcScanInitLocal);
+
+    // Add named parameter for bind parameters (accepts a STRUCT from row(...))
+    adbc_scan_function.named_parameters["params"] = LogicalType::ANY;
 
     // Disable projection pushdown - we always return all columns from the ADBC query
     adbc_scan_function.projection_pushdown = false;

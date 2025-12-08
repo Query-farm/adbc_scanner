@@ -95,6 +95,30 @@ SELECT COUNT(*), SUM(n) FROM adbc_scan(getvariable('conn_id')::BIGINT,
 ----
 5000	12502500
 
+# Test parameterized query with a single integer parameter
+query I
+SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT ? AS value', params := row(42));
+----
+42
+
+# Test parameterized query with multiple parameters of different types
+query ITR
+SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT ? AS a, ? AS b, ? AS c', params := row(123, 'hello world', 2.5::DOUBLE));
+----
+123	hello world	2.5
+
+# Test parameterized query with NULL parameter
+query I
+SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT ? AS value', params := row(NULL::INTEGER));
+----
+NULL
+
+# Test parameterized query with multiple parameters including NULL
+query II
+SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT ? AS a, ? AS b', params := row(NULL::INTEGER, 99));
+----
+NULL	99
+
 # Test disconnect
 query I
 SELECT adbc_disconnect(getvariable('conn_id')::BIGINT);

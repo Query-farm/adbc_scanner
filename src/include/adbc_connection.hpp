@@ -175,6 +175,14 @@ public:
         CheckAdbc(status, error.Get(), "Failed to prepare statement");
     }
 
+    // Bind parameters to the statement (Arrow format)
+    // The statement takes ownership of the values/schema
+    void Bind(ArrowArray *values, ArrowSchema *schema) {
+        AdbcErrorGuard error;
+        auto status = AdbcStatementBind(&statement, values, schema, error.Get());
+        CheckAdbc(status, error.Get(), "Failed to bind parameters");
+    }
+
     // Get the result schema without executing the query (requires Prepare first)
     // Returns true if successful, false if not supported by driver
     bool ExecuteSchema(ArrowSchema *schema) {

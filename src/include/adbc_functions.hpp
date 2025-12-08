@@ -17,5 +17,8 @@ void RegisterAdbcCatalogFunctions(DatabaseInstance &db);
 // Register execute function (adbc_execute for DDL/DML)
 void RegisterAdbcExecuteFunction(DatabaseInstance &db);
 
+// Register insert function (adbc_insert for bulk ingestion)
+void RegisterAdbcInsertFunction(DatabaseInstance &db);
+
 } // namespace adbc
 } // namespace duckdb

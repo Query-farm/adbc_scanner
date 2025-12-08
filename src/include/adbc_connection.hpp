@@ -219,6 +219,14 @@ public:
         CheckAdbc(status, error.Get(), "Failed to bind parameters");
     }
 
+    // Bind an Arrow stream for bulk ingestion
+    // The statement takes ownership of the stream
+    void BindStream(ArrowArrayStream *stream) {
+        AdbcErrorGuard error;
+        auto status = AdbcStatementBindStream(&statement, stream, error.Get());
+        CheckAdbc(status, error.Get(), "Failed to bind stream");
+    }
+
     // Get the result schema without executing the query (requires Prepare first)
     // Returns true if successful, false if not supported by driver
     bool ExecuteSchema(ArrowSchema *schema) {
@@ -236,6 +244,13 @@ public:
         AdbcErrorGuard error;
         auto status = AdbcStatementExecuteQuery(&statement, out, rows_affected, error.Get());
         CheckAdbc(status, error.Get(), "Failed to execute query");
+    }
+
+    // Execute without expecting a result set (for bulk ingestion)
+    void ExecuteUpdate(int64_t *rows_affected = nullptr) {
+        AdbcErrorGuard error;
+        auto status = AdbcStatementExecuteQuery(&statement, nullptr, rows_affected, error.Get());
+        CheckAdbc(status, error.Get(), "Failed to execute update");
     }
 
     // Cancel any in-progress query (best effort - ignores errors)

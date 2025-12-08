@@ -21,6 +21,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// Register ADBC execute function (adbc_execute for DDL/DML)
 	adbc::RegisterAdbcExecuteFunction(loader.GetDatabaseInstance());
 
+	// Register ADBC insert function (adbc_insert for bulk ingestion)
+	adbc::RegisterAdbcInsertFunction(loader.GetDatabaseInstance());
+
 	QueryFarmSendTelemetry(loader, "adbc", "2025120801");
 }
 

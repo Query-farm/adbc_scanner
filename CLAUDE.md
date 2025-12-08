@@ -21,6 +21,7 @@ The extension provides the following functions:
 ### Query Execution
 - `adbc_scan(handle, query, [params := row(...)])` - Execute a SELECT query and return results as a table. Supports parameterized queries via the optional `params` named parameter.
 - `adbc_execute(handle, query)` - Execute DDL/DML statements (CREATE, INSERT, UPDATE, DELETE). Returns affected row count.
+- `adbc_insert(handle, table_name, <table>, [mode := ...])` - Bulk insert data from a subquery. Modes: 'create', 'append', 'replace', 'create_append'.
 
 ### Catalog Functions
 - `adbc_info(handle)` - Returns driver/database information (vendor name, version, etc.).
@@ -44,6 +45,9 @@ SELECT * FROM adbc_scan(getvariable('conn')::BIGINT, 'SELECT ? AS value', params
 -- Execute DDL/DML
 SELECT adbc_execute(getvariable('conn')::BIGINT, 'CREATE TABLE test (id INTEGER, name TEXT)');
 SELECT adbc_execute(getvariable('conn')::BIGINT, 'INSERT INTO test VALUES (1, ''hello'')');
+
+-- Bulk insert from DuckDB query
+SELECT * FROM adbc_insert(getvariable('conn')::BIGINT, 'target', (SELECT * FROM local_table), mode := 'create');
 
 -- Catalog functions
 SELECT * FROM adbc_info(getvariable('conn')::BIGINT);

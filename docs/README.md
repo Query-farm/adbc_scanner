@@ -163,6 +163,54 @@ SELECT adbc_execute(getvariable('conn')::BIGINT,
     'DELETE FROM products WHERE id = 2');
 ```
 
+### adbc_insert
+
+Bulk insert data from a DuckDB query into a table via ADBC. This is more efficient than executing individual INSERT statements.
+
+```sql
+adbc_insert(connection_id, table_name, <table>, [mode:=]) -> TABLE(rows_inserted BIGINT)
+```
+
+**Parameters:**
+- `connection_id`: Connection handle from `adbc_connect`
+- `table_name`: Target table name in the remote database
+- `<table>`: A subquery providing the data to insert
+- `mode` (optional): Insert mode, one of:
+  - `'create'`: Create the table; error if it exists (default for new tables)
+  - `'append'`: Append to existing table; error if table doesn't exist
+  - `'replace'`: Drop and recreate the table if it exists
+  - `'create_append'`: Create if doesn't exist, append if it does
+
+**Returns:** A table with a single row containing the number of rows inserted.
+
+**Examples:**
+
+```sql
+-- Create a new table and insert data
+SELECT * FROM adbc_insert(getvariable('conn')::BIGINT, 'users',
+    (SELECT id, name, email FROM local_users),
+    mode := 'create');
+
+-- Append data to an existing table
+SELECT * FROM adbc_insert(getvariable('conn')::BIGINT, 'users',
+    (SELECT id, name, email FROM new_users),
+    mode := 'append');
+
+-- Replace an existing table with new data
+SELECT * FROM adbc_insert(getvariable('conn')::BIGINT, 'users',
+    (SELECT * FROM updated_users),
+    mode := 'replace');
+```
+
+Output:
+```
+┌───────────────┐
+│ rows_inserted │
+├───────────────┤
+│          1000 │
+└───────────────┘
+```
+
 ### adbc_info
 
 Returns driver and database information for a connection.

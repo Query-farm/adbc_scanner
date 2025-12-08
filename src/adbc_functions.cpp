@@ -6,77 +6,128 @@
 namespace duckdb {
 namespace adbc {
 
-// adbc_connect(options MAP(VARCHAR, VARCHAR)) -> BIGINT
+// Helper to extract key-value pairs from either a STRUCT or MAP
+static vector<pair<string, string>> ExtractOptions(Vector &options_vector, idx_t row_idx) {
+    vector<pair<string, string>> options;
+    auto value = options_vector.GetValue(row_idx);
+    auto &type = value.type();
+
+    if (type.id() == LogicalTypeId::STRUCT) {
+        // Handle STRUCT - iterate over named fields
+        auto &children = StructValue::GetChildren(value);
+        for (idx_t i = 0; i < children.size(); i++) {
+            auto key = StructType::GetChildName(type, i);
+            auto &child_value = children[i];
+            if (!child_value.IsNull()) {
+                options.emplace_back(key, child_value.ToString());
+            }
+        }
+    } else if (type.id() == LogicalTypeId::MAP) {
+        // Handle MAP - iterate over key-value pairs
+        auto &map_children = MapValue::GetChildren(value);
+        for (auto &entry : map_children) {
+            auto &entry_children = StructValue::GetChildren(entry);
+            if (entry_children.size() == 2 && !entry_children[0].IsNull()) {
+                auto key = entry_children[0].ToString();
+                auto val = entry_children[1].IsNull() ? "" : entry_children[1].ToString();
+                options.emplace_back(key, val);
+            }
+        }
+    } else {
+        throw InvalidInputException("adbc_connect: options must be a STRUCT or MAP, got " + type.ToString());
+    }
+
+    return options;
+}
+
+// Helper to create a connection from options
+static int64_t CreateConnection(const vector<pair<string, string>> &options) {
+    string driver;
+    string entrypoint;
+    vector<pair<string, string>> db_options;
+    vector<pair<string, string>> conn_options;
+
+    for (const auto &opt : options) {
+        if (opt.first == "driver") {
+            driver = opt.second;
+        } else if (opt.first == "entrypoint") {
+            entrypoint = opt.second;
+        } else {
+            // All other options go to database (driver-specific options)
+            db_options.emplace_back(opt.first, opt.second);
+        }
+    }
+
+    // Validate required options
+    if (driver.empty()) {
+        throw InvalidInputException("adbc_connect: 'driver' option is required");
+    }
+
+    // Create database wrapper
+    auto database = make_shared_ptr<AdbcDatabaseWrapper>();
+    database->Init();
+
+    // Set driver (required)
+    database->SetOption("driver", driver);
+
+    // Set entrypoint if provided
+    if (!entrypoint.empty()) {
+        database->SetOption("entrypoint", entrypoint);
+    }
+
+    // Set driver-specific database options
+    for (const auto &opt : db_options) {
+        database->SetOption(opt.first, opt.second);
+    }
+
+    // Initialize database
+    database->Initialize();
+
+    // Create connection wrapper
+    auto connection = make_shared_ptr<AdbcConnectionWrapper>(database);
+    connection->Init();
+
+    // Set connection options
+    for (const auto &opt : conn_options) {
+        connection->SetOption(opt.first, opt.second);
+    }
+
+    // Initialize connection
+    connection->Initialize();
+
+    // Register connection and return handle
+    auto &registry = ConnectionRegistry::Get();
+    return registry.Add(std::move(connection));
+}
+
+// adbc_connect(options STRUCT or MAP) -> BIGINT
 // Returns a connection handle that can be used with other ADBC functions
 static void AdbcConnectFunction(DataChunk &args, ExpressionState &state, Vector &result) {
     auto &options_vector = args.data[0];
+    auto count = args.size();
 
-    UnaryExecutor::Execute<list_entry_t, int64_t>(options_vector, result, args.size(), [&](list_entry_t options_entry) {
-        // Get the MAP key and value vectors
-        auto &key_vector = MapVector::GetKeys(options_vector);
-        auto &value_vector = MapVector::GetValues(options_vector);
-
-        // Extract options from MAP
-        string driver;
-        string entrypoint;
-        vector<pair<string, string>> db_options;
-        vector<pair<string, string>> conn_options;
-
-        for (idx_t i = options_entry.offset; i < options_entry.offset + options_entry.length; i++) {
-            auto key = key_vector.GetValue(i).ToString();
-            auto value = value_vector.GetValue(i).ToString();
-
-            if (key == "driver") {
-                driver = value;
-            } else if (key == "entrypoint") {
-                entrypoint = value;
-            } else {
-                // All other options go to database (driver-specific options)
-                db_options.emplace_back(key, value);
-            }
+    // Handle constant input (for constant folding optimization)
+    if (options_vector.GetVectorType() == VectorType::CONSTANT_VECTOR) {
+        if (ConstantVector::IsNull(options_vector)) {
+            result.SetVectorType(VectorType::CONSTANT_VECTOR);
+            ConstantVector::SetNull(result, true);
+        } else {
+            auto options = ExtractOptions(options_vector, 0);
+            auto conn_id = CreateConnection(options);
+            result.SetVectorType(VectorType::CONSTANT_VECTOR);
+            ConstantVector::GetData<int64_t>(result)[0] = conn_id;
         }
+        return;
+    }
 
-        // Validate required options
-        if (driver.empty()) {
-            throw InvalidInputException("adbc_connect: 'driver' option is required");
-        }
+    // Handle flat/dictionary vectors
+    result.SetVectorType(VectorType::FLAT_VECTOR);
+    auto result_data = FlatVector::GetData<int64_t>(result);
 
-        // Create database wrapper
-        auto database = make_shared_ptr<AdbcDatabaseWrapper>();
-        database->Init();
-
-        // Set driver (required)
-        database->SetOption("driver", driver);
-
-        // Set entrypoint if provided
-        if (!entrypoint.empty()) {
-            database->SetOption("entrypoint", entrypoint);
-        }
-
-        // Set driver-specific database options
-        for (const auto &opt : db_options) {
-            database->SetOption(opt.first, opt.second);
-        }
-
-        // Initialize database
-        database->Initialize();
-
-        // Create connection wrapper
-        auto connection = make_shared_ptr<AdbcConnectionWrapper>(database);
-        connection->Init();
-
-        // Set connection options
-        for (const auto &opt : conn_options) {
-            connection->SetOption(opt.first, opt.second);
-        }
-
-        // Initialize connection
-        connection->Initialize();
-
-        // Register connection and return handle
-        auto &registry = ConnectionRegistry::Get();
-        return registry.Add(std::move(connection));
-    });
+    for (idx_t row_idx = 0; row_idx < count; row_idx++) {
+        auto options = ExtractOptions(options_vector, row_idx);
+        result_data[row_idx] = CreateConnection(options);
+    }
 }
 
 // adbc_disconnect(connection_id BIGINT) -> BOOLEAN
@@ -100,9 +151,10 @@ void RegisterAdbcScalarFunctions(DatabaseInstance &db) {
     ExtensionLoader loader(db, "adbc");
 
     // adbc_connect: Create a new ADBC connection
+    // Accepts either STRUCT or MAP with string keys/values
     auto adbc_connect_function = ScalarFunction(
         "adbc_connect",
-        {LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR)},
+        {LogicalType::ANY},
         LogicalType::BIGINT,
         AdbcConnectFunction
     );

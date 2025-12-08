@@ -12,7 +12,13 @@ LOAD adbc_scanner;
 ## Quick Start
 
 ```sql
--- Connect to a SQLite database
+-- Connect to a SQLite database using driver name (requires installed manifest)
+SET VARIABLE conn = (SELECT adbc_connect({
+    'driver': 'sqlite',
+    'uri': ':memory:'
+}));
+
+-- Or connect with explicit driver path
 SET VARIABLE conn = (SELECT adbc_connect({
     'driver': '/path/to/libadbc_driver_sqlite.dylib',
     'uri': ':memory:'
@@ -43,36 +49,68 @@ adbc_connect(options) -> BIGINT
 - `options`: A STRUCT or MAP containing connection options
 
 **Required Options:**
-- `driver`: Path to the ADBC driver shared library
+- `driver`: Driver name (e.g., `'sqlite'`, `'postgresql'`), path to shared library, or path to manifest file (`.toml`)
 
-**Common Options:**
+**Connection Options:**
 - `uri`: Connection URI (driver-specific)
 - `username`: Database username
 - `password`: Database password
-- `entrypoint`: Driver entrypoint function name (rarely needed)
+
+**Driver Resolution Options:**
+- `entrypoint`: Custom driver entrypoint function name (rarely needed)
+- `search_paths`: Additional paths to search for driver manifests (colon-separated on Unix, semicolon on Windows)
+- `use_manifests`: Enable/disable manifest search (default: `'true'`). Set to `'false'` to only use direct library paths.
 
 **Returns:** A connection handle (BIGINT) used with other ADBC functions.
 
 **Examples:**
 
 ```sql
--- Using STRUCT syntax (preferred)
+-- Using driver name (requires installed manifest)
+SELECT adbc_connect({
+    'driver': 'sqlite',
+    'uri': '/path/to/database.db'
+});
+
+-- Using explicit driver path
 SELECT adbc_connect({
     'driver': '/path/to/libadbc_driver_sqlite.dylib',
     'uri': '/path/to/database.db'
 });
 
--- Using MAP syntax
-SELECT adbc_connect(MAP {
-    'driver': '/path/to/libadbc_driver_postgresql.dylib',
+-- PostgreSQL with credentials
+SELECT adbc_connect({
+    'driver': 'postgresql',
     'uri': 'postgresql://localhost:5432/mydb',
     'username': 'user',
     'password': 'pass'
 });
 
+-- Using MAP syntax
+SELECT adbc_connect(MAP {
+    'driver': 'postgresql',
+    'uri': 'postgresql://localhost:5432/mydb',
+    'username': 'user',
+    'password': 'pass'
+});
+
+-- With custom search paths for driver manifests
+SELECT adbc_connect({
+    'driver': 'sqlite',
+    'uri': ':memory:',
+    'search_paths': '/opt/adbc/drivers:/custom/path'
+});
+
+-- Disable manifest search (only use direct library paths)
+SELECT adbc_connect({
+    'driver': '/explicit/path/to/driver.dylib',
+    'uri': ':memory:',
+    'use_manifests': 'false'
+});
+
 -- Store connection handle in a variable for reuse
 SET VARIABLE conn = (SELECT adbc_connect({
-    'driver': '/path/to/driver.dylib',
+    'driver': 'sqlite',
     'uri': ':memory:'
 }));
 ```
@@ -406,25 +444,65 @@ Output:
 
 ## ADBC Drivers
 
-ADBC drivers are available for many databases. Here are some common ones:
+ADBC drivers are available for many databases. When using driver manifests (see below), you can reference drivers by their short name:
 
-• `bigquery` - An ADBC driver for Google BigQuery developed by the ADBC Driver Foundry
-• `duckdb` - An ADBC driver for DuckDB developed by the DuckDB Foundation - **but this would be kind of silly to use in DuckDB**.
-• `flightsql` - An ADBC driver for Apache Arrow Flight SQL developed under the Apache Software Foundation
-• `mssql` - An ADBC driver for Microsoft SQL Server developed by Columnar
-• `mysql` - An ADBC Driver for MySQL developed by the ADBC Driver Foundry
-• `postgresql` - An ADBC driver for PostgreSQL developed under the Apache Software Foundation
-• `redshift` - An ADBC driver for Amazon Redshift developed by Columnar
-• `snowflake` - An ADBC driver for Snowflake developed under the Apache Software Foundation
-• `sqlite` - An ADBC driver for SQLite developed under the Apache Software Foundation
+| Driver Name | Database | Developer |
+|-------------|----------|-----------|
+| `bigquery` | Google BigQuery | ADBC Driver Foundry |
+| `duckdb` | DuckDB | DuckDB Foundation |
+| `flightsql` | Apache Arrow Flight SQL | Apache Software Foundation |
+| `mssql` | Microsoft SQL Server | Columnar |
+| `mysql` | MySQL | ADBC Driver Foundry |
+| `postgresql` | PostgreSQL | Apache Software Foundation |
+| `redshift` | Amazon Redshift | Columnar |
+| `snowflake` | Snowflake | Apache Software Foundation |
+| `sqlite` | SQLite | Apache Software Foundation |
 
 ### Installing Drivers
 
 There are a few options for installing drivers:
 
-1. [Columnar's `dbc`](https://columnar.tech/dbc/) is a command-line tool that makes installing and managing ADBC drivers easy.
+1. [Columnar's `dbc`](https://columnar.tech/dbc/) is a command-line tool that makes installing and managing ADBC drivers easy. It automatically creates driver manifests for you.
 2. ADBC drivers can be installed from the [Apache Arrow ADBC releases](https://github.com/apache/arrow-adbc/releases) or built from source.
-3. On macOS with Homebrew: ```brew install apache-arrow-adbc```
+3. On macOS with Homebrew: `brew install apache-arrow-adbc`
+
+### Driver Manifests
+
+Driver manifests allow you to reference ADBC drivers by name (e.g., `'sqlite'`) instead of specifying the full path to the shared library. A manifest is a TOML file that contains metadata about the driver and the path to its shared library.
+
+**Example manifest file (`sqlite.toml`):**
+```toml
+[driver]
+name = "sqlite"
+description = "ADBC SQLite Driver"
+library = "/usr/local/lib/libadbc_driver_sqlite.dylib"
+```
+
+**Manifest Search Locations:**
+
+The extension searches for driver manifests in these locations (in order):
+
+**macOS:**
+1. `ADBC_DRIVER_PATH` environment variable (colon-separated paths)
+2. `$VIRTUAL_ENV/etc/adbc/drivers` (if in a Python virtual environment)
+3. `$CONDA_PREFIX/etc/adbc/drivers` (if in a Conda environment)
+4. `~/Library/Application Support/ADBC/Drivers`
+5. `/etc/adbc/drivers`
+
+**Linux:**
+1. `ADBC_DRIVER_PATH` environment variable (colon-separated paths)
+2. `$VIRTUAL_ENV/etc/adbc/drivers` (if in a Python virtual environment)
+3. `$CONDA_PREFIX/etc/adbc/drivers` (if in a Conda environment)
+4. `~/.config/adbc/drivers`
+5. `/etc/adbc/drivers`
+
+**Windows:**
+1. `ADBC_DRIVER_PATH` environment variable (semicolon-separated paths)
+2. Registry: `HKEY_CURRENT_USER\SOFTWARE\ADBC\Drivers\{name}`
+3. `%LOCAL_APPDATA%\ADBC\Drivers`
+4. Registry: `HKEY_LOCAL_MACHINE\SOFTWARE\ADBC\Drivers\{name}`
+
+You can also specify additional search paths using the `search_paths` option in `adbc_connect()`.
 
 ## Complete Example
 
@@ -432,11 +510,17 @@ There are a few options for installing drivers:
 -- Load the extension
 LOAD adbc_scanner;
 
--- Connect to SQLite
+-- Connect to SQLite using driver name (requires installed manifest)
 SET VARIABLE sqlite_conn = (SELECT adbc_connect({
-    'driver': '/opt/homebrew/lib/libadbc_driver_sqlite.dylib',
+    'driver': 'sqlite',
     'uri': '/tmp/example.db'
 }));
+
+-- Or connect with explicit driver path
+-- SET VARIABLE sqlite_conn = (SELECT adbc_connect({
+--     'driver': '/opt/homebrew/lib/libadbc_driver_sqlite.dylib',
+--     'uri': '/tmp/example.db'
+-- }));
 
 -- Check connection info
 SELECT * FROM adbc_info(getvariable('sqlite_conn')::BIGINT);

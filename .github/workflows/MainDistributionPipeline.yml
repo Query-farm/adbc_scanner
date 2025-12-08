@@ -16,5 +16,5 @@ jobs:
     with:
       duckdb_version: main
       ci_tools_version: main
-      extension_name: adbc
+      extension_name: adbc_scanner
       exclude_archs: wasm_mvp;wasm_eh;wasm_threads;

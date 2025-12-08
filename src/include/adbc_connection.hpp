@@ -194,6 +194,15 @@ public:
         CheckAdbc(status, error.Get(), "Failed to execute query");
     }
 
+    // Cancel any in-progress query (best effort - ignores errors)
+    void Cancel() {
+        if (initialized) {
+            AdbcErrorGuard error;
+            AdbcStatementCancel(&statement, error.Get());
+            // Ignore errors - cancel is best effort
+        }
+    }
+
     void Release() {
         if (initialized) {
             AdbcErrorGuard error;

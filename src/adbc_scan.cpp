@@ -5,6 +5,8 @@
 #include "duckdb/common/arrow/arrow_converter.hpp"
 #include "duckdb/function/table/arrow.hpp"
 #include "duckdb/function/table/arrow/arrow_duck_schema.hpp"
+#include "duckdb/storage/statistics/node_statistics.hpp"
+#include "duckdb/common/insertion_order_preserving_map.hpp"
 
 namespace duckdb {
 namespace adbc {
@@ -17,16 +19,16 @@ struct AdbcScanBindData : public TableFunctionData {
     string query;
     // Connection wrapper (kept alive during scan)
     shared_ptr<AdbcConnectionWrapper> connection;
-    // Prepared statement (kept for execution in InitGlobal)
-    shared_ptr<AdbcStatementWrapper> statement;
     // Arrow schema from the result
     ArrowSchemaWrapper schema_root;
     // Arrow table schema for type conversion
     ArrowTableSchema arrow_table;
 };
 
-// Global state for adbc_scan - holds the Arrow stream
+// Global state for adbc_scan - holds the Arrow stream and statement
 struct AdbcScanGlobalState : public GlobalTableFunctionState {
+    // The prepared statement (owned by global state for proper lifecycle)
+    shared_ptr<AdbcStatementWrapper> statement;
     // The Arrow array stream from ADBC
     ArrowArrayStream stream;
     // Whether the stream is initialized
@@ -37,6 +39,11 @@ struct AdbcScanGlobalState : public GlobalTableFunctionState {
     mutex main_mutex;
     // Current batch index
     idx_t batch_index = 0;
+    // Total rows read so far (for progress reporting)
+    atomic<idx_t> total_rows_read{0};
+    // Row count from ExecuteQuery (if provided by driver)
+    int64_t rows_affected = -1;
+    bool has_rows_affected = false;
 
     ~AdbcScanGlobalState() {
         if (stream_initialized && stream.release) {
@@ -54,6 +61,18 @@ struct AdbcScanLocalState : public ArrowScanLocalState {
     explicit AdbcScanLocalState(unique_ptr<ArrowArrayWrapper> current_chunk, ClientContext &ctx)
         : ArrowScanLocalState(std::move(current_chunk), ctx) {}
 };
+
+// Helper to format error messages with query context
+static string FormatError(const string &message, const string &query) {
+    string result = message;
+    // Truncate query if too long for error message
+    if (query.length() > 100) {
+        result += " [Query: " + query.substr(0, 100) + "...]";
+    } else {
+        result += " [Query: " + query + "]";
+    }
+    return result;
+}
 
 // Bind function - validates inputs and gets schema
 static unique_ptr<FunctionData> AdbcScanBind(ClientContext &context, TableFunctionBindInput &input,
@@ -73,26 +92,46 @@ static unique_ptr<FunctionData> AdbcScanBind(ClientContext &context, TableFuncti
         throw InvalidInputException("adbc_scan: Invalid connection handle: " + to_string(bind_data->connection_id));
     }
 
+    // Validate connection is still active
+    if (!bind_data->connection->IsInitialized()) {
+        throw InvalidInputException(FormatError("adbc_scan: Connection has been closed", bind_data->query));
+    }
+
     // Create and prepare statement
-    bind_data->statement = make_shared_ptr<AdbcStatementWrapper>(bind_data->connection);
-    bind_data->statement->Init();
-    bind_data->statement->SetSqlQuery(bind_data->query);
-    bind_data->statement->Prepare();
+    auto statement = make_shared_ptr<AdbcStatementWrapper>(bind_data->connection);
+    statement->Init();
+    statement->SetSqlQuery(bind_data->query);
+
+    try {
+        statement->Prepare();
+    } catch (Exception &e) {
+        throw InvalidInputException(FormatError("adbc_scan: Failed to prepare statement: " + string(e.what()), bind_data->query));
+    }
 
     // Try to get schema without executing using ExecuteSchema (ADBC 1.1.0+)
-    bool got_schema = bind_data->statement->ExecuteSchema(&bind_data->schema_root.arrow_schema);
+    bool got_schema = false;
+    try {
+        got_schema = statement->ExecuteSchema(&bind_data->schema_root.arrow_schema);
+    } catch (Exception &e) {
+        // ExecuteSchema failed, will fall back to execute
+        got_schema = false;
+    }
 
     if (!got_schema) {
         // Fallback: driver doesn't support ExecuteSchema, need to execute to get schema
-        // Execute and get schema from the stream, then we'll need to re-prepare for actual scan
         ArrowArrayStream stream;
         memset(&stream, 0, sizeof(stream));
-        bind_data->statement->ExecuteQuery(&stream, nullptr);
+
+        try {
+            statement->ExecuteQuery(&stream, nullptr);
+        } catch (Exception &e) {
+            throw IOException(FormatError("adbc_scan: Failed to execute query: " + string(e.what()), bind_data->query));
+        }
 
         int ret = stream.get_schema(&stream, &bind_data->schema_root.arrow_schema);
         if (ret != 0) {
             const char *error_msg = stream.get_last_error(&stream);
-            string msg = "Failed to get schema from ADBC stream";
+            string msg = "adbc_scan: Failed to get schema from stream";
             if (error_msg) {
                 msg += ": ";
                 msg += error_msg;
@@ -100,7 +139,7 @@ static unique_ptr<FunctionData> AdbcScanBind(ClientContext &context, TableFuncti
             if (stream.release) {
                 stream.release(&stream);
             }
-            throw IOException(msg);
+            throw IOException(FormatError(msg, bind_data->query));
         }
 
         // Release the stream and re-prepare for actual execution
@@ -109,11 +148,14 @@ static unique_ptr<FunctionData> AdbcScanBind(ClientContext &context, TableFuncti
         }
 
         // Re-create statement for the actual execution
-        bind_data->statement = make_shared_ptr<AdbcStatementWrapper>(bind_data->connection);
-        bind_data->statement->Init();
-        bind_data->statement->SetSqlQuery(bind_data->query);
-        bind_data->statement->Prepare();
+        statement = make_shared_ptr<AdbcStatementWrapper>(bind_data->connection);
+        statement->Init();
+        statement->SetSqlQuery(bind_data->query);
+        statement->Prepare();
     }
+
+    // Note: statement is not stored in bind_data - it will be recreated in InitGlobal
+    // This is because bind_data may be reused across multiple scans
 
     // Convert Arrow schema to DuckDB types
     ArrowTableFunction::PopulateArrowTableSchema(DBConfig::GetConfig(context), bind_data->arrow_table,
@@ -132,15 +174,37 @@ static unique_ptr<FunctionData> AdbcScanBind(ClientContext &context, TableFuncti
     return std::move(bind_data);
 }
 
-// Global init - execute the prepared statement
+// Global init - create and execute the prepared statement
 static unique_ptr<GlobalTableFunctionState> AdbcScanInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
-    auto &bind_data = input.bind_data->CastNoConst<AdbcScanBindData>();
+    auto &bind_data = input.bind_data->Cast<AdbcScanBindData>();
     auto global_state = make_uniq<AdbcScanGlobalState>();
 
-    // Execute the already-prepared statement
+    // Validate connection is still active
+    if (!bind_data.connection->IsInitialized()) {
+        throw InvalidInputException(FormatError("adbc_scan: Connection has been closed", bind_data.query));
+    }
+
+    // Create fresh statement for this scan (allows multiple scans of same bind_data)
+    global_state->statement = make_shared_ptr<AdbcStatementWrapper>(bind_data.connection);
+    global_state->statement->Init();
+    global_state->statement->SetSqlQuery(bind_data.query);
+    global_state->statement->Prepare();
+
+    // Execute the statement and capture row count if available
     memset(&global_state->stream, 0, sizeof(global_state->stream));
-    bind_data.statement->ExecuteQuery(&global_state->stream, nullptr);
+    int64_t rows_affected = -1;
+    try {
+        global_state->statement->ExecuteQuery(&global_state->stream, &rows_affected);
+    } catch (Exception &e) {
+        throw IOException(FormatError("adbc_scan: Failed to execute query: " + string(e.what()), bind_data.query));
+    }
     global_state->stream_initialized = true;
+
+    // Store row count for progress reporting (if driver provided it)
+    if (rows_affected >= 0) {
+        global_state->rows_affected = rows_affected;
+        global_state->has_rows_affected = true;
+    }
 
     return std::move(global_state);
 }
@@ -155,7 +219,7 @@ static unique_ptr<LocalTableFunctionState> AdbcScanInitLocal(ExecutionContext &c
 }
 
 // Get the next batch from the Arrow stream
-static bool GetNextBatch(AdbcScanGlobalState &global_state, AdbcScanLocalState &local_state) {
+static bool GetNextBatch(AdbcScanGlobalState &global_state, AdbcScanLocalState &local_state, const string &query) {
     lock_guard<mutex> lock(global_state.main_mutex);
 
     if (global_state.done) {
@@ -167,18 +231,21 @@ static bool GetNextBatch(AdbcScanGlobalState &global_state, AdbcScanLocalState &
     int ret = global_state.stream.get_next(&global_state.stream, &chunk->arrow_array);
     if (ret != 0) {
         const char *error_msg = global_state.stream.get_last_error(&global_state.stream);
-        string msg = "Failed to get next batch from ADBC stream";
+        string msg = "adbc_scan: Failed to get next batch from stream";
         if (error_msg) {
             msg += ": ";
             msg += error_msg;
         }
-        throw IOException(msg);
+        throw IOException(FormatError(msg, query));
     }
 
     if (!chunk->arrow_array.release) {
         global_state.done = true;
         return false;
     }
+
+    // Track rows for progress reporting
+    global_state.total_rows_read += chunk->arrow_array.length;
 
     local_state.chunk = shared_ptr<ArrowArrayWrapper>(chunk.release());
     local_state.chunk_offset = 0;
@@ -197,7 +264,7 @@ static void AdbcScanFunction(ClientContext &context, TableFunctionInput &data, D
     // Get a batch if we don't have one or we've exhausted the current one
     while (!local_state.chunk || !local_state.chunk->arrow_array.release ||
            local_state.chunk_offset >= (idx_t)local_state.chunk->arrow_array.length) {
-        if (!GetNextBatch(global_state, local_state)) {
+        if (!GetNextBatch(global_state, local_state, bind_data.query)) {
             output.SetCardinality(0);
             return;
         }
@@ -222,6 +289,52 @@ static void AdbcScanFunction(ClientContext &context, TableFunctionInput &data, D
     output.Verify();
 }
 
+// Progress reporting callback
+static double AdbcScanProgress(ClientContext &context, const FunctionData *bind_data_p,
+                                const GlobalTableFunctionState *global_state_p) {
+    auto &global_state = global_state_p->Cast<AdbcScanGlobalState>();
+
+    if (global_state.done) {
+        return 100.0;
+    }
+
+    // If driver provided row count, use it for progress
+    if (global_state.has_rows_affected && global_state.rows_affected > 0) {
+        idx_t rows_read = global_state.total_rows_read.load();
+        double progress = (static_cast<double>(rows_read) / static_cast<double>(global_state.rows_affected)) * 100.0;
+        return MinValue(progress, 99.9); // Cap at 99.9% until done
+    }
+
+    // No estimate available - return -1 to indicate unknown progress
+    return -1.0;
+}
+
+// Cardinality estimation callback
+// Note: ADBC doesn't provide row count until execution, so we can't estimate cardinality at plan time
+static unique_ptr<NodeStatistics> AdbcScanCardinality(ClientContext &context, const FunctionData *bind_data_p) {
+    // No cardinality information available at bind time
+    // (rows_affected is only available after ExecuteQuery in global init)
+    return make_uniq<NodeStatistics>();
+}
+
+// ToString callback for EXPLAIN output
+static InsertionOrderPreservingMap<string> AdbcScanToString(TableFunctionToStringInput &input) {
+    InsertionOrderPreservingMap<string> result;
+    auto &bind_data = input.bind_data->Cast<AdbcScanBindData>();
+
+    // Show the SQL query being executed
+    if (bind_data.query.length() > 80) {
+        result["Query"] = bind_data.query.substr(0, 80) + "...";
+    } else {
+        result["Query"] = bind_data.query;
+    }
+
+    // Show connection ID for debugging
+    result["Connection"] = to_string(bind_data.connection_id);
+
+    return result;
+}
+
 // Register the adbc_scan table function
 void RegisterAdbcTableFunctions(DatabaseInstance &db) {
     ExtensionLoader loader(db, "adbc");
@@ -231,6 +344,11 @@ void RegisterAdbcTableFunctions(DatabaseInstance &db) {
 
     // Disable projection pushdown - we always return all columns from the ADBC query
     adbc_scan_function.projection_pushdown = false;
+
+    // Add progress, cardinality, and to_string callbacks
+    adbc_scan_function.table_scan_progress = AdbcScanProgress;
+    adbc_scan_function.cardinality = AdbcScanCardinality;
+    adbc_scan_function.to_string = AdbcScanToString;
 
     loader.RegisterFunction(adbc_scan_function);
 }

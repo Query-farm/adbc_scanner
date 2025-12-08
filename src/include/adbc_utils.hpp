@@ -15,12 +15,21 @@ inline const char *StatusCodeToString(AdbcStatusCode code) {
 }
 
 // Check ADBC status and throw DuckDB exception on error
-inline void CheckAdbc(AdbcStatusCode status, AdbcError *error, const string &context) {
+// Optional driver_name parameter to include in error messages for better debugging
+inline void CheckAdbc(AdbcStatusCode status, AdbcError *error, const string &context,
+                      const string &driver_name = "") {
     if (status == ADBC_STATUS_OK) {
         return;
     }
 
-    string message = context + ": ";
+    string message;
+
+    // Include driver name if provided
+    if (!driver_name.empty()) {
+        message = "[" + driver_name + "] ";
+    }
+
+    message += context + ": ";
     if (error && error->message) {
         message += error->message;
         // Add SQLSTATE if available
@@ -55,6 +64,50 @@ inline void CheckAdbc(AdbcStatusCode status, AdbcError *error, const string &con
     default:
         throw IOException(message);
     }
+}
+
+// Extract a short driver name from a full path
+// e.g., "/path/to/libadbc_driver_sqlite.dylib" -> "sqlite"
+inline string ExtractDriverName(const string &driver_path) {
+    // Find the last path separator
+    size_t last_sep = driver_path.find_last_of("/\\");
+    string filename = (last_sep != string::npos) ? driver_path.substr(last_sep + 1) : driver_path;
+
+    // Try to extract driver name from common patterns
+    // Pattern: libadbc_driver_<name>.so/dylib/dll
+    size_t driver_pos = filename.find("adbc_driver_");
+    if (driver_pos != string::npos) {
+        size_t name_start = driver_pos + 12;  // length of "adbc_driver_"
+        size_t name_end = filename.find_first_of(".", name_start);
+        if (name_end != string::npos) {
+            return filename.substr(name_start, name_end - name_start);
+        }
+        return filename.substr(name_start);
+    }
+
+    // Pattern: <name>_driver.so/dylib/dll
+    driver_pos = filename.find("_driver");
+    if (driver_pos != string::npos) {
+        // Remove lib prefix if present
+        size_t name_start = 0;
+        if (filename.substr(0, 3) == "lib") {
+            name_start = 3;
+        }
+        return filename.substr(name_start, driver_pos - name_start);
+    }
+
+    // Fallback: use filename without extension
+    size_t dot_pos = filename.find('.');
+    if (dot_pos != string::npos) {
+        string name = filename.substr(0, dot_pos);
+        // Remove lib prefix if present
+        if (name.substr(0, 3) == "lib") {
+            name = name.substr(3);
+        }
+        return name;
+    }
+
+    return filename;
 }
 
 // RAII wrapper for AdbcError - ensures proper cleanup

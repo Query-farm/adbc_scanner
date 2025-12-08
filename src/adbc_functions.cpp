@@ -70,6 +70,9 @@ static int64_t CreateConnection(const vector<pair<string, string>> &options) {
     // Set driver (required)
     database->SetOption("driver", driver);
 
+    // Store driver name for error messages
+    database->SetDriverName(driver);
+
     // Set entrypoint if provided
     if (!entrypoint.empty()) {
         database->SetOption("entrypoint", entrypoint);

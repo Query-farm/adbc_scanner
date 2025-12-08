@@ -21,6 +21,15 @@ public:
         memset(&database, 0, sizeof(database));
     }
 
+    // Set driver name for error messages (call before Initialize)
+    void SetDriverName(const string &driver_path) {
+        driver_name = ExtractDriverName(driver_path);
+    }
+
+    const string &GetDriverName() const {
+        return driver_name;
+    }
+
     ~AdbcDatabaseWrapper() {
         Release();
     }
@@ -37,13 +46,13 @@ public:
     void SetOption(const string &key, const string &value) {
         AdbcErrorGuard error;
         auto status = AdbcDatabaseSetOption(&database, key.c_str(), value.c_str(), error.Get());
-        CheckAdbc(status, error.Get(), "Failed to set database option '" + key + "'");
+        CheckAdbc(status, error.Get(), "Failed to set database option '" + key + "'", driver_name);
     }
 
     void Initialize() {
         AdbcErrorGuard error;
         auto status = AdbcDatabaseInit(&database, error.Get());
-        CheckAdbc(status, error.Get(), "Failed to initialize ADBC database");
+        CheckAdbc(status, error.Get(), "Failed to initialize ADBC database", driver_name);
         initialized = true;
     }
 
@@ -77,6 +86,7 @@ public:
 private:
     AdbcDatabase database;
     bool initialized;
+    string driver_name;
 };
 
 // RAII wrapper for AdbcConnection
@@ -93,19 +103,19 @@ public:
     void Init() {
         AdbcErrorGuard error;
         auto status = AdbcConnectionNew(&connection, error.Get());
-        CheckAdbc(status, error.Get(), "Failed to create ADBC connection");
+        CheckAdbc(status, error.Get(), "Failed to create ADBC connection", GetDriverName());
     }
 
     void SetOption(const string &key, const string &value) {
         AdbcErrorGuard error;
         auto status = AdbcConnectionSetOption(&connection, key.c_str(), value.c_str(), error.Get());
-        CheckAdbc(status, error.Get(), "Failed to set connection option '" + key + "'");
+        CheckAdbc(status, error.Get(), "Failed to set connection option '" + key + "'", GetDriverName());
     }
 
     void Initialize() {
         AdbcErrorGuard error;
         auto status = AdbcConnectionInit(&connection, database->Get(), error.Get());
-        CheckAdbc(status, error.Get(), "Failed to initialize ADBC connection");
+        CheckAdbc(status, error.Get(), "Failed to initialize ADBC connection", GetDriverName());
         initialized = true;
     }
 
@@ -129,12 +139,16 @@ public:
         return database;
     }
 
+    const string &GetDriverName() const {
+        return database->GetDriverName();
+    }
+
     // Get connection info (vendor name, driver version, etc.)
     // info_codes can be NULL to get all info, or an array of specific codes
     void GetInfo(const uint32_t *info_codes, size_t info_codes_length, ArrowArrayStream *out) {
         AdbcErrorGuard error;
         auto status = AdbcConnectionGetInfo(&connection, info_codes, info_codes_length, out, error.Get());
-        CheckAdbc(status, error.Get(), "Failed to get connection info");
+        CheckAdbc(status, error.Get(), "Failed to get connection info", GetDriverName());
     }
 
     // Get database objects (catalogs, schemas, tables, columns)
@@ -146,14 +160,14 @@ public:
         AdbcErrorGuard error;
         auto status = AdbcConnectionGetObjects(&connection, depth, catalog, db_schema,
                                                 table_name, table_types, column_name, out, error.Get());
-        CheckAdbc(status, error.Get(), "Failed to get database objects");
+        CheckAdbc(status, error.Get(), "Failed to get database objects", GetDriverName());
     }
 
     // Get table types (e.g., "TABLE", "VIEW", etc.)
     void GetTableTypes(ArrowArrayStream *out) {
         AdbcErrorGuard error;
         auto status = AdbcConnectionGetTableTypes(&connection, out, error.Get());
-        CheckAdbc(status, error.Get(), "Failed to get table types");
+        CheckAdbc(status, error.Get(), "Failed to get table types", GetDriverName());
     }
 
     // Get the Arrow schema for a specific table
@@ -162,7 +176,7 @@ public:
         AdbcErrorGuard error;
         auto status = AdbcConnectionGetTableSchema(&connection, catalog, db_schema,
                                                     table_name, schema, error.Get());
-        CheckAdbc(status, error.Get(), "Failed to get table schema");
+        CheckAdbc(status, error.Get(), "Failed to get table schema", GetDriverName());
     }
 
     // Non-copyable
@@ -189,26 +203,26 @@ public:
     void Init() {
         AdbcErrorGuard error;
         auto status = AdbcStatementNew(connection->Get(), &statement, error.Get());
-        CheckAdbc(status, error.Get(), "Failed to create ADBC statement");
+        CheckAdbc(status, error.Get(), "Failed to create ADBC statement", GetDriverName());
         initialized = true;
     }
 
     void SetSqlQuery(const string &query) {
         AdbcErrorGuard error;
         auto status = AdbcStatementSetSqlQuery(&statement, query.c_str(), error.Get());
-        CheckAdbc(status, error.Get(), "Failed to set SQL query");
+        CheckAdbc(status, error.Get(), "Failed to set SQL query", GetDriverName());
     }
 
     void SetOption(const string &key, const string &value) {
         AdbcErrorGuard error;
         auto status = AdbcStatementSetOption(&statement, key.c_str(), value.c_str(), error.Get());
-        CheckAdbc(status, error.Get(), "Failed to set statement option '" + key + "'");
+        CheckAdbc(status, error.Get(), "Failed to set statement option '" + key + "'", GetDriverName());
     }
 
     void Prepare() {
         AdbcErrorGuard error;
         auto status = AdbcStatementPrepare(&statement, error.Get());
-        CheckAdbc(status, error.Get(), "Failed to prepare statement");
+        CheckAdbc(status, error.Get(), "Failed to prepare statement", GetDriverName());
     }
 
     // Bind parameters to the statement (Arrow format)
@@ -216,7 +230,7 @@ public:
     void Bind(ArrowArray *values, ArrowSchema *schema) {
         AdbcErrorGuard error;
         auto status = AdbcStatementBind(&statement, values, schema, error.Get());
-        CheckAdbc(status, error.Get(), "Failed to bind parameters");
+        CheckAdbc(status, error.Get(), "Failed to bind parameters", GetDriverName());
     }
 
     // Bind an Arrow stream for bulk ingestion
@@ -224,7 +238,7 @@ public:
     void BindStream(ArrowArrayStream *stream) {
         AdbcErrorGuard error;
         auto status = AdbcStatementBindStream(&statement, stream, error.Get());
-        CheckAdbc(status, error.Get(), "Failed to bind stream");
+        CheckAdbc(status, error.Get(), "Failed to bind stream", GetDriverName());
     }
 
     // Get the result schema without executing the query (requires Prepare first)
@@ -235,7 +249,7 @@ public:
         if (status == ADBC_STATUS_NOT_IMPLEMENTED) {
             return false;
         }
-        CheckAdbc(status, error.Get(), "Failed to get result schema");
+        CheckAdbc(status, error.Get(), "Failed to get result schema", GetDriverName());
         return true;
     }
 
@@ -243,14 +257,14 @@ public:
     void ExecuteQuery(ArrowArrayStream *out, int64_t *rows_affected = nullptr) {
         AdbcErrorGuard error;
         auto status = AdbcStatementExecuteQuery(&statement, out, rows_affected, error.Get());
-        CheckAdbc(status, error.Get(), "Failed to execute query");
+        CheckAdbc(status, error.Get(), "Failed to execute query", GetDriverName());
     }
 
     // Execute without expecting a result set (for bulk ingestion)
     void ExecuteUpdate(int64_t *rows_affected = nullptr) {
         AdbcErrorGuard error;
         auto status = AdbcStatementExecuteQuery(&statement, nullptr, rows_affected, error.Get());
-        CheckAdbc(status, error.Get(), "Failed to execute update");
+        CheckAdbc(status, error.Get(), "Failed to execute update", GetDriverName());
     }
 
     // Cancel any in-progress query (best effort - ignores errors)
@@ -276,6 +290,10 @@ public:
 
     shared_ptr<AdbcConnectionWrapper> GetConnection() {
         return connection;
+    }
+
+    const string &GetDriverName() const {
+        return connection->GetDriverName();
     }
 
     // Non-copyable

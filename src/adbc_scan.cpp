@@ -17,12 +17,10 @@ struct AdbcScanBindData : public TableFunctionData {
     string query;
     // Connection wrapper (kept alive during scan)
     shared_ptr<AdbcConnectionWrapper> connection;
+    // Prepared statement (kept for execution in InitGlobal)
+    shared_ptr<AdbcStatementWrapper> statement;
     // Arrow schema from the result
     ArrowSchemaWrapper schema_root;
-    // DuckDB types derived from Arrow schema
-    vector<LogicalType> types;
-    // Column names
-    vector<string> names;
     // Arrow table schema for type conversion
     ArrowTableSchema arrow_table;
 };
@@ -39,8 +37,6 @@ struct AdbcScanGlobalState : public GlobalTableFunctionState {
     mutex main_mutex;
     // Current batch index
     idx_t batch_index = 0;
-    // Statement wrapper (kept alive during scan)
-    shared_ptr<AdbcStatementWrapper> statement;
 
     ~AdbcScanGlobalState() {
         if (stream_initialized && stream.release) {
@@ -77,36 +73,46 @@ static unique_ptr<FunctionData> AdbcScanBind(ClientContext &context, TableFuncti
         throw InvalidInputException("adbc_scan: Invalid connection handle: " + to_string(bind_data->connection_id));
     }
 
-    // Create statement and set query
-    auto statement = make_shared_ptr<AdbcStatementWrapper>(bind_data->connection);
-    statement->Init();
-    statement->SetSqlQuery(bind_data->query);
+    // Create and prepare statement
+    bind_data->statement = make_shared_ptr<AdbcStatementWrapper>(bind_data->connection);
+    bind_data->statement->Init();
+    bind_data->statement->SetSqlQuery(bind_data->query);
+    bind_data->statement->Prepare();
 
-    // Execute query to get the stream
-    ArrowArrayStream stream;
-    memset(&stream, 0, sizeof(stream));
-    int64_t rows_affected = -1;
+    // Try to get schema without executing using ExecuteSchema (ADBC 1.1.0+)
+    bool got_schema = bind_data->statement->ExecuteSchema(&bind_data->schema_root.arrow_schema);
 
-    statement->ExecuteQuery(&stream, &rows_affected);
+    if (!got_schema) {
+        // Fallback: driver doesn't support ExecuteSchema, need to execute to get schema
+        // Execute and get schema from the stream, then we'll need to re-prepare for actual scan
+        ArrowArrayStream stream;
+        memset(&stream, 0, sizeof(stream));
+        bind_data->statement->ExecuteQuery(&stream, nullptr);
 
-    // Get schema from stream
-    int ret = stream.get_schema(&stream, &bind_data->schema_root.arrow_schema);
-    if (ret != 0) {
-        const char *error_msg = stream.get_last_error(&stream);
-        string msg = "Failed to get schema from ADBC stream";
-        if (error_msg) {
-            msg += ": ";
-            msg += error_msg;
+        int ret = stream.get_schema(&stream, &bind_data->schema_root.arrow_schema);
+        if (ret != 0) {
+            const char *error_msg = stream.get_last_error(&stream);
+            string msg = "Failed to get schema from ADBC stream";
+            if (error_msg) {
+                msg += ": ";
+                msg += error_msg;
+            }
+            if (stream.release) {
+                stream.release(&stream);
+            }
+            throw IOException(msg);
         }
+
+        // Release the stream and re-prepare for actual execution
         if (stream.release) {
             stream.release(&stream);
         }
-        throw IOException(msg);
-    }
 
-    // Release the stream - we'll create a new one during scan
-    if (stream.release) {
-        stream.release(&stream);
+        // Re-create statement for the actual execution
+        bind_data->statement = make_shared_ptr<AdbcStatementWrapper>(bind_data->connection);
+        bind_data->statement->Init();
+        bind_data->statement->SetSqlQuery(bind_data->query);
+        bind_data->statement->Prepare();
     }
 
     // Convert Arrow schema to DuckDB types
@@ -123,24 +129,17 @@ static unique_ptr<FunctionData> AdbcScanBind(ClientContext &context, TableFuncti
         return_types.push_back(arrow_type->GetDuckType());
     }
 
-    bind_data->types = return_types;
-    bind_data->names = names;
-
     return std::move(bind_data);
 }
 
-// Global init - create the Arrow stream for scanning
+// Global init - execute the prepared statement
 static unique_ptr<GlobalTableFunctionState> AdbcScanInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
-    auto &bind_data = input.bind_data->Cast<AdbcScanBindData>();
+    auto &bind_data = input.bind_data->CastNoConst<AdbcScanBindData>();
     auto global_state = make_uniq<AdbcScanGlobalState>();
 
-    // Re-execute the query to get a fresh stream for scanning
-    global_state->statement = make_shared_ptr<AdbcStatementWrapper>(bind_data.connection);
-    global_state->statement->Init();
-    global_state->statement->SetSqlQuery(bind_data.query);
-
+    // Execute the already-prepared statement
     memset(&global_state->stream, 0, sizeof(global_state->stream));
-    global_state->statement->ExecuteQuery(&global_state->stream, nullptr);
+    bind_data.statement->ExecuteQuery(&global_state->stream, nullptr);
     global_state->stream_initialized = true;
 
     return std::move(global_state);

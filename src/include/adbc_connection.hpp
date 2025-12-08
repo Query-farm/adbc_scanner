@@ -175,6 +175,18 @@ public:
         CheckAdbc(status, error.Get(), "Failed to prepare statement");
     }
 
+    // Get the result schema without executing the query (requires Prepare first)
+    // Returns true if successful, false if not supported by driver
+    bool ExecuteSchema(ArrowSchema *schema) {
+        AdbcErrorGuard error;
+        auto status = AdbcStatementExecuteSchema(&statement, schema, error.Get());
+        if (status == ADBC_STATUS_NOT_IMPLEMENTED) {
+            return false;
+        }
+        CheckAdbc(status, error.Get(), "Failed to get result schema");
+        return true;
+    }
+
     // Execute and return the ArrowArrayStream - caller takes ownership
     void ExecuteQuery(ArrowArrayStream *out, int64_t *rows_affected = nullptr) {
         AdbcErrorGuard error;

@@ -6,6 +6,7 @@
 #include "duckdb/function/table/arrow.hpp"
 #include "duckdb/function/table/arrow/arrow_duck_schema.hpp"
 #include "duckdb/common/insertion_order_preserving_map.hpp"
+#include <nanoarrow/nanoarrow.h>
 
 namespace duckdb {
 namespace adbc {

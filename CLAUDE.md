@@ -54,10 +54,10 @@ SELECT adbc_disconnect(getvariable('conn')::BIGINT);
 
 ```bash
 # Build the extension (release)
-make
+VCPKG_TOOLCHAIN_PATH=`pwd`/vcpkg/scripts/buildsystems/vcpkg.cmake GEN=ninja make release
 
 # Build debug version
-make debug
+VCPKG_TOOLCHAIN_PATH=`pwd`/vcpkg/scripts/buildsystems/vcpkg.cmake GEN=ninja make debug
 
 # Faster builds with ninja and ccache (recommended)
 GEN=ninja make

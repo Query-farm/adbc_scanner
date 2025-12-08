@@ -1,6 +1,7 @@
 {
         "dependencies": [
                 "tomlplusplus",
+                "nanoarrow",
                 {
                         "name": "arrow-adbc",
                         "features": []

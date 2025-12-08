@@ -9,6 +9,7 @@
 #include "duckdb/storage/statistics/node_statistics.hpp"
 #include "duckdb/common/insertion_order_preserving_map.hpp"
 #include "duckdb/main/client_context.hpp"
+#include <nanoarrow/nanoarrow.h>
 
 namespace duckdb {
 namespace adbc {

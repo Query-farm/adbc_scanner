@@ -317,6 +317,45 @@ Output:
 └──────────────┴─────────────┴────────────┴─────────────┴──────────────────┴─────────┴───────────┴─────────────┘
 ```
 
+### adbc_schema
+
+Returns the Arrow schema for a specific table, showing field names, Arrow data types, and nullability.
+
+```sql
+adbc_schema(connection_id, table_name, [catalog:=], [schema:=]) -> TABLE
+```
+
+**Parameters:**
+- `connection_id`: Connection handle from `adbc_connect`
+- `table_name`: Name of the table to get the schema for
+- `catalog` (optional): Catalog containing the table
+- `schema` (optional): Database schema containing the table
+
+**Returns:** A table with columns:
+- `field_name`: Name of the field/column
+- `field_type`: Arrow data type (e.g., "int64", "utf8", "float64", "timestamp[us]")
+- `nullable`: Whether the field allows NULL values
+
+**Example:**
+
+```sql
+SELECT * FROM adbc_schema(getvariable('conn')::BIGINT, 'users');
+```
+
+Output:
+```
+┌────────────┬────────────┬──────────┐
+│ field_name │ field_type │ nullable │
+├────────────┼────────────┼──────────┤
+│ id         │ int64      │ true     │
+│ name       │ utf8       │ true     │
+│ email      │ utf8       │ true     │
+│ created_at │ timestamp  │ true     │
+└────────────┴────────────┴──────────┘
+```
+
+**Note:** The `field_type` shows Arrow types, which may differ from the SQL types defined in the table. The mapping depends on the ADBC driver implementation.
+
 ## ADBC Drivers
 
 ADBC drivers are available for many databases. Here are some common ones:

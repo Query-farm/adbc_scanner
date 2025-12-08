@@ -27,6 +27,7 @@ The extension provides the following functions:
 - `adbc_tables(handle)` - Returns list of tables in the database.
 - `adbc_table_types(handle)` - Returns supported table types (e.g., "table", "view").
 - `adbc_columns(handle, [table_name := ...])` - Returns column metadata (name, type, ordinal position, nullability).
+- `adbc_schema(handle, table_name)` - Returns the Arrow schema for a specific table (field names, Arrow types, nullability).
 
 ### Example Usage
 
@@ -49,6 +50,7 @@ SELECT * FROM adbc_info(getvariable('conn')::BIGINT);
 SELECT * FROM adbc_tables(getvariable('conn')::BIGINT);
 SELECT * FROM adbc_table_types(getvariable('conn')::BIGINT);
 SELECT * FROM adbc_columns(getvariable('conn')::BIGINT, table_name := 'test');
+SELECT * FROM adbc_schema(getvariable('conn')::BIGINT, 'test');
 
 -- Disconnect
 SELECT adbc_disconnect(getvariable('conn')::BIGINT);

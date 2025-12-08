@@ -156,6 +156,15 @@ public:
         CheckAdbc(status, error.Get(), "Failed to get table types");
     }
 
+    // Get the Arrow schema for a specific table
+    void GetTableSchema(const char *catalog, const char *db_schema,
+                        const char *table_name, ArrowSchema *schema) {
+        AdbcErrorGuard error;
+        auto status = AdbcConnectionGetTableSchema(&connection, catalog, db_schema,
+                                                    table_name, schema, error.Get());
+        CheckAdbc(status, error.Get(), "Failed to get table schema");
+    }
+
     // Non-copyable
     AdbcConnectionWrapper(const AdbcConnectionWrapper &) = delete;
     AdbcConnectionWrapper &operator=(const AdbcConnectionWrapper &) = delete;

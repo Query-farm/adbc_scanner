@@ -946,6 +946,285 @@ static void AdbcColumnsFunction(ClientContext &context, TableFunctionInput &data
 }
 
 //===--------------------------------------------------------------------===//
+// adbc_schema - Get Arrow schema for a specific table
+//===--------------------------------------------------------------------===//
+
+// Structure to hold a schema field row
+struct SchemaFieldRow {
+    string field_name;
+    string field_type;
+    bool nullable;
+};
+
+struct AdbcSchemaBindData : public TableFunctionData {
+    int64_t connection_id;
+    shared_ptr<AdbcConnectionWrapper> connection;
+    string table_name;
+    string catalog_filter;
+    string schema_filter;
+    bool has_catalog_filter = false;
+    bool has_schema_filter = false;
+};
+
+struct AdbcSchemaGlobalState : public GlobalTableFunctionState {
+    // Extracted schema fields
+    vector<SchemaFieldRow> field_rows;
+    idx_t current_row = 0;
+
+    idx_t MaxThreads() const override {
+        return 1;
+    }
+};
+
+// Helper to convert Arrow format string to human-readable type name
+static string ArrowFormatToTypeName(const char *format) {
+    if (!format) return "unknown";
+
+    // Handle basic types - see Arrow C Data Interface spec
+    switch (format[0]) {
+        case 'n': return "null";
+        case 'b': return "boolean";
+        case 'c': return "int8";
+        case 'C': return "uint8";
+        case 's': return "int16";
+        case 'S': return "uint16";
+        case 'i': return "int32";
+        case 'I': return "uint32";
+        case 'l': return "int64";
+        case 'L': return "uint64";
+        case 'e': return "float16";
+        case 'f': return "float32";
+        case 'g': return "float64";
+        case 'z': return "binary";
+        case 'Z': return "large_binary";
+        case 'u': return "utf8";
+        case 'U': return "large_utf8";
+        case 'd': {
+            // Decimal: d:precision,scale or d:precision,scale,bitwidth
+            return "decimal" + string(format + 1);
+        }
+        case 'w': {
+            // Fixed-width binary: w:bytewidth
+            return "fixed_binary" + string(format + 1);
+        }
+        case 't': {
+            // Temporal types
+            if (strlen(format) < 2) return "temporal";
+            switch (format[1]) {
+                case 'd': {
+                    // Date: tdD (days) or tdm (milliseconds)
+                    if (strlen(format) >= 3 && format[2] == 'D') return "date32";
+                    if (strlen(format) >= 3 && format[2] == 'm') return "date64";
+                    return "date";
+                }
+                case 't': {
+                    // Time: tt[smun] (seconds/millis/micros/nanos)
+                    if (strlen(format) >= 3) {
+                        switch (format[2]) {
+                            case 's': return "time32[s]";
+                            case 'm': return "time32[ms]";
+                            case 'u': return "time64[us]";
+                            case 'n': return "time64[ns]";
+                        }
+                    }
+                    return "time";
+                }
+                case 's': {
+                    // Timestamp: ts[smun]:timezone
+                    string result = "timestamp";
+                    if (strlen(format) >= 3) {
+                        switch (format[2]) {
+                            case 's': result += "[s]"; break;
+                            case 'm': result += "[ms]"; break;
+                            case 'u': result += "[us]"; break;
+                            case 'n': result += "[ns]"; break;
+                        }
+                    }
+                    // Include timezone if present
+                    const char *tz = strchr(format, ':');
+                    if (tz && strlen(tz) > 1) {
+                        result += " tz=" + string(tz + 1);
+                    }
+                    return result;
+                }
+                case 'D': {
+                    // Duration: tD[smun]
+                    if (strlen(format) >= 3) {
+                        switch (format[2]) {
+                            case 's': return "duration[s]";
+                            case 'm': return "duration[ms]";
+                            case 'u': return "duration[us]";
+                            case 'n': return "duration[ns]";
+                        }
+                    }
+                    return "duration";
+                }
+                case 'i': {
+                    // Interval: tiM (months), tiD (days/time), tin (month/day/nano)
+                    if (strlen(format) >= 3) {
+                        switch (format[2]) {
+                            case 'M': return "interval[months]";
+                            case 'D': return "interval[days]";
+                            case 'n': return "interval[month_day_nano]";
+                        }
+                    }
+                    return "interval";
+                }
+            }
+            return "temporal";
+        }
+        case '+': {
+            // Nested types
+            if (strlen(format) < 2) return "nested";
+            switch (format[1]) {
+                case 'l': return "list";
+                case 'L': return "large_list";
+                case 'w': return "fixed_list" + string(format + 2);
+                case 's': return "struct";
+                case 'm': return "map";
+                case 'u': {
+                    // Union: +ud:type_ids or +us:type_ids
+                    if (strlen(format) >= 3) {
+                        if (format[2] == 'd') return "dense_union";
+                        if (format[2] == 's') return "sparse_union";
+                    }
+                    return "union";
+                }
+                case 'r': return "run_end_encoded";
+                case 'v': {
+                    // List view types
+                    if (strlen(format) >= 3) {
+                        if (format[2] == 'l') return "list_view";
+                        if (format[2] == 'L') return "large_list_view";
+                    }
+                    return "list_view";
+                }
+            }
+            return "nested";
+        }
+        default:
+            // Return format string directly for unknown types
+            return string(format);
+    }
+}
+
+// Helper to extract fields from an ArrowSchema
+static void ExtractSchemaFields(ArrowSchema *schema, vector<SchemaFieldRow> &field_rows) {
+    if (!schema) return;
+
+    for (int64_t i = 0; i < schema->n_children; i++) {
+        ArrowSchema *child = schema->children[i];
+        if (!child) continue;
+
+        SchemaFieldRow row;
+        row.field_name = child->name ? child->name : "";
+        row.field_type = ArrowFormatToTypeName(child->format);
+        // In Arrow C Data Interface, nullable is indicated by absence of ARROW_FLAG_NULLABLE bit NOT being set
+        // flags & 2 means nullable (ARROW_FLAG_NULLABLE = 2)
+        row.nullable = (child->flags & 2) != 0;
+        field_rows.push_back(row);
+    }
+}
+
+static unique_ptr<FunctionData> AdbcSchemaBind(ClientContext &context, TableFunctionBindInput &input,
+                                                vector<LogicalType> &return_types, vector<string> &names) {
+    auto bind_data = make_uniq<AdbcSchemaBindData>();
+
+    bind_data->connection_id = input.inputs[0].GetValue<int64_t>();
+    bind_data->table_name = input.inputs[1].GetValue<string>();
+
+    // Check for optional filter parameters
+    auto catalog_it = input.named_parameters.find("catalog");
+    if (catalog_it != input.named_parameters.end() && !catalog_it->second.IsNull()) {
+        bind_data->catalog_filter = catalog_it->second.GetValue<string>();
+        bind_data->has_catalog_filter = true;
+    }
+
+    auto schema_it = input.named_parameters.find("schema");
+    if (schema_it != input.named_parameters.end() && !schema_it->second.IsNull()) {
+        bind_data->schema_filter = schema_it->second.GetValue<string>();
+        bind_data->has_schema_filter = true;
+    }
+
+    auto &registry = ConnectionRegistry::Get();
+    bind_data->connection = registry.Get(bind_data->connection_id);
+    if (!bind_data->connection) {
+        throw InvalidInputException("adbc_schema: Invalid connection handle: " + to_string(bind_data->connection_id));
+    }
+
+    if (!bind_data->connection->IsInitialized()) {
+        throw InvalidInputException("adbc_schema: Connection has been closed");
+    }
+
+    // Return schema for fields
+    names = {"field_name", "field_type", "nullable"};
+    return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BOOLEAN};
+
+    return std::move(bind_data);
+}
+
+static unique_ptr<GlobalTableFunctionState> AdbcSchemaInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
+    auto &bind_data = input.bind_data->Cast<AdbcSchemaBindData>();
+    auto global_state = make_uniq<AdbcSchemaGlobalState>();
+
+    if (!bind_data.connection->IsInitialized()) {
+        throw InvalidInputException("adbc_schema: Connection has been closed");
+    }
+
+    const char *catalog = bind_data.has_catalog_filter ? bind_data.catalog_filter.c_str() : nullptr;
+    const char *db_schema = bind_data.has_schema_filter ? bind_data.schema_filter.c_str() : nullptr;
+
+    ArrowSchema schema;
+    memset(&schema, 0, sizeof(schema));
+
+    try {
+        bind_data.connection->GetTableSchema(catalog, db_schema, bind_data.table_name.c_str(), &schema);
+    } catch (Exception &e) {
+        throw IOException("adbc_schema: Failed to get table schema: " + string(e.what()));
+    }
+
+    // Extract fields from the schema
+    ExtractSchemaFields(&schema, global_state->field_rows);
+
+    // Release the schema
+    if (schema.release) {
+        schema.release(&schema);
+    }
+
+    return std::move(global_state);
+}
+
+static unique_ptr<LocalTableFunctionState> AdbcSchemaInitLocal(ExecutionContext &context, TableFunctionInitInput &input,
+                                                                GlobalTableFunctionState *global_state_p) {
+    return nullptr;
+}
+
+static void AdbcSchemaFunction(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
+    auto &global_state = data.global_state->Cast<AdbcSchemaGlobalState>();
+
+    if (global_state.current_row >= global_state.field_rows.size()) {
+        output.SetCardinality(0);
+        return;
+    }
+
+    idx_t count = 0;
+    auto &name_vector = output.data[0];
+    auto &type_vector = output.data[1];
+    auto &nullable_vector = output.data[2];
+
+    while (global_state.current_row < global_state.field_rows.size() && count < STANDARD_VECTOR_SIZE) {
+        auto &row = global_state.field_rows[global_state.current_row];
+        name_vector.SetValue(count, Value(row.field_name));
+        type_vector.SetValue(count, Value(row.field_type));
+        nullable_vector.SetValue(count, Value(row.nullable));
+        count++;
+        global_state.current_row++;
+    }
+
+    output.SetCardinality(count);
+}
+
+//===--------------------------------------------------------------------===//
 // Register all catalog functions
 //===--------------------------------------------------------------------===//
 
@@ -982,6 +1261,14 @@ void RegisterAdbcCatalogFunctions(DatabaseInstance &db) {
     adbc_columns_function.named_parameters["column_name"] = LogicalType::VARCHAR;
     adbc_columns_function.projection_pushdown = false;
     loader.RegisterFunction(adbc_columns_function);
+
+    // adbc_schema(connection_id, table_name, ...) - Get Arrow schema for a table
+    TableFunction adbc_schema_function("adbc_schema", {LogicalType::BIGINT, LogicalType::VARCHAR}, AdbcSchemaFunction,
+                                        AdbcSchemaBind, AdbcSchemaInitGlobal, AdbcSchemaInitLocal);
+    adbc_schema_function.named_parameters["catalog"] = LogicalType::VARCHAR;
+    adbc_schema_function.named_parameters["schema"] = LogicalType::VARCHAR;
+    adbc_schema_function.projection_pushdown = false;
+    loader.RegisterFunction(adbc_schema_function);
 }
 
 } // namespace adbc

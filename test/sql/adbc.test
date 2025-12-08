@@ -216,6 +216,35 @@ statement ok
 SELECT adbc_disconnect(getvariable('col_conn')::BIGINT);
 
 # ============================================
+# adbc_schema Tests
+# ============================================
+
+# Create a connection and table for schema tests
+statement ok
+SET VARIABLE schema_conn = (SELECT adbc_connect({'driver': getvariable('sqlite_driver'), 'uri': ':memory:'}));
+
+statement ok
+SELECT adbc_execute(getvariable('schema_conn')::BIGINT, 'CREATE TABLE schema_test (id INTEGER, name TEXT, value REAL)');
+
+# Test adbc_schema - get Arrow schema for a table
+query I
+SELECT field_name FROM adbc_schema(getvariable('schema_conn')::BIGINT, 'schema_test') ORDER BY field_name;
+----
+id
+name
+value
+
+# Test adbc_schema with invalid connection handle
+statement error
+SELECT * FROM adbc_schema(12345, 'test');
+----
+Invalid Input Error: adbc_schema: Invalid connection handle: 12345
+
+# Clean up
+statement ok
+SELECT adbc_disconnect(getvariable('schema_conn')::BIGINT);
+
+# ============================================
 # adbc_execute Tests (DDL/DML)
 # ============================================
 

@@ -167,6 +167,19 @@ SELECT * FROM adbc_info(12345);
 ----
 Invalid Input Error: adbc_info: Invalid connection handle: 12345
 
+# Test adbc_table_types - returns supported table types (e.g., table, view)
+query I
+SELECT * FROM adbc_table_types(getvariable('conn_id')::BIGINT) ORDER BY table_type;
+----
+table
+view
+
+# Test adbc_table_types with invalid connection handle
+statement error
+SELECT * FROM adbc_table_types(12345);
+----
+Invalid Input Error: adbc_table_types: Invalid connection handle: 12345
+
 # ============================================
 # adbc_execute Tests (DDL/DML)
 # ============================================

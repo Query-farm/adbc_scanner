@@ -25,6 +25,7 @@ The extension provides the following functions:
 ### Catalog Functions
 - `adbc_info(handle)` - Returns driver/database information (vendor name, version, etc.).
 - `adbc_tables(handle)` - Returns list of tables in the database.
+- `adbc_table_types(handle)` - Returns supported table types (e.g., "table", "view").
 
 ### Example Usage
 
@@ -45,6 +46,7 @@ SELECT adbc_execute(getvariable('conn')::BIGINT, 'INSERT INTO test VALUES (1, ''
 -- Catalog functions
 SELECT * FROM adbc_info(getvariable('conn')::BIGINT);
 SELECT * FROM adbc_tables(getvariable('conn')::BIGINT);
+SELECT * FROM adbc_table_types(getvariable('conn')::BIGINT);
 
 -- Disconnect
 SELECT adbc_disconnect(getvariable('conn')::BIGINT);

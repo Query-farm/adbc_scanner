@@ -235,6 +235,35 @@ SELECT * FROM adbc_tables(getvariable('conn')::BIGINT, table_name := 'user%');
 SELECT * FROM adbc_tables(getvariable('conn')::BIGINT, schema := 'public');
 ```
 
+### adbc_table_types
+
+Returns the types of tables supported by the database (e.g., "table", "view").
+
+```sql
+adbc_table_types(connection_id) -> TABLE(table_type VARCHAR)
+```
+
+**Parameters:**
+- `connection_id`: Connection handle from `adbc_connect`
+
+**Returns:** A table with a single `table_type` column listing supported types.
+
+**Example:**
+
+```sql
+SELECT * FROM adbc_table_types(getvariable('conn')::BIGINT);
+```
+
+Output:
+```
+┌────────────┐
+│ table_type │
+├────────────┤
+│ table      │
+│ view       │
+└────────────┘
+```
+
 ## ADBC Drivers
 
 ADBC drivers are available for many databases. Here are some common ones:
@@ -295,6 +324,9 @@ ORDER BY avg_salary DESC;
 
 -- List tables
 SELECT * FROM adbc_tables(getvariable('sqlite_conn')::BIGINT);
+
+-- List supported table types
+SELECT * FROM adbc_table_types(getvariable('sqlite_conn')::BIGINT);
 
 -- Parameterized query
 SELECT * FROM adbc_scan(

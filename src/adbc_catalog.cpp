@@ -465,6 +465,135 @@ static void AdbcTablesFunction(ClientContext &context, TableFunctionInput &data,
 }
 
 //===--------------------------------------------------------------------===//
+// adbc_table_types - Get supported table types
+//===--------------------------------------------------------------------===//
+
+struct AdbcTableTypesBindData : public TableFunctionData {
+    int64_t connection_id;
+    shared_ptr<AdbcConnectionWrapper> connection;
+};
+
+struct AdbcTableTypesGlobalState : public GlobalTableFunctionState {
+    ArrowArrayStream stream;
+    bool stream_initialized = false;
+
+    // Extracted table types
+    vector<string> table_types;
+    idx_t current_row = 0;
+
+    ~AdbcTableTypesGlobalState() {
+        if (stream_initialized && stream.release) {
+            stream.release(&stream);
+        }
+    }
+
+    idx_t MaxThreads() const override {
+        return 1;
+    }
+};
+
+static unique_ptr<FunctionData> AdbcTableTypesBind(ClientContext &context, TableFunctionBindInput &input,
+                                                    vector<LogicalType> &return_types, vector<string> &names) {
+    auto bind_data = make_uniq<AdbcTableTypesBindData>();
+
+    bind_data->connection_id = input.inputs[0].GetValue<int64_t>();
+
+    auto &registry = ConnectionRegistry::Get();
+    bind_data->connection = registry.Get(bind_data->connection_id);
+    if (!bind_data->connection) {
+        throw InvalidInputException("adbc_table_types: Invalid connection handle: " + to_string(bind_data->connection_id));
+    }
+
+    if (!bind_data->connection->IsInitialized()) {
+        throw InvalidInputException("adbc_table_types: Connection has been closed");
+    }
+
+    // Return single column schema
+    names = {"table_type"};
+    return_types = {LogicalType::VARCHAR};
+
+    return std::move(bind_data);
+}
+
+static unique_ptr<GlobalTableFunctionState> AdbcTableTypesInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
+    auto &bind_data = input.bind_data->Cast<AdbcTableTypesBindData>();
+    auto global_state = make_uniq<AdbcTableTypesGlobalState>();
+
+    if (!bind_data.connection->IsInitialized()) {
+        throw InvalidInputException("adbc_table_types: Connection has been closed");
+    }
+
+    memset(&global_state->stream, 0, sizeof(global_state->stream));
+    try {
+        bind_data.connection->GetTableTypes(&global_state->stream);
+    } catch (Exception &e) {
+        throw IOException("adbc_table_types: Failed to get table types: " + string(e.what()));
+    }
+    global_state->stream_initialized = true;
+
+    // Extract all table types from the Arrow stream
+    ArrowArray batch;
+    while (true) {
+        memset(&batch, 0, sizeof(batch));
+        int ret = global_state->stream.get_next(&global_state->stream, &batch);
+        if (ret != 0) {
+            const char *error_msg = global_state->stream.get_last_error(&global_state->stream);
+            string msg = "adbc_table_types: Failed to get next batch";
+            if (error_msg) {
+                msg += ": ";
+                msg += error_msg;
+            }
+            throw IOException(msg);
+        }
+
+        if (!batch.release) {
+            break; // End of stream
+        }
+
+        // The result has a single column: table_type (utf8)
+        if (batch.n_children >= 1) {
+            ArrowArray *table_type_array = batch.children[0];
+            for (int64_t i = 0; i < batch.length; i++) {
+                string table_type = ExtractString(table_type_array, i);
+                global_state->table_types.push_back(table_type);
+            }
+        }
+
+        if (batch.release) {
+            batch.release(&batch);
+        }
+    }
+
+    return std::move(global_state);
+}
+
+static unique_ptr<LocalTableFunctionState> AdbcTableTypesInitLocal(ExecutionContext &context, TableFunctionInitInput &input,
+                                                                    GlobalTableFunctionState *global_state_p) {
+    return nullptr;
+}
+
+static void AdbcTableTypesFunction(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
+    auto &global_state = data.global_state->Cast<AdbcTableTypesGlobalState>();
+
+    if (global_state.current_row >= global_state.table_types.size()) {
+        output.SetCardinality(0);
+        return;
+    }
+
+    idx_t count = 0;
+    auto &type_vector = output.data[0];
+
+    while (global_state.current_row < global_state.table_types.size() && count < STANDARD_VECTOR_SIZE) {
+        auto &table_type = global_state.table_types[global_state.current_row];
+        type_vector.SetValue(count, Value(table_type));
+        count++;
+        global_state.current_row++;
+    }
+
+    output.SetCardinality(count);
+}
+
+//===--------------------------------------------------------------------===//
 // Register all catalog functions
 //===--------------------------------------------------------------------===//
 
@@ -485,6 +614,12 @@ void RegisterAdbcCatalogFunctions(DatabaseInstance &db) {
     adbc_tables_function.named_parameters["table_name"] = LogicalType::VARCHAR;
     adbc_tables_function.projection_pushdown = false;
     loader.RegisterFunction(adbc_tables_function);
+
+    // adbc_table_types(connection_id) - Get supported table types
+    TableFunction adbc_table_types_function("adbc_table_types", {LogicalType::BIGINT}, AdbcTableTypesFunction,
+                                             AdbcTableTypesBind, AdbcTableTypesInitGlobal, AdbcTableTypesInitLocal);
+    adbc_table_types_function.projection_pushdown = false;
+    loader.RegisterFunction(adbc_table_types_function);
 }
 
 } // namespace adbc

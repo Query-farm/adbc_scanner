@@ -505,7 +505,7 @@ struct AdbcExecuteBindData : public FunctionData {
         copy->params = params;
         copy->param_types = param_types;
         copy->has_params = has_params;
-        return copy;
+        return std::move(copy);
     }
 
     bool Equals(const FunctionData &other_p) const override {
@@ -518,7 +518,7 @@ struct AdbcExecuteBindData : public FunctionData {
 static unique_ptr<FunctionData> AdbcExecuteBind(ClientContext &context, ScalarFunction &bound_function,
                                                  vector<unique_ptr<Expression>> &arguments) {
     auto bind_data = make_uniq<AdbcExecuteBindData>();
-    return bind_data;
+    return std::move(bind_data);
 }
 
 // Helper to execute a single DDL/DML statement and return rows affected

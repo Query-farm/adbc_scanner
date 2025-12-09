@@ -134,6 +134,84 @@ adbc_disconnect(connection_id) -> BOOLEAN
 SELECT adbc_disconnect(getvariable('conn')::BIGINT);
 ```
 
+### adbc_set_autocommit
+
+Enables or disables autocommit mode on a connection. When autocommit is disabled, changes require an explicit `adbc_commit()` call.
+
+```sql
+adbc_set_autocommit(connection_id, enabled) -> BOOLEAN
+```
+
+**Parameters:**
+- `connection_id`: Connection handle from `adbc_connect`
+- `enabled`: `true` to enable autocommit, `false` to disable
+
+**Returns:** `true` on success.
+
+**Example:**
+
+```sql
+-- Disable autocommit to start a transaction
+SELECT adbc_set_autocommit(getvariable('conn')::BIGINT, false);
+
+-- Make changes...
+SELECT adbc_execute(getvariable('conn')::BIGINT, 'INSERT INTO users VALUES (1, ''Alice'')');
+
+-- Commit or rollback
+SELECT adbc_commit(getvariable('conn')::BIGINT);
+
+-- Re-enable autocommit
+SELECT adbc_set_autocommit(getvariable('conn')::BIGINT, true);
+```
+
+### adbc_commit
+
+Commits the current transaction. Only applicable when autocommit is disabled.
+
+```sql
+adbc_commit(connection_id) -> BOOLEAN
+```
+
+**Parameters:**
+- `connection_id`: Connection handle from `adbc_connect`
+
+**Returns:** `true` on success.
+
+**Example:**
+
+```sql
+SELECT adbc_commit(getvariable('conn')::BIGINT);
+```
+
+### adbc_rollback
+
+Rolls back the current transaction, discarding all uncommitted changes. Only applicable when autocommit is disabled.
+
+```sql
+adbc_rollback(connection_id) -> BOOLEAN
+```
+
+**Parameters:**
+- `connection_id`: Connection handle from `adbc_connect`
+
+**Returns:** `true` on success.
+
+**Example:**
+
+```sql
+-- Start a transaction
+SELECT adbc_set_autocommit(getvariable('conn')::BIGINT, false);
+
+-- Make changes
+SELECT adbc_execute(getvariable('conn')::BIGINT, 'DELETE FROM users WHERE id = 1');
+
+-- Oops, rollback!
+SELECT adbc_rollback(getvariable('conn')::BIGINT);
+
+-- Re-enable autocommit
+SELECT adbc_set_autocommit(getvariable('conn')::BIGINT, true);
+```
+
 ### adbc_scan
 
 Executes a SELECT query and returns the results as a table.
@@ -559,6 +637,14 @@ SELECT * FROM adbc_scan(
     'SELECT * FROM employees WHERE department = ? AND salary > ?',
     params := row('Engineering', 90000.0)
 );
+
+-- Transaction control
+SELECT adbc_set_autocommit(getvariable('sqlite_conn')::BIGINT, false);  -- Start transaction
+SELECT adbc_execute(getvariable('sqlite_conn')::BIGINT,
+    'INSERT INTO employees VALUES (4, ''Diana'', ''Marketing'', 85000)');
+SELECT adbc_commit(getvariable('sqlite_conn')::BIGINT);  -- Commit changes
+-- Or use: SELECT adbc_rollback(getvariable('sqlite_conn')::BIGINT);  -- To discard changes
+SELECT adbc_set_autocommit(getvariable('sqlite_conn')::BIGINT, true);  -- Back to autocommit
 
 -- Clean up
 SELECT adbc_disconnect(getvariable('sqlite_conn')::BIGINT);

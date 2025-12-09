@@ -9,6 +9,8 @@
 #include "duckdb/storage/statistics/node_statistics.hpp"
 #include "duckdb/common/insertion_order_preserving_map.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/parser/parsed_data/create_table_function_info.hpp"
+#include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 #include <nanoarrow/nanoarrow.h>
 #include <queue>
 
@@ -490,7 +492,17 @@ void RegisterAdbcTableFunctions(DatabaseInstance &db) {
     adbc_scan_function.cardinality = AdbcScanCardinality;
     adbc_scan_function.to_string = AdbcScanToString;
 
-    loader.RegisterFunction(adbc_scan_function);
+    CreateTableFunctionInfo info(adbc_scan_function);
+    FunctionDescription desc;
+    desc.description = "Execute a SELECT query on an ADBC connection and return the results as a table";
+    desc.parameter_names = {"connection_handle", "query", "params", "batch_size"};
+    desc.parameter_types = {LogicalType::BIGINT, LogicalType::VARCHAR, LogicalType::ANY, LogicalType::BIGINT};
+    desc.examples = {"SELECT * FROM adbc_scan(conn, 'SELECT * FROM users')",
+                     "SELECT * FROM adbc_scan(conn, 'SELECT * FROM users WHERE id = ?', params := row(42))",
+                     "SELECT * FROM adbc_scan(conn, 'SELECT * FROM large_table', batch_size := 65536)"};
+    desc.categories = {"adbc"};
+    info.descriptions.push_back(std::move(desc));
+    loader.RegisterFunction(info);
 }
 
 // ============================================================================
@@ -620,7 +632,17 @@ void RegisterAdbcExecuteFunction(DatabaseInstance &db) {
         AdbcExecuteBind
     );
 
-    loader.RegisterFunction(adbc_execute_function);
+    CreateScalarFunctionInfo info(adbc_execute_function);
+    FunctionDescription desc;
+    desc.description = "Execute DDL/DML statements (CREATE, INSERT, UPDATE, DELETE) on an ADBC connection";
+    desc.parameter_names = {"connection_handle", "query"};
+    desc.parameter_types = {LogicalType::BIGINT, LogicalType::VARCHAR};
+    desc.examples = {"SELECT adbc_execute(conn, 'CREATE TABLE test (id INTEGER)')",
+                     "SELECT adbc_execute(conn, 'INSERT INTO test VALUES (1)')",
+                     "SELECT adbc_execute(conn, 'DELETE FROM test WHERE id = 1')"};
+    desc.categories = {"adbc"};
+    info.descriptions.push_back(std::move(desc));
+    loader.RegisterFunction(info);
 }
 
 //===--------------------------------------------------------------------===//
@@ -906,7 +928,17 @@ void RegisterAdbcInsertFunction(DatabaseInstance &db) {
     adbc_insert_function.in_out_function_final = AdbcInsertFinalize;
     adbc_insert_function.named_parameters["mode"] = LogicalType::VARCHAR;
 
-    loader.RegisterFunction(adbc_insert_function);
+    CreateTableFunctionInfo info(adbc_insert_function);
+    FunctionDescription desc;
+    desc.description = "Bulk insert data from a query into an ADBC table";
+    desc.parameter_names = {"connection_handle", "table_name", "data", "mode"};
+    desc.parameter_types = {LogicalType::BIGINT, LogicalType::VARCHAR, LogicalType::TABLE, LogicalType::VARCHAR};
+    desc.examples = {"SELECT * FROM adbc_insert(conn, 'target_table', (SELECT * FROM source_table))",
+                     "SELECT * FROM adbc_insert(conn, 'target', (SELECT * FROM source), mode := 'create')",
+                     "SELECT * FROM adbc_insert(conn, 'target', (SELECT * FROM source), mode := 'append')"};
+    desc.categories = {"adbc"};
+    info.descriptions.push_back(std::move(desc));
+    loader.RegisterFunction(info);
 }
 
 } // namespace adbc

@@ -2,6 +2,7 @@
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 
 namespace duckdb {
 namespace adbc {
@@ -226,31 +227,82 @@ void RegisterAdbcScalarFunctions(DatabaseInstance &db) {
 	ExtensionLoader loader(db, "adbc");
 
 	// adbc_connect: Create a new ADBC connection
-	// Accepts either STRUCT or MAP with string keys/values
-	auto adbc_connect_function =
-	    ScalarFunction("adbc_connect", {LogicalType::ANY}, LogicalType::BIGINT, AdbcConnectFunction);
-	loader.RegisterFunction(adbc_connect_function);
+	{
+		auto adbc_connect_function =
+		    ScalarFunction("adbc_connect", {LogicalType::ANY}, LogicalType::BIGINT, AdbcConnectFunction);
+		CreateScalarFunctionInfo info(adbc_connect_function);
+		FunctionDescription desc;
+		desc.description = "Connect to an ADBC data source and return a connection handle";
+		desc.parameter_names = {"options"};
+		desc.parameter_types = {LogicalType::ANY};
+		desc.examples = {"SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:'})",
+		                 "SELECT adbc_connect({'driver': '/path/to/driver.so', 'uri': 'connection_string'})"};
+		desc.categories = {"adbc"};
+		info.descriptions.push_back(std::move(desc));
+		loader.RegisterFunction(info);
+	}
 
 	// adbc_disconnect: Close an ADBC connection
-	auto adbc_disconnect_function =
-	    ScalarFunction("adbc_disconnect", {LogicalType::BIGINT}, LogicalType::BOOLEAN, AdbcDisconnectFunction);
-	loader.RegisterFunction(adbc_disconnect_function);
+	{
+		auto adbc_disconnect_function =
+		    ScalarFunction("adbc_disconnect", {LogicalType::BIGINT}, LogicalType::BOOLEAN, AdbcDisconnectFunction);
+		CreateScalarFunctionInfo info(adbc_disconnect_function);
+		FunctionDescription desc;
+		desc.description = "Disconnect and close an ADBC connection";
+		desc.parameter_names = {"connection_handle"};
+		desc.parameter_types = {LogicalType::BIGINT};
+		desc.examples = {"SELECT adbc_disconnect(connection_handle)"};
+		desc.categories = {"adbc"};
+		info.descriptions.push_back(std::move(desc));
+		loader.RegisterFunction(info);
+	}
 
 	// adbc_commit: Commit the current transaction
-	auto adbc_commit_function =
-	    ScalarFunction("adbc_commit", {LogicalType::BIGINT}, LogicalType::BOOLEAN, AdbcCommitFunction);
-	loader.RegisterFunction(adbc_commit_function);
+	{
+		auto adbc_commit_function =
+		    ScalarFunction("adbc_commit", {LogicalType::BIGINT}, LogicalType::BOOLEAN, AdbcCommitFunction);
+		CreateScalarFunctionInfo info(adbc_commit_function);
+		FunctionDescription desc;
+		desc.description = "Commit the current transaction on an ADBC connection";
+		desc.parameter_names = {"connection_handle"};
+		desc.parameter_types = {LogicalType::BIGINT};
+		desc.examples = {"SELECT adbc_commit(connection_handle)"};
+		desc.categories = {"adbc"};
+		info.descriptions.push_back(std::move(desc));
+		loader.RegisterFunction(info);
+	}
 
 	// adbc_rollback: Rollback the current transaction
-	auto adbc_rollback_function =
-	    ScalarFunction("adbc_rollback", {LogicalType::BIGINT}, LogicalType::BOOLEAN, AdbcRollbackFunction);
-	loader.RegisterFunction(adbc_rollback_function);
+	{
+		auto adbc_rollback_function =
+		    ScalarFunction("adbc_rollback", {LogicalType::BIGINT}, LogicalType::BOOLEAN, AdbcRollbackFunction);
+		CreateScalarFunctionInfo info(adbc_rollback_function);
+		FunctionDescription desc;
+		desc.description = "Rollback the current transaction on an ADBC connection";
+		desc.parameter_names = {"connection_handle"};
+		desc.parameter_types = {LogicalType::BIGINT};
+		desc.examples = {"SELECT adbc_rollback(connection_handle)"};
+		desc.categories = {"adbc"};
+		info.descriptions.push_back(std::move(desc));
+		loader.RegisterFunction(info);
+	}
 
 	// adbc_set_autocommit: Set autocommit mode
-	auto adbc_set_autocommit_function =
-	    ScalarFunction("adbc_set_autocommit", {LogicalType::BIGINT, LogicalType::BOOLEAN}, LogicalType::BOOLEAN,
-	                   AdbcSetAutocommitFunction);
-	loader.RegisterFunction(adbc_set_autocommit_function);
+	{
+		auto adbc_set_autocommit_function =
+		    ScalarFunction("adbc_set_autocommit", {LogicalType::BIGINT, LogicalType::BOOLEAN}, LogicalType::BOOLEAN,
+		                   AdbcSetAutocommitFunction);
+		CreateScalarFunctionInfo info(adbc_set_autocommit_function);
+		FunctionDescription desc;
+		desc.description = "Enable or disable autocommit mode on an ADBC connection";
+		desc.parameter_names = {"connection_handle", "enabled"};
+		desc.parameter_types = {LogicalType::BIGINT, LogicalType::BOOLEAN};
+		desc.examples = {"SELECT adbc_set_autocommit(connection_handle, false)",
+		                 "SELECT adbc_set_autocommit(connection_handle, true)"};
+		desc.categories = {"adbc"};
+		info.descriptions.push_back(std::move(desc));
+		loader.RegisterFunction(info);
+	}
 }
 
 } // namespace adbc

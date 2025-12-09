@@ -6,6 +6,7 @@
 #include "duckdb/function/table/arrow.hpp"
 #include "duckdb/function/table/arrow/arrow_duck_schema.hpp"
 #include "duckdb/common/insertion_order_preserving_map.hpp"
+#include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #include <nanoarrow/nanoarrow.h>
 
 namespace duckdb {
@@ -1232,43 +1233,98 @@ void RegisterAdbcCatalogFunctions(DatabaseInstance &db) {
     ExtensionLoader loader(db, "adbc");
 
     // adbc_info(connection_id) - Get driver/database information
-    TableFunction adbc_info_function("adbc_info", {LogicalType::BIGINT}, AdbcInfoFunction,
-                                      AdbcInfoBind, AdbcInfoInitGlobal, AdbcInfoInitLocal);
-    adbc_info_function.projection_pushdown = false;
-    loader.RegisterFunction(adbc_info_function);
+    {
+        TableFunction adbc_info_function("adbc_info", {LogicalType::BIGINT}, AdbcInfoFunction,
+                                          AdbcInfoBind, AdbcInfoInitGlobal, AdbcInfoInitLocal);
+        adbc_info_function.projection_pushdown = false;
+        CreateTableFunctionInfo info(adbc_info_function);
+        FunctionDescription desc;
+        desc.description = "Get driver and database information from an ADBC connection";
+        desc.parameter_names = {"connection_handle"};
+        desc.parameter_types = {LogicalType::BIGINT};
+        desc.examples = {"SELECT * FROM adbc_info(connection_handle)"};
+        desc.categories = {"adbc"};
+        info.descriptions.push_back(std::move(desc));
+        loader.RegisterFunction(info);
+    }
 
     // adbc_tables(connection_id, catalog, schema, table_name) - Get tables
-    TableFunction adbc_tables_function("adbc_tables", {LogicalType::BIGINT}, AdbcTablesFunction,
-                                        AdbcTablesBind, AdbcTablesInitGlobal, AdbcTablesInitLocal);
-    adbc_tables_function.named_parameters["catalog"] = LogicalType::VARCHAR;
-    adbc_tables_function.named_parameters["schema"] = LogicalType::VARCHAR;
-    adbc_tables_function.named_parameters["table_name"] = LogicalType::VARCHAR;
-    adbc_tables_function.projection_pushdown = false;
-    loader.RegisterFunction(adbc_tables_function);
+    {
+        TableFunction adbc_tables_function("adbc_tables", {LogicalType::BIGINT}, AdbcTablesFunction,
+                                            AdbcTablesBind, AdbcTablesInitGlobal, AdbcTablesInitLocal);
+        adbc_tables_function.named_parameters["catalog"] = LogicalType::VARCHAR;
+        adbc_tables_function.named_parameters["schema"] = LogicalType::VARCHAR;
+        adbc_tables_function.named_parameters["table_name"] = LogicalType::VARCHAR;
+        adbc_tables_function.projection_pushdown = false;
+        CreateTableFunctionInfo info(adbc_tables_function);
+        FunctionDescription desc;
+        desc.description = "Get list of tables from an ADBC data source";
+        desc.parameter_names = {"connection_handle", "catalog", "schema", "table_name"};
+        desc.parameter_types = {LogicalType::BIGINT, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
+        desc.examples = {"SELECT * FROM adbc_tables(conn)",
+                         "SELECT * FROM adbc_tables(conn, catalog := 'main')",
+                         "SELECT * FROM adbc_tables(conn, table_name := 'users')"};
+        desc.categories = {"adbc"};
+        info.descriptions.push_back(std::move(desc));
+        loader.RegisterFunction(info);
+    }
 
     // adbc_table_types(connection_id) - Get supported table types
-    TableFunction adbc_table_types_function("adbc_table_types", {LogicalType::BIGINT}, AdbcTableTypesFunction,
-                                             AdbcTableTypesBind, AdbcTableTypesInitGlobal, AdbcTableTypesInitLocal);
-    adbc_table_types_function.projection_pushdown = false;
-    loader.RegisterFunction(adbc_table_types_function);
+    {
+        TableFunction adbc_table_types_function("adbc_table_types", {LogicalType::BIGINT}, AdbcTableTypesFunction,
+                                                 AdbcTableTypesBind, AdbcTableTypesInitGlobal, AdbcTableTypesInitLocal);
+        adbc_table_types_function.projection_pushdown = false;
+        CreateTableFunctionInfo info(adbc_table_types_function);
+        FunctionDescription desc;
+        desc.description = "Get supported table types from an ADBC data source (e.g., 'table', 'view')";
+        desc.parameter_names = {"connection_handle"};
+        desc.parameter_types = {LogicalType::BIGINT};
+        desc.examples = {"SELECT * FROM adbc_table_types(conn)"};
+        desc.categories = {"adbc"};
+        info.descriptions.push_back(std::move(desc));
+        loader.RegisterFunction(info);
+    }
 
     // adbc_columns(connection_id, ...) - Get column metadata
-    TableFunction adbc_columns_function("adbc_columns", {LogicalType::BIGINT}, AdbcColumnsFunction,
-                                         AdbcColumnsBind, AdbcColumnsInitGlobal, AdbcColumnsInitLocal);
-    adbc_columns_function.named_parameters["catalog"] = LogicalType::VARCHAR;
-    adbc_columns_function.named_parameters["schema"] = LogicalType::VARCHAR;
-    adbc_columns_function.named_parameters["table_name"] = LogicalType::VARCHAR;
-    adbc_columns_function.named_parameters["column_name"] = LogicalType::VARCHAR;
-    adbc_columns_function.projection_pushdown = false;
-    loader.RegisterFunction(adbc_columns_function);
+    {
+        TableFunction adbc_columns_function("adbc_columns", {LogicalType::BIGINT}, AdbcColumnsFunction,
+                                             AdbcColumnsBind, AdbcColumnsInitGlobal, AdbcColumnsInitLocal);
+        adbc_columns_function.named_parameters["catalog"] = LogicalType::VARCHAR;
+        adbc_columns_function.named_parameters["schema"] = LogicalType::VARCHAR;
+        adbc_columns_function.named_parameters["table_name"] = LogicalType::VARCHAR;
+        adbc_columns_function.named_parameters["column_name"] = LogicalType::VARCHAR;
+        adbc_columns_function.projection_pushdown = false;
+        CreateTableFunctionInfo info(adbc_columns_function);
+        FunctionDescription desc;
+        desc.description = "Get column metadata for tables in an ADBC data source";
+        desc.parameter_names = {"connection_handle", "catalog", "schema", "table_name", "column_name"};
+        desc.parameter_types = {LogicalType::BIGINT, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
+        desc.examples = {"SELECT * FROM adbc_columns(conn)",
+                         "SELECT * FROM adbc_columns(conn, table_name := 'users')",
+                         "SELECT * FROM adbc_columns(conn, table_name := 'users', column_name := 'id')"};
+        desc.categories = {"adbc"};
+        info.descriptions.push_back(std::move(desc));
+        loader.RegisterFunction(info);
+    }
 
     // adbc_schema(connection_id, table_name, ...) - Get Arrow schema for a table
-    TableFunction adbc_schema_function("adbc_schema", {LogicalType::BIGINT, LogicalType::VARCHAR}, AdbcSchemaFunction,
-                                        AdbcSchemaBind, AdbcSchemaInitGlobal, AdbcSchemaInitLocal);
-    adbc_schema_function.named_parameters["catalog"] = LogicalType::VARCHAR;
-    adbc_schema_function.named_parameters["schema"] = LogicalType::VARCHAR;
-    adbc_schema_function.projection_pushdown = false;
-    loader.RegisterFunction(adbc_schema_function);
+    {
+        TableFunction adbc_schema_function("adbc_schema", {LogicalType::BIGINT, LogicalType::VARCHAR}, AdbcSchemaFunction,
+                                            AdbcSchemaBind, AdbcSchemaInitGlobal, AdbcSchemaInitLocal);
+        adbc_schema_function.named_parameters["catalog"] = LogicalType::VARCHAR;
+        adbc_schema_function.named_parameters["schema"] = LogicalType::VARCHAR;
+        adbc_schema_function.projection_pushdown = false;
+        CreateTableFunctionInfo info(adbc_schema_function);
+        FunctionDescription desc;
+        desc.description = "Get the Arrow schema for a specific table in an ADBC data source";
+        desc.parameter_names = {"connection_handle", "table_name", "catalog", "schema"};
+        desc.parameter_types = {LogicalType::BIGINT, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
+        desc.examples = {"SELECT * FROM adbc_schema(conn, 'users')",
+                         "SELECT * FROM adbc_schema(conn, 'users', catalog := 'main')"};
+        desc.categories = {"adbc"};
+        info.descriptions.push_back(std::move(desc));
+        loader.RegisterFunction(info);
+    }
 }
 
 } // namespace adbc

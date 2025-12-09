@@ -46,17 +46,21 @@ adbc_connect(options) -> BIGINT
 ```
 
 **Parameters:**
+
 - `options`: A STRUCT or MAP containing connection options
 
 **Required Options:**
+
 - `driver`: Driver name (e.g., `'sqlite'`, `'postgresql'`), path to shared library, or path to manifest file (`.toml`)
 
 **Connection Options:**
+
 - `uri`: Connection URI (driver-specific)
 - `username`: Database username
 - `password`: Database password
 
 **Driver Resolution Options:**
+
 - `entrypoint`: Custom driver entrypoint function name (rarely needed)
 - `search_paths`: Additional paths to search for driver manifests (colon-separated on Unix, semicolon on Windows)
 - `use_manifests`: Enable/disable manifest search (default: `'true'`). Set to `'false'` to only use direct library paths.
@@ -124,6 +128,7 @@ adbc_disconnect(connection_id) -> BOOLEAN
 ```
 
 **Parameters:**
+
 - `connection_id`: Connection handle from `adbc_connect`
 
 **Returns:** `true` on success.
@@ -143,6 +148,7 @@ adbc_set_autocommit(connection_id, enabled) -> BOOLEAN
 ```
 
 **Parameters:**
+
 - `connection_id`: Connection handle from `adbc_connect`
 - `enabled`: `true` to enable autocommit, `false` to disable
 
@@ -173,6 +179,7 @@ adbc_commit(connection_id) -> BOOLEAN
 ```
 
 **Parameters:**
+
 - `connection_id`: Connection handle from `adbc_connect`
 
 **Returns:** `true` on success.
@@ -192,6 +199,7 @@ adbc_rollback(connection_id) -> BOOLEAN
 ```
 
 **Parameters:**
+
 - `connection_id`: Connection handle from `adbc_connect`
 
 **Returns:** `true` on success.
@@ -221,6 +229,7 @@ adbc_scan(connection_id, query, [params := row(...)]) -> TABLE
 ```
 
 **Parameters:**
+
 - `connection_id`: Connection handle from `adbc_connect`
 - `query`: SQL SELECT query to execute
 - `params` (optional): Query parameters as a STRUCT created with `row(...)`
@@ -254,6 +263,7 @@ adbc_execute(connection_id, statement) -> BIGINT
 ```
 
 **Parameters:**
+
 - `connection_id`: Connection handle from `adbc_connect`
 - `statement`: SQL DDL or DML statement to execute
 
@@ -288,6 +298,7 @@ adbc_insert(connection_id, table_name, <table>, [mode:=]) -> TABLE(rows_inserted
 ```
 
 **Parameters:**
+
 - `connection_id`: Connection handle from `adbc_connect`
 - `table_name`: Target table name in the remote database
 - `<table>`: A subquery providing the data to insert
@@ -336,11 +347,13 @@ adbc_info(connection_id) -> TABLE(info_name VARCHAR, info_value VARCHAR)
 ```
 
 **Parameters:**
+
 - `connection_id`: Connection handle from `adbc_connect`
 
 **Returns:** A table with info_name and info_value columns.
 
 **Common Info Names:**
+
 - `vendor_name`: Database vendor (e.g., "SQLite", "PostgreSQL")
 - `vendor_version`: Database version
 - `driver_name`: ADBC driver name
@@ -375,12 +388,14 @@ adbc_tables(connection_id, [catalog:=], [schema:=], [table_name:=]) -> TABLE
 ```
 
 **Parameters:**
+
 - `connection_id`: Connection handle from `adbc_connect`
 - `catalog` (optional): Filter by catalog name pattern
 - `schema` (optional): Filter by schema name pattern
 - `table_name` (optional): Filter by table name pattern
 
 **Returns:** A table with columns:
+
 - `catalog_name`: Catalog containing the table
 - `schema_name`: Schema containing the table
 - `table_name`: Name of the table
@@ -408,6 +423,7 @@ adbc_table_types(connection_id) -> TABLE(table_type VARCHAR)
 ```
 
 **Parameters:**
+
 - `connection_id`: Connection handle from `adbc_connect`
 
 **Returns:** A table with a single `table_type` column listing supported types.
@@ -437,6 +453,7 @@ adbc_columns(connection_id, [catalog:=], [schema:=], [table_name:=], [column_nam
 ```
 
 **Parameters:**
+
 - `connection_id`: Connection handle from `adbc_connect`
 - `catalog` (optional): Filter by catalog name pattern
 - `schema` (optional): Filter by schema name pattern
@@ -444,6 +461,7 @@ adbc_columns(connection_id, [catalog:=], [schema:=], [table_name:=], [column_nam
 - `column_name` (optional): Filter by column name pattern
 
 **Returns:** A table with columns:
+
 - `catalog_name`: Catalog containing the table
 - `schema_name`: Schema containing the table
 - `table_name`: Name of the table
@@ -490,12 +508,14 @@ adbc_schema(connection_id, table_name, [catalog:=], [schema:=]) -> TABLE
 ```
 
 **Parameters:**
+
 - `connection_id`: Connection handle from `adbc_connect`
 - `table_name`: Name of the table to get the schema for
 - `catalog` (optional): Catalog containing the table
 - `schema` (optional): Database schema containing the table
 
 **Returns:** A table with columns:
+
 - `field_name`: Name of the field/column
 - `field_type`: Arrow data type (e.g., "int64", "utf8", "float64", "timestamp[us]")
 - `nullable`: Whether the field allows NULL values
@@ -561,6 +581,7 @@ library = "/usr/local/lib/libadbc_driver_sqlite.dylib"
 The extension searches for driver manifests in these locations (in order):
 
 **macOS:**
+
 1. `ADBC_DRIVER_PATH` environment variable (colon-separated paths)
 2. `$VIRTUAL_ENV/etc/adbc/drivers` (if in a Python virtual environment)
 3. `$CONDA_PREFIX/etc/adbc/drivers` (if in a Conda environment)
@@ -568,6 +589,7 @@ The extension searches for driver manifests in these locations (in order):
 5. `/etc/adbc/drivers`
 
 **Linux:**
+
 1. `ADBC_DRIVER_PATH` environment variable (colon-separated paths)
 2. `$VIRTUAL_ENV/etc/adbc/drivers` (if in a Python virtual environment)
 3. `$CONDA_PREFIX/etc/adbc/drivers` (if in a Conda environment)
@@ -575,6 +597,7 @@ The extension searches for driver manifests in these locations (in order):
 5. `/etc/adbc/drivers`
 
 **Windows:**
+
 1. `ADBC_DRIVER_PATH` environment variable (semicolon-separated paths)
 2. Registry: `HKEY_CURRENT_USER\SOFTWARE\ADBC\Drivers\{name}`
 3. `%LOCAL_APPDATA%\ADBC\Drivers`

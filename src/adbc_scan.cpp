@@ -330,7 +330,13 @@ static unique_ptr<LocalTableFunctionState> AdbcScanInitLocal(ExecutionContext &c
                                                               GlobalTableFunctionState *global_state_p) {
     auto current_chunk = make_uniq<ArrowArrayWrapper>();
     auto local_state = make_uniq<AdbcScanLocalState>(std::move(current_chunk), context.client);
-    // Don't populate column_ids - we return all columns and let DuckDB project
+
+    // Populate column_ids for projection pushdown
+    // ArrowToDuckDB uses these to map output column indices to Arrow array child indices
+    for (auto &col_id : input.column_ids) {
+        local_state->column_ids.push_back(col_id);
+    }
+
     return std::move(local_state);
 }
 
@@ -393,11 +399,13 @@ static void AdbcScanFunction(ClientContext &context, TableFunctionInput &data, D
     output.SetCardinality(output_size);
 
     // Convert Arrow data to DuckDB using ArrowTableFunction::ArrowToDuckDB
+    // arrow_scan_is_projected = false because the ADBC driver returns all columns,
+    // but ArrowToDuckDB will use local_state.column_ids to extract only the needed columns
     if (output_size > 0) {
         ArrowTableFunction::ArrowToDuckDB(local_state,
                                           bind_data.arrow_table.GetColumns(),
                                           output,
-                                          false); // arrow_scan_is_projected = false (no projection pushdown)
+                                          false);
     }
 
     local_state.chunk_offset += output.size();
@@ -473,8 +481,9 @@ void RegisterAdbcTableFunctions(DatabaseInstance &db) {
     // Add named parameter for batch size hint (driver-specific, best-effort)
     adbc_scan_function.named_parameters["batch_size"] = LogicalType::BIGINT;
 
-    // Disable projection pushdown - we always return all columns from the ADBC query
-    adbc_scan_function.projection_pushdown = false;
+    // Enable projection pushdown - DuckDB will request only the columns it needs
+    // The ADBC driver still returns all columns, but ArrowToDuckDB will extract only the needed ones
+    adbc_scan_function.projection_pushdown = true;
 
     // Add progress, cardinality, and to_string callbacks
     adbc_scan_function.table_scan_progress = AdbcScanProgress;

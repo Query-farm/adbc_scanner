@@ -431,3 +431,172 @@ statement error
 SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT 1');
 ----
 Invalid Input Error: adbc_scan: Invalid connection handle
+
+# ============================================
+# Projection Pushdown Tests
+# ============================================
+
+# Create a connection for projection tests
+statement ok
+SET VARIABLE proj_conn = (SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:'}));
+
+# Create a table with 30 columns of various types
+statement ok
+SELECT adbc_execute(getvariable('proj_conn')::BIGINT, '
+    CREATE TABLE wide_table (
+        col00 INTEGER, col01 TEXT, col02 REAL, col03 INTEGER, col04 TEXT,
+        col05 REAL, col06 INTEGER, col07 TEXT, col08 REAL, col09 INTEGER,
+        col10 TEXT, col11 REAL, col12 INTEGER, col13 TEXT, col14 REAL,
+        col15 INTEGER, col16 TEXT, col17 REAL, col18 INTEGER, col19 TEXT,
+        col20 REAL, col21 INTEGER, col22 TEXT, col23 REAL, col24 INTEGER,
+        col25 TEXT, col26 REAL, col27 INTEGER, col28 TEXT, col29 REAL
+    )
+');
+
+# Insert test data (3 rows)
+statement ok
+SELECT adbc_execute(getvariable('proj_conn')::BIGINT, '
+    INSERT INTO wide_table VALUES
+    (0, ''a0'', 0.0, 3, ''a3'', 5.5, 6, ''a6'', 8.8, 9, ''a10'', 11.11, 12, ''a13'', 14.14, 15, ''a16'', 17.17, 18, ''a19'', 20.20, 21, ''a22'', 23.23, 24, ''a25'', 26.26, 27, ''a28'', 29.29),
+    (100, ''b0'', 100.0, 103, ''b3'', 105.5, 106, ''b6'', 108.8, 109, ''b10'', 111.11, 112, ''b13'', 114.14, 115, ''b16'', 117.17, 118, ''b19'', 120.20, 121, ''b22'', 123.23, 124, ''b25'', 126.26, 127, ''b28'', 129.29),
+    (200, ''c0'', 200.0, 203, ''c3'', 205.5, 206, ''c6'', 208.8, 209, ''c10'', 211.11, 212, ''c13'', 214.14, 215, ''c16'', 217.17, 218, ''c19'', 220.20, 221, ''c22'', 223.23, 224, ''c25'', 226.26, 227, ''c28'', 229.29)
+');
+
+# Test 1: Select 5 randomly spaced columns (col02, col07, col15, col22, col28)
+query RTITT
+SELECT col02, col07, col15, col22, col28 FROM adbc_scan(getvariable('proj_conn')::BIGINT, 'SELECT * FROM wide_table') ORDER BY col02;
+----
+0.0	a6	15	a22	a28
+100.0	b6	115	b22	b28
+200.0	c6	215	c22	c28
+
+# Test 2: Select columns in non-sequential order (col28, col03, col19, col10, col00)
+query TITII
+SELECT col28, col03, col19, col10, col00 FROM adbc_scan(getvariable('proj_conn')::BIGINT, 'SELECT * FROM wide_table') ORDER BY col00;
+----
+a28	3	a19	a10	0
+b28	103	b19	b10	100
+c28	203	c19	c10	200
+
+# Test 3: Select only first column
+query I
+SELECT col00 FROM adbc_scan(getvariable('proj_conn')::BIGINT, 'SELECT * FROM wide_table') ORDER BY col00;
+----
+0
+100
+200
+
+# Test 4: Select only last column
+query R
+SELECT col29 FROM adbc_scan(getvariable('proj_conn')::BIGINT, 'SELECT * FROM wide_table') ORDER BY col29;
+----
+29.29
+129.29
+229.29
+
+# Test 5: Select first and last columns
+query IR
+SELECT col00, col29 FROM adbc_scan(getvariable('proj_conn')::BIGINT, 'SELECT * FROM wide_table') ORDER BY col00;
+----
+0	29.29
+100	129.29
+200	229.29
+
+# Test 6: Select all columns (no projection - verify full result)
+query I
+SELECT COUNT(*) FROM adbc_scan(getvariable('proj_conn')::BIGINT, 'SELECT * FROM wide_table');
+----
+3
+
+# Test 7: Aggregation with projection (only needs one column)
+query IR
+SELECT COUNT(*), SUM(col00) FROM adbc_scan(getvariable('proj_conn')::BIGINT, 'SELECT * FROM wide_table');
+----
+3	300
+
+# Test 8: Projection with WHERE clause (filter uses projected column)
+query IT
+SELECT col00, col01 FROM adbc_scan(getvariable('proj_conn')::BIGINT, 'SELECT * FROM wide_table') WHERE col00 > 50 ORDER BY col00;
+----
+100	b0
+200	c0
+
+# Test 9: Projection with expressions
+query IIR
+SELECT col00, col00 * 2 AS doubled, col02 + col05 AS sum_reals FROM adbc_scan(getvariable('proj_conn')::BIGINT, 'SELECT * FROM wide_table') ORDER BY col00;
+----
+0	0	5.5
+100	200	205.5
+200	400	405.5
+
+# Test 10: Select same column multiple times (edge case)
+query III
+SELECT col00, col00, col00 FROM adbc_scan(getvariable('proj_conn')::BIGINT, 'SELECT * FROM wide_table') ORDER BY col00;
+----
+0	0	0
+100	100	100
+200	200	200
+
+# Test 11: Large number of rows with projection (test batching)
+statement ok
+SELECT adbc_execute(getvariable('proj_conn')::BIGINT, 'CREATE TABLE large_wide (c0 INT, c1 INT, c2 INT, c3 INT, c4 INT, c5 INT, c6 INT, c7 INT, c8 INT, c9 INT)');
+
+statement ok
+SELECT adbc_execute(getvariable('proj_conn')::BIGINT, '
+    WITH RECURSIVE cnt(n) AS (
+        SELECT 0
+        UNION ALL
+        SELECT n + 1 FROM cnt WHERE n < 9999
+    )
+    INSERT INTO large_wide SELECT n, n+1, n+2, n+3, n+4, n+5, n+6, n+7, n+8, n+9 FROM cnt
+');
+
+# Select only 2 columns from 10, with 10000 rows
+query II
+SELECT SUM(c0), SUM(c9) FROM adbc_scan(getvariable('proj_conn')::BIGINT, 'SELECT * FROM large_wide');
+----
+49995000	50085000
+
+# Select columns at various positions
+query III
+SELECT SUM(c1), SUM(c5), SUM(c8) FROM adbc_scan(getvariable('proj_conn')::BIGINT, 'SELECT * FROM large_wide');
+----
+50005000	50045000	50075000
+
+# Test 12: Projection with NULL values
+statement ok
+SELECT adbc_execute(getvariable('proj_conn')::BIGINT, 'CREATE TABLE null_test (a INT, b TEXT, c REAL, d INT, e TEXT)');
+
+statement ok
+SELECT adbc_execute(getvariable('proj_conn')::BIGINT, '
+    INSERT INTO null_test VALUES
+    (1, NULL, 1.1, NULL, ''e1''),
+    (NULL, ''b2'', NULL, 4, NULL),
+    (3, ''b3'', 3.3, 6, ''e3'')
+');
+
+# Select columns with NULLs at various positions
+query ITI
+SELECT a, b, d FROM adbc_scan(getvariable('proj_conn')::BIGINT, 'SELECT * FROM null_test') ORDER BY a NULLS LAST;
+----
+1	NULL	NULL
+3	b3	6
+NULL	b2	4
+
+# Select only columns that have NULLs
+query TR
+SELECT b, c FROM adbc_scan(getvariable('proj_conn')::BIGINT, 'SELECT * FROM null_test') ORDER BY c NULLS LAST;
+----
+NULL	1.1
+b3	3.3
+b2	NULL
+
+# Test 13: Count with no columns (just counting rows)
+query I
+SELECT COUNT(*) FROM adbc_scan(getvariable('proj_conn')::BIGINT, 'SELECT * FROM null_test');
+----
+3
+
+# Clean up projection connection
+statement ok
+SELECT adbc_disconnect(getvariable('proj_conn')::BIGINT);

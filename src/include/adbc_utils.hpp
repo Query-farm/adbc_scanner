@@ -30,16 +30,52 @@ inline void CheckAdbc(AdbcStatusCode status, AdbcError *error, const string &con
     }
 
     message += context + ": ";
-    if (error && error->message) {
+
+    bool has_message = error && error->message && error->message[0] != '\0';
+
+    if (has_message) {
         message += error->message;
-        // Add SQLSTATE if available
-        if (error->sqlstate[0] != '\0') {
-            message += " (SQLSTATE: ";
-            message += string(error->sqlstate, 5);
-            message += ")";
-        }
     } else {
+        // No message from driver - include status code name for clarity
         message += StatusCodeToString(status);
+    }
+
+    // Add SQLSTATE if available
+    if (error && error->sqlstate[0] != '\0') {
+        message += " (SQLSTATE: ";
+        message += string(error->sqlstate, 5);
+        message += ")";
+    }
+
+    // Extract additional error details from ADBC 1.1.0+ drivers
+    // These can include database-specific error codes, stack traces, etc.
+    if (error && error->vendor_code == ADBC_ERROR_VENDOR_CODE_PRIVATE_DATA) {
+        int detail_count = AdbcErrorGetDetailCount(error);
+        for (int i = 0; i < detail_count; i++) {
+            struct AdbcErrorDetail detail = AdbcErrorGetDetail(error, i);
+            if (detail.key && detail.value && detail.value_length > 0) {
+                message += "\n    ";
+                message += detail.key;
+                message += " = ";
+                // Treat value as string if it looks like text, otherwise show length
+                bool is_text = true;
+                for (size_t j = 0; j < detail.value_length && is_text; j++) {
+                    // Allow printable ASCII and common whitespace
+                    uint8_t c = detail.value[j];
+                    if (c < 0x20 && c != '\t' && c != '\n' && c != '\r') {
+                        is_text = false;
+                    } else if (c > 0x7E && c < 0xC0) {
+                        // Not valid UTF-8 start byte or ASCII
+                        is_text = false;
+                    }
+                }
+                if (is_text) {
+                    message += string(reinterpret_cast<const char *>(detail.value), detail.value_length);
+                } else {
+                    message += "<binary, " + std::to_string(detail.value_length) + " bytes>";
+                }
+            }
+        }
     }
 
     // Release error resources

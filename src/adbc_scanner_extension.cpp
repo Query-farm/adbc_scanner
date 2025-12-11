@@ -3,8 +3,10 @@
 #include "adbc_scanner_extension.hpp"
 #include "adbc_functions.hpp"
 #include "adbc_secrets.hpp"
+#include "storage/adbc_storage.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/main/config.hpp"
 #include "query_farm_telemetry.hpp"
 
 namespace duckdb {
@@ -27,6 +29,13 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Register ADBC insert function (adbc_insert for bulk ingestion)
 	adbc::RegisterAdbcInsertFunction(loader.GetDatabaseInstance());
+
+	// Register ADBC clear cache function
+	RegisterAdbcClearCacheFunction(loader.GetDatabaseInstance());
+
+	// Register ADBC storage extension for ATTACH support
+	auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
+	config.storage_extensions["adbc"] = make_uniq<AdbcStorageExtension>();
 
 	QueryFarmSendTelemetry(loader, "adbc", "2025120801");
 }

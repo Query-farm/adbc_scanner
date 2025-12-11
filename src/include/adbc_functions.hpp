@@ -21,4 +21,8 @@ void RegisterAdbcExecuteFunction(DatabaseInstance &db);
 void RegisterAdbcInsertFunction(DatabaseInstance &db);
 
 } // namespace adbc
+
+// Register adbc_clear_cache scalar function (outside adbc namespace)
+void RegisterAdbcClearCacheFunction(DatabaseInstance &db);
+
 } // namespace duckdb

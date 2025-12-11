@@ -60,6 +60,11 @@ static unique_ptr<FunctionData> AdbcInfoBind(ClientContext &context, TableFuncti
                                               vector<LogicalType> &return_types, vector<string> &names) {
     auto bind_data = make_uniq<AdbcInfoBindData>();
 
+    // Check for NULL connection handle
+    if (input.inputs[0].IsNull()) {
+        throw InvalidInputException("adbc_info: Connection handle cannot be NULL");
+    }
+
     bind_data->connection_id = input.inputs[0].GetValue<int64_t>();
 
     auto &registry = ConnectionRegistry::Get();
@@ -344,6 +349,11 @@ static unique_ptr<FunctionData> AdbcTablesBind(ClientContext &context, TableFunc
                                                 vector<LogicalType> &return_types, vector<string> &names) {
     auto bind_data = make_uniq<AdbcTablesBindData>();
 
+    // Check for NULL connection handle
+    if (input.inputs[0].IsNull()) {
+        throw InvalidInputException("adbc_tables: Connection handle cannot be NULL");
+    }
+
     bind_data->connection_id = input.inputs[0].GetValue<int64_t>();
 
     // Check for optional filter parameters
@@ -496,6 +506,11 @@ struct AdbcTableTypesGlobalState : public GlobalTableFunctionState {
 static unique_ptr<FunctionData> AdbcTableTypesBind(ClientContext &context, TableFunctionBindInput &input,
                                                     vector<LogicalType> &return_types, vector<string> &names) {
     auto bind_data = make_uniq<AdbcTableTypesBindData>();
+
+    // Check for NULL connection handle
+    if (input.inputs[0].IsNull()) {
+        throw InvalidInputException("adbc_table_types: Connection handle cannot be NULL");
+    }
 
     bind_data->connection_id = input.inputs[0].GetValue<int64_t>();
 
@@ -808,6 +823,11 @@ static void ExtractColumns(ArrowArray *batch, vector<ColumnRow> &column_rows) {
 static unique_ptr<FunctionData> AdbcColumnsBind(ClientContext &context, TableFunctionBindInput &input,
                                                  vector<LogicalType> &return_types, vector<string> &names) {
     auto bind_data = make_uniq<AdbcColumnsBindData>();
+
+    // Check for NULL connection handle
+    if (input.inputs[0].IsNull()) {
+        throw InvalidInputException("adbc_columns: Connection handle cannot be NULL");
+    }
 
     bind_data->connection_id = input.inputs[0].GetValue<int64_t>();
 
@@ -1131,7 +1151,18 @@ static unique_ptr<FunctionData> AdbcSchemaBind(ClientContext &context, TableFunc
                                                 vector<LogicalType> &return_types, vector<string> &names) {
     auto bind_data = make_uniq<AdbcSchemaBindData>();
 
+    // Check for NULL connection handle
+    if (input.inputs[0].IsNull()) {
+        throw InvalidInputException("adbc_schema: Connection handle cannot be NULL");
+    }
+
     bind_data->connection_id = input.inputs[0].GetValue<int64_t>();
+
+    // Check for NULL table name
+    if (input.inputs[1].IsNull()) {
+        throw InvalidInputException("adbc_schema: Table name cannot be NULL");
+    }
+
     bind_data->table_name = input.inputs[1].GetValue<string>();
 
     // Check for optional filter parameters

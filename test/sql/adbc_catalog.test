@@ -6,6 +6,50 @@ require adbc_scanner
 
 require-env HAS_ADBC_SQLITE_DRIVER
 
+# ============================================
+# NULL Connection Handle Tests
+# ============================================
+
+# Test adbc_info with NULL connection handle
+statement error
+SELECT * FROM adbc_info(NULL);
+----
+Invalid Input Error: adbc_info: Connection handle cannot be NULL
+
+# Test adbc_tables with NULL connection handle
+statement error
+SELECT * FROM adbc_tables(NULL);
+----
+Invalid Input Error: adbc_tables: Connection handle cannot be NULL
+
+# Test adbc_table_types with NULL connection handle
+statement error
+SELECT * FROM adbc_table_types(NULL);
+----
+Invalid Input Error: adbc_table_types: Connection handle cannot be NULL
+
+# Test adbc_columns with NULL connection handle
+statement error
+SELECT * FROM adbc_columns(NULL);
+----
+Invalid Input Error: adbc_columns: Connection handle cannot be NULL
+
+# Test adbc_schema with NULL connection handle
+statement error
+SELECT * FROM adbc_schema(NULL, 'test');
+----
+Invalid Input Error: adbc_schema: Connection handle cannot be NULL
+
+# Test adbc_schema with NULL table name
+statement error
+SELECT * FROM adbc_schema(12345, NULL);
+----
+Invalid Input Error: adbc_schema: Table name cannot be NULL
+
+# ============================================
+# Normal Tests
+# ============================================
+
 statement ok
 SET VARIABLE conn_id = (SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:'}));
 

@@ -32,6 +32,16 @@ set(EXTENSION_SOURCES
     src/adbc_secrets.cpp
     src/adbc_filter_pushdown.cpp
     src/query_farm_telemetry.cpp
+    src/storage/adbc_catalog.cpp
+    src/storage/adbc_catalog_set.cpp
+    src/storage/adbc_schema_set.cpp
+    src/storage/adbc_schema_entry.cpp
+    src/storage/adbc_table_set.cpp
+    src/storage/adbc_table_entry.cpp
+    src/storage/adbc_transaction.cpp
+    src/storage/adbc_transaction_manager.cpp
+    src/storage/adbc_storage.cpp
+    src/storage/adbc_clear_cache.cpp
 )
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})

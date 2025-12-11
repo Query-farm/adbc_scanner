@@ -362,8 +362,18 @@ static unique_ptr<FunctionData> AdbcScanBind(ClientContext &context, TableFuncti
                                               vector<LogicalType> &return_types, vector<string> &names) {
     auto bind_data = make_uniq<AdbcScanBindData>();
 
+    // Check for NULL connection handle
+    if (input.inputs[0].IsNull()) {
+        throw InvalidInputException("adbc_scan: Connection handle cannot be NULL");
+    }
+
     // Get connection ID from first argument
     bind_data->connection_id = input.inputs[0].GetValue<int64_t>();
+
+    // Check for NULL query
+    if (input.inputs[1].IsNull()) {
+        throw InvalidInputException("adbc_scan: Query cannot be NULL");
+    }
 
     // Get SQL query from second argument
     bind_data->query = input.inputs[1].GetValue<string>();
@@ -724,8 +734,18 @@ static unique_ptr<FunctionData> AdbcScanTableBind(ClientContext &context, TableF
                                                    vector<LogicalType> &return_types, vector<string> &names) {
     auto bind_data = make_uniq<AdbcScanBindData>();
 
+    // Check for NULL connection handle
+    if (input.inputs[0].IsNull()) {
+        throw InvalidInputException("adbc_scan_table: Connection handle cannot be NULL");
+    }
+
     // Get connection ID from first argument
     bind_data->connection_id = input.inputs[0].GetValue<int64_t>();
+
+    // Check for NULL table name
+    if (input.inputs[1].IsNull()) {
+        throw InvalidInputException("adbc_scan_table: Table name cannot be NULL");
+    }
 
     // Get table name from second argument
     bind_data->table_name = input.inputs[1].GetValue<string>();
@@ -861,17 +881,30 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanTableInitGlobal(ClientContex
     // If we have column_ids and they're a subset of all columns, build a projected query
     string query;
     bool needs_projection = false;
-    if (!bind_data.table_name.empty() && !input.column_ids.empty()) {
+
+    // Count how many valid column IDs we have (excluding special IDs like COLUMN_IDENTIFIER_ROW_ID)
+    idx_t valid_column_count = 0;
+    for (auto col_id : input.column_ids) {
+        if (col_id < bind_data.all_column_names.size()) {
+            valid_column_count++;
+        }
+    }
+
+    if (!bind_data.table_name.empty() && valid_column_count > 0) {
         // Check if we need all columns or just a subset
-        needs_projection = input.column_ids.size() < bind_data.all_column_names.size();
+        needs_projection = valid_column_count < bind_data.all_column_names.size();
 
         // Also check if columns are in order and consecutive from 0
         // If column_ids = [0, 1, 2, ...] matching all_column_names size, no projection needed
         if (!needs_projection) {
-            for (idx_t i = 0; i < input.column_ids.size(); i++) {
-                if (input.column_ids[i] != i) {
-                    needs_projection = true;
-                    break;
+            idx_t expected_idx = 0;
+            for (auto col_id : input.column_ids) {
+                if (col_id < bind_data.all_column_names.size()) {
+                    if (col_id != expected_idx) {
+                        needs_projection = true;
+                        break;
+                    }
+                    expected_idx++;
                 }
             }
         }
@@ -898,7 +931,8 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanTableInitGlobal(ClientContex
             query = bind_data.query;
         }
     } else {
-        // Fall back to original query
+        // No valid columns requested (e.g., count(*)) or empty column_ids - use SELECT *
+        // We need to select something, so fall back to original query
         query = bind_data.query;
     }
 
@@ -1359,26 +1393,38 @@ static void AdbcExecuteFunction(DataChunk &args, ExpressionState &state, Vector 
     // Handle constant input (for constant folding optimization)
     if (conn_vector.GetVectorType() == VectorType::CONSTANT_VECTOR &&
         query_vector.GetVectorType() == VectorType::CONSTANT_VECTOR) {
-        if (ConstantVector::IsNull(conn_vector) || ConstantVector::IsNull(query_vector)) {
-            result.SetVectorType(VectorType::CONSTANT_VECTOR);
-            ConstantVector::SetNull(result, true);
-        } else {
-            auto connection_id = conn_vector.GetValue(0).GetValue<int64_t>();
-            auto query = query_vector.GetValue(0).GetValue<string>();
-            auto rows_affected = ExecuteStatement(connection_id, query);
-            result.SetVectorType(VectorType::CONSTANT_VECTOR);
-            ConstantVector::GetData<int64_t>(result)[0] = rows_affected;
+        if (ConstantVector::IsNull(conn_vector)) {
+            throw InvalidInputException("adbc_execute: Connection handle cannot be NULL");
         }
+        if (ConstantVector::IsNull(query_vector)) {
+            throw InvalidInputException("adbc_execute: Query cannot be NULL");
+        }
+        auto connection_id = conn_vector.GetValue(0).GetValue<int64_t>();
+        auto query = query_vector.GetValue(0).GetValue<string>();
+        auto rows_affected = ExecuteStatement(connection_id, query);
+        result.SetVectorType(VectorType::CONSTANT_VECTOR);
+        ConstantVector::GetData<int64_t>(result)[0] = rows_affected;
         return;
     }
 
     // Handle flat/dictionary vectors
     result.SetVectorType(VectorType::FLAT_VECTOR);
     auto result_data = FlatVector::GetData<int64_t>(result);
+    auto &validity = FlatVector::Validity(result);
 
     for (idx_t row_idx = 0; row_idx < count; row_idx++) {
-        auto connection_id = conn_vector.GetValue(row_idx).GetValue<int64_t>();
-        auto query = query_vector.GetValue(row_idx).GetValue<string>();
+        auto conn_value = conn_vector.GetValue(row_idx);
+        auto query_value = query_vector.GetValue(row_idx);
+
+        if (conn_value.IsNull()) {
+            throw InvalidInputException("adbc_execute: Connection handle cannot be NULL");
+        }
+        if (query_value.IsNull()) {
+            throw InvalidInputException("adbc_execute: Query cannot be NULL");
+        }
+
+        auto connection_id = conn_value.GetValue<int64_t>();
+        auto query = query_value.GetValue<string>();
         result_data[row_idx] = ExecuteStatement(connection_id, query);
     }
 }
@@ -1394,6 +1440,8 @@ void RegisterAdbcExecuteFunction(DatabaseInstance &db) {
         AdbcExecuteFunction,
         AdbcExecuteBind
     );
+    // Disable automatic NULL propagation so we can throw a meaningful error
+    adbc_execute_function.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
 
     CreateScalarFunctionInfo info(adbc_execute_function);
     FunctionDescription desc;
@@ -1537,8 +1585,19 @@ static unique_ptr<FunctionData> AdbcInsertBind(ClientContext &context, TableFunc
                                                 vector<LogicalType> &return_types, vector<string> &names) {
     auto bind_data = make_uniq<AdbcInsertBindData>();
 
+    // Check for NULL connection handle
+    if (input.inputs[0].IsNull()) {
+        throw InvalidInputException("adbc_insert: Connection handle cannot be NULL");
+    }
+
     // First argument is connection handle
     bind_data->connection_id = input.inputs[0].GetValue<int64_t>();
+
+    // Check for NULL table name
+    if (input.inputs[1].IsNull()) {
+        throw InvalidInputException("adbc_insert: Target table name cannot be NULL");
+    }
+
     // Second argument is target table name
     bind_data->target_table = input.inputs[1].GetValue<string>();
 

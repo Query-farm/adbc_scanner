@@ -6,6 +6,22 @@ require adbc_scanner
 
 require-env HAS_ADBC_SQLITE_DRIVER
 
+# ============================================
+# NULL Connection Handle Tests
+# ============================================
+
+# Test adbc_scan with NULL connection handle
+statement error
+SELECT * FROM adbc_scan(NULL, 'SELECT 1');
+----
+Invalid Input Error: adbc_scan: Connection handle cannot be NULL
+
+# Test adbc_scan with NULL query
+statement error
+SELECT * FROM adbc_scan(12345, NULL);
+----
+Invalid Input Error: adbc_scan: Query cannot be NULL
+
 # Test adbc_scan with invalid connection handle
 statement error
 SELECT * FROM adbc_scan(12345, 'SELECT 1');

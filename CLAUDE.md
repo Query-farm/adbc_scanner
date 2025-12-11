@@ -100,6 +100,39 @@ A manifest file is a TOML file (e.g., `sqlite.toml`) containing driver metadata 
 - `adbc_columns(handle, [table_name := ...])` - Returns column metadata (name, type, ordinal position, nullability).
 - `adbc_schema(handle, table_name)` - Returns the Arrow schema for a specific table (field names, Arrow types, nullability).
 
+### Storage Extension (ATTACH)
+
+The extension also provides a storage extension that allows attaching ADBC data sources as DuckDB databases. This enables querying remote tables using standard SQL syntax without explicit function calls.
+
+```sql
+-- Attach an ADBC data source
+ATTACH 'path/to/database.db' AS my_db (TYPE adbc, driver 'sqlite');
+
+-- Query tables directly
+SELECT * FROM my_db.my_table;
+```
+
+**ATTACH options:**
+- `driver` (required) - Driver name, path to shared library, or manifest name
+- `entrypoint` - Custom entry point function name
+- `search_paths` - Additional paths to search for driver manifests
+- `use_manifests` - Enable/disable manifest search (default: 'true')
+- `batch_size` - Hint for number of rows per batch when scanning tables (default: driver-specific). Larger batch sizes can reduce network round-trips for remote databases.
+- Other options are passed directly to the ADBC driver (e.g., `username`, `password`)
+
+**Examples:**
+```sql
+-- Attach SQLite database
+ATTACH '/path/to/mydb.sqlite' AS sqlite_db (TYPE adbc, driver 'sqlite');
+
+-- Attach with custom batch size (useful for network databases)
+ATTACH 'postgresql://localhost/mydb' AS pg_db (TYPE adbc, driver 'postgresql', batch_size 65536);
+
+-- Query attached tables
+SELECT * FROM pg_db.public.users WHERE id > 100;
+SELECT COUNT(*) FROM sqlite_db.main.orders;
+```
+
 ### Example Usage
 
 ```sql

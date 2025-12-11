@@ -6,6 +6,26 @@ require adbc_scanner
 
 require-env HAS_ADBC_SQLITE_DRIVER
 
+# ============================================
+# NULL Connection Handle Tests
+# ============================================
+
+# Test adbc_scan_table with NULL connection handle
+statement error
+SELECT * FROM adbc_scan_table(NULL, 'test');
+----
+Invalid Input Error: adbc_scan_table: Connection handle cannot be NULL
+
+# Test adbc_scan_table with NULL table name
+statement error
+SELECT * FROM adbc_scan_table(12345, NULL);
+----
+Invalid Input Error: adbc_scan_table: Table name cannot be NULL
+
+# ============================================
+# Normal Tests
+# ============================================
+
 statement ok
 SET VARIABLE conn_id = (SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:'}));
 
@@ -146,6 +166,53 @@ query I
 SELECT COUNT(*) FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'wide_proj_test');
 ----
 3
+
+# ============================================
+# No Column Selection Tests (aggregations, EXISTS, etc.)
+# These test the case where DuckDB doesn't need any actual columns
+# ============================================
+
+# COUNT(*) without any column reference
+query I
+SELECT COUNT(*) FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'employees');
+----
+3
+
+# Multiple COUNT(*) in same query
+query II
+SELECT COUNT(*), COUNT(*) FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'employees');
+----
+3	3
+
+# EXISTS subquery (no columns needed from inner query)
+query I
+SELECT CASE WHEN EXISTS (SELECT 1 FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'employees')) THEN 1 ELSE 0 END;
+----
+1
+
+# EXISTS with empty result
+query I
+SELECT CASE WHEN EXISTS (SELECT 1 FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'employees') WHERE id > 1000) THEN 1 ELSE 0 END;
+----
+0
+
+# NOT EXISTS
+query I
+SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'employees') WHERE id > 1000) THEN 1 ELSE 0 END;
+----
+1
+
+# COUNT(*) with filter
+query I
+SELECT COUNT(*) FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'employees') WHERE id > 1;
+----
+2
+
+# Literal selection (no columns from table)
+query I
+SELECT 42 FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'employees') LIMIT 1;
+----
+42
 
 # ============================================
 # Filter Pushdown Tests

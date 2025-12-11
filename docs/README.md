@@ -726,6 +726,83 @@ DROP PERSISTENT SECRET my_postgres;
 - Persistent secrets are stored encrypted on disk
 - Secrets are scoped to the current DuckDB connection/session
 
+## Storage Extension (ATTACH)
+
+The ADBC Scanner extension provides a storage extension that allows you to attach ADBC data sources as DuckDB databases. This enables querying remote tables using standard SQL syntax without explicit function calls.
+
+### Basic Usage
+
+```sql
+-- Attach an ADBC data source
+ATTACH '/path/to/database.db' AS my_db (TYPE adbc, driver 'sqlite');
+
+-- Query tables directly using standard SQL
+SELECT * FROM my_db.my_table;
+SELECT * FROM my_db.main.users WHERE id > 100;
+
+-- Detach when done
+DETACH my_db;
+```
+
+### ATTACH Options
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `TYPE` | Yes | Must be `adbc` |
+| `driver` | Yes | Driver name (e.g., `'sqlite'`, `'postgresql'`), path to shared library, or manifest name |
+| `entrypoint` | No | Custom driver entry point function name |
+| `search_paths` | No | Additional paths to search for driver manifests |
+| `use_manifests` | No | Enable/disable manifest search (default: `'true'`) |
+| `batch_size` | No | Hint for number of rows per batch when scanning tables (default: driver-specific). Larger batch sizes can reduce network round-trips for remote databases. |
+
+Any other options are passed directly to the ADBC driver (e.g., `username`, `password`).
+
+### Examples
+
+```sql
+-- Attach a SQLite database
+ATTACH '/path/to/mydb.sqlite' AS sqlite_db (TYPE adbc, driver 'sqlite');
+
+-- Attach PostgreSQL with credentials
+ATTACH 'postgresql://localhost/mydb' AS pg_db (
+    TYPE adbc,
+    driver 'postgresql',
+    username 'user',
+    password 'secret'
+);
+
+-- Attach with custom batch size (useful for network databases)
+ATTACH 'postgresql://localhost/mydb' AS pg_db (
+    TYPE adbc,
+    driver 'postgresql',
+    batch_size 65536
+);
+
+-- Query attached databases
+SELECT * FROM pg_db.public.users WHERE active = true;
+SELECT COUNT(*) FROM sqlite_db.main.orders;
+
+-- Join tables from different attached databases
+SELECT u.name, o.total
+FROM pg_db.public.users u
+JOIN sqlite_db.main.orders o ON u.id = o.user_id;
+```
+
+### Features
+
+When querying attached ADBC tables, the following optimizations are automatically applied:
+
+- **Projection pushdown**: Only requested columns are fetched from the remote database
+- **Filter pushdown**: WHERE clauses are pushed to the remote database with parameter binding
+- **Cardinality estimation**: Row count statistics are used for query planning
+- **Progress reporting**: Scan progress is reported based on estimated row counts
+
+### Limitations
+
+- Attached ADBC databases are read-only; INSERT, UPDATE, and DELETE operations are not supported through the ATTACH interface (use `adbc_execute` instead)
+- Schema creation and modification are not supported
+- The connection remains open while the database is attached
+
 ## ADBC Drivers
 
 ADBC drivers are available for many databases. When using driver manifests (see below), you can reference drivers by their short name:

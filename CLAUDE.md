@@ -89,7 +89,7 @@ A manifest file is a TOML file (e.g., `sqlite.toml`) containing driver metadata 
 
 ### Query Execution
 - `adbc_scan(handle, query, [params := row(...)], [batch_size := N])` - Execute a SELECT query and return results as a table. Supports parameterized queries via the optional `params` named parameter. The optional `batch_size` parameter hints to the driver how many rows to return per batch (default: driver-specific, typically 2048). This is a best-effort hint that may be ignored by drivers that don't support it.
-- `adbc_scan_table(handle, table_name, [batch_size := N])` - Scan an entire table by name and return all rows. Convenience function that generates `SELECT * FROM "table_name"` internally. Supports projection pushdown (only requested columns are fetched), filter pushdown (WHERE clauses are pushed to the remote database with parameter binding), cardinality estimation, progress reporting, and column-level statistics for query optimization (distinct count, null count when available from the driver via `AdbcConnectionGetStatistics`).
+- `adbc_scan_table(handle, table_name, [catalog := ...], [schema := ...], [batch_size := N])` - Scan an entire table by name and return all rows. Supports optional `catalog` and `schema` parameters for fully qualified table names. Supports projection pushdown (only requested columns are fetched), filter pushdown (WHERE clauses are pushed to the remote database with parameter binding), cardinality estimation, progress reporting, and column-level statistics for query optimization (distinct count, null count, min/max when available from the driver via `AdbcConnectionGetStatistics`).
 - `adbc_execute(handle, query)` - Execute DDL/DML statements (CREATE, INSERT, UPDATE, DELETE). Returns affected row count.
 - `adbc_insert(handle, table_name, <table>, [mode := ...])` - Bulk insert data from a subquery. Modes: 'create', 'append', 'replace', 'create_append'.
 
@@ -117,6 +117,12 @@ SELECT * FROM adbc_scan(getvariable('conn')::BIGINT, 'SELECT 1 AS a, 2 AS b');
 
 -- Scan an entire table by name
 SELECT * FROM adbc_scan_table(getvariable('conn')::BIGINT, 'test');
+
+-- Scan a table with schema qualification (e.g., PostgreSQL)
+SELECT * FROM adbc_scan_table(getvariable('conn')::BIGINT, 'users', schema := 'public');
+
+-- Scan a table with full catalog.schema.table qualification
+SELECT * FROM adbc_scan_table(getvariable('conn')::BIGINT, 'users', catalog := 'mydb', schema := 'public');
 
 -- Parameterized query
 SELECT * FROM adbc_scan(getvariable('conn')::BIGINT, 'SELECT ? AS value', params := row(42));

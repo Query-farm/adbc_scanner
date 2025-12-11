@@ -232,7 +232,7 @@ SELECT adbc_set_autocommit(getvariable('conn')::BIGINT, true);
 Executes a SELECT query and returns the results as a table.
 
 ```sql
-adbc_scan(connection_id, query, [params := row(...)]) -> TABLE
+adbc_scan(connection_id, query, [params := row(...)], [batch_size := N]) -> TABLE
 ```
 
 **Parameters:**
@@ -240,6 +240,7 @@ adbc_scan(connection_id, query, [params := row(...)]) -> TABLE
 - `connection_id`: Connection handle from `adbc_connect`
 - `query`: SQL SELECT query to execute
 - `params` (optional): Query parameters as a STRUCT created with `row(...)`
+- `batch_size` (optional): Hint to the driver for how many rows to return per batch (default: driver-specific)
 
 **Returns:** A table with columns matching the query result.
 
@@ -259,6 +260,40 @@ SELECT * FROM adbc_scan(
 -- Aggregate results
 SELECT COUNT(*), AVG(price)
 FROM adbc_scan(getvariable('conn')::BIGINT, 'SELECT * FROM orders');
+
+-- With batch size hint for network drivers
+SELECT * FROM adbc_scan(getvariable('conn')::BIGINT, 'SELECT * FROM large_table', batch_size := 65536);
+```
+
+### adbc_scan_table
+
+Scans an entire table by name and returns all rows. This is a convenience function that generates `SELECT * FROM "table_name"` internally.
+
+```sql
+adbc_scan_table(connection_id, table_name, [batch_size := N]) -> TABLE
+```
+
+**Parameters:**
+
+- `connection_id`: Connection handle from `adbc_connect`
+- `table_name`: Name of the table to scan
+- `batch_size` (optional): Hint to the driver for how many rows to return per batch (default: driver-specific)
+
+**Returns:** A table with all columns from the specified table.
+
+**Examples:**
+
+```sql
+-- Scan an entire table
+SELECT * FROM adbc_scan_table(getvariable('conn')::BIGINT, 'users');
+
+-- With batch size hint
+SELECT * FROM adbc_scan_table(getvariable('conn')::BIGINT, 'large_table', batch_size := 65536);
+
+-- Combine with DuckDB operations
+SELECT department, AVG(salary) as avg_salary
+FROM adbc_scan_table(getvariable('conn')::BIGINT, 'employees')
+GROUP BY department;
 ```
 
 ### adbc_execute
@@ -771,6 +806,9 @@ SELECT department, AVG(salary) as avg_salary, COUNT(*) as count
 FROM adbc_scan(getvariable('sqlite_conn')::BIGINT, 'SELECT * FROM employees')
 GROUP BY department
 ORDER BY avg_salary DESC;
+
+-- Scan entire table by name (simpler alternative to adbc_scan for full table scans)
+SELECT * FROM adbc_scan_table(getvariable('sqlite_conn')::BIGINT, 'employees');
 
 -- List tables
 SELECT * FROM adbc_tables(getvariable('sqlite_conn')::BIGINT);

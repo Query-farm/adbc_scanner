@@ -1,0 +1,67 @@
+# name: test/sql/adbc_transactions.test
+# description: test adbc transaction functions (commit, rollback, set_autocommit)
+# group: [adbc]
+
+require adbc_scanner
+
+require-env HAS_ADBC_SQLITE_DRIVER
+
+# Test adbc_commit with invalid connection handle
+statement error
+SELECT adbc_commit(12345);
+----
+Invalid Input Error: adbc_commit: Invalid connection handle: 12345
+
+# Test adbc_rollback with invalid connection handle
+statement error
+SELECT adbc_rollback(12345);
+----
+Invalid Input Error: adbc_rollback: Invalid connection handle: 12345
+
+# Test adbc_set_autocommit with invalid connection handle
+statement error
+SELECT adbc_set_autocommit(12345, false);
+----
+Invalid Input Error: adbc_set_autocommit: Invalid connection handle: 12345
+
+# Create a connection for transaction tests
+statement ok
+SET VARIABLE conn_id = (SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:'}));
+
+# Create a test table
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE tx_test (id INTEGER, value TEXT)');
+
+# Test rollback - disable autocommit, insert, rollback
+query I
+SELECT adbc_set_autocommit(getvariable('conn_id')::BIGINT, false);
+----
+true
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO tx_test VALUES (1, ''will rollback'')');
+
+# Rollback the transaction
+query I
+SELECT adbc_rollback(getvariable('conn_id')::BIGINT);
+----
+true
+
+# Test commit - insert data and commit
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO tx_test VALUES (2, ''committed'')');
+
+query I
+SELECT adbc_commit(getvariable('conn_id')::BIGINT);
+----
+true
+
+# Re-enable autocommit
+query I
+SELECT adbc_set_autocommit(getvariable('conn_id')::BIGINT, true);
+----
+true
+
+# Clean up
+statement ok
+SELECT adbc_disconnect(getvariable('conn_id')::BIGINT);

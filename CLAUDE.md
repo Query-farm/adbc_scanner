@@ -10,6 +10,8 @@ There is a checkout of a similar project under ./odbc-scanner which is the ODBC 
 
 There is also a checkout of the Airport DuckDB extension under ./airport. The Airport extension integrates DuckDB with Apache Arrow Flight and demonstrates C++ code that can read Arrow record batches and return them to DuckDB. The docs are under ./airport/docs/README.md, but you're mostly interested in airport_take_flight.cpp.
 
+There is also a checkout of the DuckDB postgresql extension under ./duckdb-postgres.  The postgresql extension integrates DuckDB with psotgres and demonstrates C++ code that can interact with the foreign postgresql tables.
+
 ## Extension Functions
 
 The extension provides the following functions:
@@ -87,6 +89,7 @@ A manifest file is a TOML file (e.g., `sqlite.toml`) containing driver metadata 
 
 ### Query Execution
 - `adbc_scan(handle, query, [params := row(...)], [batch_size := N])` - Execute a SELECT query and return results as a table. Supports parameterized queries via the optional `params` named parameter. The optional `batch_size` parameter hints to the driver how many rows to return per batch (default: driver-specific, typically 2048). This is a best-effort hint that may be ignored by drivers that don't support it.
+- `adbc_scan_table(handle, table_name, [batch_size := N])` - Scan an entire table by name and return all rows. Convenience function that generates `SELECT * FROM "table_name"` internally. Supports projection pushdown (only requested columns are fetched), filter pushdown (WHERE clauses are pushed to the remote database with parameter binding), cardinality estimation, progress reporting, and column-level statistics for query optimization (distinct count, null count when available from the driver via `AdbcConnectionGetStatistics`).
 - `adbc_execute(handle, query)` - Execute DDL/DML statements (CREATE, INSERT, UPDATE, DELETE). Returns affected row count.
 - `adbc_insert(handle, table_name, <table>, [mode := ...])` - Bulk insert data from a subquery. Modes: 'create', 'append', 'replace', 'create_append'.
 
@@ -111,6 +114,9 @@ SET VARIABLE conn = (SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:',
 
 -- Query data
 SELECT * FROM adbc_scan(getvariable('conn')::BIGINT, 'SELECT 1 AS a, 2 AS b');
+
+-- Scan an entire table by name
+SELECT * FROM adbc_scan_table(getvariable('conn')::BIGINT, 'test');
 
 -- Parameterized query
 SELECT * FROM adbc_scan(getvariable('conn')::BIGINT, 'SELECT ? AS value', params := row(42));

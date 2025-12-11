@@ -1,0 +1,453 @@
+# name: test/sql/adbc_scan_table.test
+# description: test adbc_scan_table function with projection and filter pushdown
+# group: [adbc]
+
+require adbc_scanner
+
+require-env HAS_ADBC_SQLITE_DRIVER
+
+statement ok
+SET VARIABLE conn_id = (SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:'}));
+
+# ============================================
+# Basic adbc_scan_table Tests
+# ============================================
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE employees (id INTEGER, name TEXT, salary REAL)');
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO employees VALUES (1, ''Alice'', 75000.0), (2, ''Bob'', 85000.0), (3, ''Charlie'', 95000.0)');
+
+# Test basic adbc_scan_table
+query ITR
+SELECT * FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'employees') ORDER BY id;
+----
+1	Alice	75000.0
+2	Bob	85000.0
+3	Charlie	95000.0
+
+# Test adbc_scan_table with WHERE clause (DuckDB side)
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'employees') WHERE salary > 80000 ORDER BY id;
+----
+2	Bob
+3	Charlie
+
+# Test adbc_scan_table with aggregation
+query IR
+SELECT COUNT(*), AVG(salary) FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'employees');
+----
+3	85000.0
+
+# Test adbc_scan_table with batch_size parameter
+query I
+SELECT COUNT(*) FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'employees', batch_size := 1);
+----
+3
+
+# Test adbc_scan_table with invalid connection handle
+statement error
+SELECT * FROM adbc_scan_table(12345, 'test');
+----
+Invalid Input Error: adbc_scan_table: Invalid connection handle: 12345
+
+# Test adbc_scan_table with non-existent table
+statement error
+SELECT * FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'nonexistent_table');
+----
+
+# Create a table with special characters in name
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE "my-table" (value INTEGER)');
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO "my-table" VALUES (42)');
+
+# Test adbc_scan_table with special characters in table name
+query I
+SELECT * FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'my-table');
+----
+42
+
+# ============================================
+# Projection Pushdown Tests
+# ============================================
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE wide_proj_test (col0 INTEGER, col1 TEXT, col2 REAL, col3 INTEGER, col4 TEXT, col5 REAL)');
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO wide_proj_test VALUES (1, ''a'', 1.1, 10, ''aa'', 10.1), (2, ''b'', 2.2, 20, ''bb'', 20.2), (3, ''c'', 3.3, 30, ''cc'', 30.3)');
+
+# Select only first column
+query I
+SELECT col0 FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'wide_proj_test') ORDER BY col0;
+----
+1
+2
+3
+
+# Select only last column
+query R
+SELECT col5 FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'wide_proj_test') ORDER BY col5;
+----
+10.1
+20.2
+30.3
+
+# Select non-adjacent columns
+query IRT
+SELECT col0, col2, col4 FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'wide_proj_test') ORDER BY col0;
+----
+1	1.1	aa
+2	2.2	bb
+3	3.3	cc
+
+# Select columns in reverse order
+query TRI
+SELECT col4, col2, col0 FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'wide_proj_test') ORDER BY col0;
+----
+aa	1.1	1
+bb	2.2	2
+cc	3.3	3
+
+# Select first and last columns
+query IR
+SELECT col0, col5 FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'wide_proj_test') ORDER BY col0;
+----
+1	10.1
+2	20.2
+3	30.3
+
+# Aggregation with projection
+query IR
+SELECT COUNT(*), SUM(col3) FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'wide_proj_test');
+----
+3	60
+
+# Projection with WHERE clause referencing non-projected column
+query IT
+SELECT col0, col1 FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'wide_proj_test') WHERE col3 > 15 ORDER BY col0;
+----
+2	b
+3	c
+
+# Projection with computed expressions
+query II
+SELECT col0, col0 * col3 AS product FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'wide_proj_test') ORDER BY col0;
+----
+1	10
+2	40
+3	90
+
+# COUNT(*) only
+query I
+SELECT COUNT(*) FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'wide_proj_test');
+----
+3
+
+# ============================================
+# Filter Pushdown Tests
+# ============================================
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE filter_test (id INTEGER, name TEXT, value REAL, category TEXT)');
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO filter_test VALUES (1, ''Alice'', 10.5, ''A''), (2, ''Bob'', 20.5, ''B''), (3, ''Charlie'', 30.5, ''A''), (4, ''Diana'', 40.5, ''B''), (5, ''Eve'', 50.5, ''C'')');
+
+# Basic equality filter
+query ITR
+SELECT id, name, value FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'filter_test') WHERE id = 3;
+----
+3	Charlie	30.5
+
+# Greater than filter
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'filter_test') WHERE id > 3 ORDER BY id;
+----
+4	Diana
+5	Eve
+
+# Less than filter
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'filter_test') WHERE id < 3 ORDER BY id;
+----
+1	Alice
+2	Bob
+
+# Greater than or equal filter
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'filter_test') WHERE id >= 4 ORDER BY id;
+----
+4	Diana
+5	Eve
+
+# Less than or equal filter
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'filter_test') WHERE id <= 2 ORDER BY id;
+----
+1	Alice
+2	Bob
+
+# Not equal filter
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'filter_test') WHERE id <> 3 ORDER BY id;
+----
+1	Alice
+2	Bob
+4	Diana
+5	Eve
+
+# String equality filter
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'filter_test') WHERE name = 'Bob';
+----
+2	Bob
+
+# Combined AND filters
+query ITR
+SELECT id, name, value FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'filter_test') WHERE id > 2 AND value < 45.0 ORDER BY id;
+----
+3	Charlie	30.5
+4	Diana	40.5
+
+# Filter with projection
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'filter_test') WHERE value > 35.0 ORDER BY id;
+----
+4	Diana
+5	Eve
+
+# Filter with aggregation
+query IR
+SELECT COUNT(*), AVG(value) FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'filter_test') WHERE category = 'A';
+----
+2	20.5
+
+# IS NULL filter
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE null_filter_test (id INTEGER, name TEXT)');
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO null_filter_test VALUES (1, ''One''), (2, NULL), (3, ''Three''), (4, NULL)');
+
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'null_filter_test') WHERE name IS NULL ORDER BY id;
+----
+2	NULL
+4	NULL
+
+# IS NOT NULL filter
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'null_filter_test') WHERE name IS NOT NULL ORDER BY id;
+----
+1	One
+3	Three
+
+# IN filter
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'filter_test') WHERE id IN (1, 3, 5) ORDER BY id;
+----
+1	Alice
+3	Charlie
+5	Eve
+
+# IN filter with strings
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'filter_test') WHERE category IN ('A', 'C') ORDER BY id;
+----
+1	Alice
+3	Charlie
+5	Eve
+
+# Range filter (multiple filters on same column)
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'filter_test') WHERE id >= 2 AND id <= 4 ORDER BY id;
+----
+2	Bob
+3	Charlie
+4	Diana
+
+# Large table filter test
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, '
+    CREATE TABLE large_filter_test (id INTEGER, category TEXT, value REAL)
+');
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, '
+    WITH RECURSIVE cnt(n) AS (
+        SELECT 0
+        UNION ALL
+        SELECT n + 1 FROM cnt WHERE n < 9999
+    )
+    INSERT INTO large_filter_test SELECT n, CASE WHEN n % 3 = 0 THEN ''A'' WHEN n % 3 = 1 THEN ''B'' ELSE ''C'' END, n * 1.5 FROM cnt
+');
+
+query I
+SELECT COUNT(*) FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'large_filter_test') WHERE category = 'A';
+----
+3334
+
+query I
+SELECT COUNT(*) FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'large_filter_test') WHERE category = 'B' AND id > 5000;
+----
+1666
+
+# ============================================
+# Parameter Binding Tests (SQL Injection Prevention)
+# ============================================
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE binding_test (id INTEGER, name TEXT, description TEXT)');
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (1, ''normal'', ''Just a normal string'')');
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (2, ''single''''quote'', ''String with single quote'')');
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (3, ''double"quote'', ''String with double quote'')');
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (4, ''back\slash'', ''String with backslash'')');
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (5, ''semi;colon'', ''String with semicolon'')');
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (6, ''--comment'', ''String that looks like SQL comment'')');
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (7, ''DROP TABLE'', ''String with SQL keywords'')');
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (8, ''1=1 OR'', ''String with SQL injection attempt'')');
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (9, ''percent%wild_card'', ''String with SQL wildcards'')');
+
+# Single quote in value
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'binding_test') WHERE name = 'single''quote';
+----
+2	single'quote
+
+# Double quote in value
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'binding_test') WHERE name = 'double"quote';
+----
+3	double"quote
+
+# Backslash in value
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'binding_test') WHERE name = 'back\slash';
+----
+4	back\slash
+
+# Semicolon in value
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'binding_test') WHERE name = 'semi;colon';
+----
+5	semi;colon
+
+# SQL comment syntax
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'binding_test') WHERE name = '--comment';
+----
+6	--comment
+
+# SQL keywords
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'binding_test') WHERE name = 'DROP TABLE';
+----
+7	DROP TABLE
+
+# SQL injection attempt
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'binding_test') WHERE name = '1=1 OR';
+----
+8	1=1 OR
+
+# SQL wildcard characters
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'binding_test') WHERE name = 'percent%wild_card';
+----
+9	percent%wild_card
+
+# IN filter with special characters
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'binding_test') WHERE name IN ('single''quote', '--comment', 'DROP TABLE') ORDER BY id;
+----
+2	single'quote
+6	--comment
+7	DROP TABLE
+
+# Numeric comparison with negative numbers
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE numeric_binding_test (id INTEGER, value REAL)');
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO numeric_binding_test VALUES (1, -123.456), (2, 0.0), (3, 123.456), (4, -0.001)');
+
+query IR
+SELECT id, value FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'numeric_binding_test') WHERE value < 0 ORDER BY id;
+----
+1	-123.456
+4	-0.001
+
+query IR
+SELECT id, value FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'numeric_binding_test') WHERE value = -123.456;
+----
+1	-123.456
+
+# ============================================
+# Cardinality Estimation Tests
+# ============================================
+
+# EXPLAIN works (verifies cardinality callback doesn't crash)
+statement ok
+EXPLAIN SELECT * FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'binding_test');
+
+# EXPLAIN ANALYZE works
+statement ok
+EXPLAIN ANALYZE SELECT * FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'binding_test');
+
+# Query planning with joins
+statement ok
+EXPLAIN SELECT a.id, b.id FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'binding_test') a, adbc_scan_table(getvariable('conn_id')::BIGINT, 'numeric_binding_test') b WHERE a.id = b.id;
+
+# ============================================
+# EXPLAIN Tests
+# ============================================
+
+statement ok
+EXPLAIN SELECT * FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'wide_proj_test');
+
+statement ok
+EXPLAIN SELECT col0 FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'wide_proj_test');
+
+statement ok
+EXPLAIN SELECT col0, col2, col4 FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'wide_proj_test');
+
+statement ok
+EXPLAIN SELECT SUM(col3) FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'wide_proj_test');
+
+statement ok
+EXPLAIN SELECT col0, col1 FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'wide_proj_test') WHERE col3 > 10;
+
+statement ok
+EXPLAIN ANALYZE SELECT col0, col2 FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'wide_proj_test');
+
+statement ok
+EXPLAIN SELECT * FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'filter_test') WHERE id > 3;
+
+statement ok
+EXPLAIN ANALYZE SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'filter_test') WHERE value > 25.0;
+
+# Clean up
+statement ok
+SELECT adbc_disconnect(getvariable('conn_id')::BIGINT);

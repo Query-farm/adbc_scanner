@@ -30,6 +30,7 @@ set(EXTENSION_SOURCES
     src/adbc_scan.cpp
     src/adbc_catalog.cpp
     src/adbc_secrets.cpp
+    src/adbc_filter_pushdown.cpp
     src/query_farm_telemetry.cpp
 )
 

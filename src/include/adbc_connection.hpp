@@ -195,6 +195,21 @@ public:
         CheckAdbc(status, error.Get(), "Failed to get table schema", GetDriverName());
     }
 
+    // Get table statistics (ADBC 1.1.0+)
+    // Returns true if successful, false if not supported by driver
+    // approximate: if non-zero, allow approximate/cached values
+    bool GetStatistics(const char *catalog, const char *db_schema, const char *table_name,
+                       char approximate, ArrowArrayStream *out) {
+        AdbcErrorGuard error;
+        auto status = AdbcConnectionGetStatistics(&connection, catalog, db_schema, table_name,
+                                                   approximate, out, error.Get());
+        if (status == ADBC_STATUS_NOT_IMPLEMENTED) {
+            return false;
+        }
+        CheckAdbc(status, error.Get(), "Failed to get table statistics", GetDriverName());
+        return true;
+    }
+
     // Transaction support
     void Commit() {
         AdbcErrorGuard error;

@@ -1,0 +1,57 @@
+# name: test/sql/adbc_insert.test
+# description: test adbc_insert function for bulk data ingestion
+# group: [adbc]
+
+require adbc_scanner
+
+require-env HAS_ADBC_SQLITE_DRIVER
+
+statement ok
+SET VARIABLE conn_id = (SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:'}));
+
+# Create source data (20,000 rows to test multiple batches)
+statement ok
+CREATE TABLE insert_source AS SELECT i AS id, 'name_' || i AS name FROM range(20000) t(i);
+
+# Test adbc_insert with create mode
+query I
+SELECT * FROM adbc_insert(getvariable('conn_id')::BIGINT, 'bulk_test', (SELECT * FROM insert_source), mode := 'create');
+----
+20000
+
+# Verify the data was inserted
+query I
+SELECT COUNT(*) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM bulk_test');
+----
+20000
+
+# Test adbc_insert with append mode
+query I
+SELECT * FROM adbc_insert(getvariable('conn_id')::BIGINT, 'bulk_test', (SELECT * FROM insert_source WHERE id < 1000), mode := 'append');
+----
+1000
+
+# Verify append worked
+query I
+SELECT COUNT(*) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM bulk_test');
+----
+21000
+
+# Test adbc_insert with invalid connection
+statement error
+SELECT * FROM adbc_insert(12345, 'test', (SELECT 1));
+----
+Invalid Input Error: adbc_insert: Invalid connection handle: 12345
+
+# Test adbc_insert with invalid mode
+statement error
+SELECT * FROM adbc_insert(getvariable('conn_id')::BIGINT, 'test', (SELECT 1), mode := 'invalid');
+----
+Invalid Input Error: adbc_insert: Invalid mode 'invalid'. Must be one of: create, append, replace, create_append
+
+# Clean up
+statement ok
+SELECT adbc_disconnect(getvariable('conn_id')::BIGINT);
+
+statement ok
+DROP TABLE insert_source;

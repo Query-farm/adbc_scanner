@@ -1,0 +1,125 @@
+# name: test/sql/adbc_catalog.test
+# description: test adbc catalog functions (adbc_info, adbc_tables, adbc_columns, adbc_schema, adbc_table_types)
+# group: [adbc]
+
+require adbc_scanner
+
+require-env HAS_ADBC_SQLITE_DRIVER
+
+statement ok
+SET VARIABLE conn_id = (SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:'}));
+
+# ============================================
+# adbc_info Tests
+# ============================================
+
+# Test adbc_info - returns driver/database info
+query II
+SELECT * FROM adbc_info(getvariable('conn_id')::BIGINT) WHERE info_name = 'vendor_name';
+----
+vendor_name	SQLite
+
+# Test adbc_info - all required info fields should be present
+query I
+SELECT COUNT(*) >= 3 FROM adbc_info(getvariable('conn_id')::BIGINT);
+----
+true
+
+# Test adbc_info with invalid connection handle
+statement error
+SELECT * FROM adbc_info(12345);
+----
+Invalid Input Error: adbc_info: Invalid connection handle: 12345
+
+# ============================================
+# adbc_tables Tests
+# ============================================
+
+# Test adbc_tables with empty database (no tables created yet)
+statement ok
+SET VARIABLE fresh_conn = (SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:'}));
+
+query I
+SELECT COUNT(*) FROM adbc_tables(getvariable('fresh_conn')::BIGINT);
+----
+0
+
+statement ok
+SELECT adbc_disconnect(getvariable('fresh_conn')::BIGINT);
+
+# Test adbc_tables with invalid connection handle
+statement error
+SELECT * FROM adbc_tables(12345);
+----
+Invalid Input Error: adbc_tables: Invalid connection handle: 12345
+
+# ============================================
+# adbc_table_types Tests
+# ============================================
+
+# Test adbc_table_types - returns supported table types
+query I
+SELECT * FROM adbc_table_types(getvariable('conn_id')::BIGINT) ORDER BY table_type;
+----
+table
+view
+
+# Test adbc_table_types with invalid connection handle
+statement error
+SELECT * FROM adbc_table_types(12345);
+----
+Invalid Input Error: adbc_table_types: Invalid connection handle: 12345
+
+# ============================================
+# adbc_columns Tests
+# ============================================
+
+# Create a table for column tests
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE test_cols (id INTEGER PRIMARY KEY, name TEXT NOT NULL, value REAL)');
+
+# Test adbc_columns - basic query
+query IIII
+SELECT table_name, column_name, ordinal_position, type_name FROM adbc_columns(getvariable('conn_id')::BIGINT, table_name := 'test_cols') ORDER BY ordinal_position;
+----
+test_cols	id	1	INTEGER
+test_cols	name	2	TEXT
+test_cols	value	3	REAL
+
+# Test adbc_columns - filter by column_name
+query II
+SELECT table_name, column_name FROM adbc_columns(getvariable('conn_id')::BIGINT, table_name := 'test_cols', column_name := 'name');
+----
+test_cols	name
+
+# Test adbc_columns with invalid connection handle
+statement error
+SELECT * FROM adbc_columns(12345);
+----
+Invalid Input Error: adbc_columns: Invalid connection handle: 12345
+
+# ============================================
+# adbc_schema Tests
+# ============================================
+
+# Create a table for schema tests
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE schema_test (id INTEGER, name TEXT, value REAL)');
+
+# Test adbc_schema - get Arrow schema for a table
+query I
+SELECT field_name FROM adbc_schema(getvariable('conn_id')::BIGINT, 'schema_test') ORDER BY field_name;
+----
+id
+name
+value
+
+# Test adbc_schema with invalid connection handle
+statement error
+SELECT * FROM adbc_schema(12345, 'test');
+----
+Invalid Input Error: adbc_schema: Invalid connection handle: 12345
+
+# Clean up
+statement ok
+SELECT adbc_disconnect(getvariable('conn_id')::BIGINT);

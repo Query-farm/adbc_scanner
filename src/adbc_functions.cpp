@@ -1,4 +1,5 @@
 #include "adbc_connection.hpp"
+#include "adbc_secrets.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
@@ -42,7 +43,17 @@ static vector<pair<string, string>> ExtractOptions(Vector &options_vector, idx_t
 }
 
 // Helper to create a connection from options
-static int64_t CreateConnection(const vector<pair<string, string>> &options) {
+// If context is provided, secrets will be looked up and merged with explicit options
+static int64_t CreateConnection(const vector<pair<string, string>> &explicit_options,
+                                ClientContext *context = nullptr) {
+	// Merge with secrets if context is available
+	vector<pair<string, string>> options;
+	if (context) {
+		options = MergeSecretOptions(*context, explicit_options);
+	} else {
+		options = explicit_options;
+	}
+
 	string driver;
 	string entrypoint;
 	string search_paths;
@@ -127,9 +138,11 @@ static int64_t CreateConnection(const vector<pair<string, string>> &options) {
 
 // adbc_connect(options STRUCT or MAP) -> BIGINT
 // Returns a connection handle that can be used with other ADBC functions
+// Secrets are automatically looked up based on the 'uri' option or explicit 'secret' name
 static void AdbcConnectFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &options_vector = args.data[0];
 	auto count = args.size();
+	auto &context = state.GetContext();
 
 	// Handle constant input (for constant folding optimization)
 	if (options_vector.GetVectorType() == VectorType::CONSTANT_VECTOR) {
@@ -138,7 +151,7 @@ static void AdbcConnectFunction(DataChunk &args, ExpressionState &state, Vector 
 			ConstantVector::SetNull(result, true);
 		} else {
 			auto options = ExtractOptions(options_vector, 0);
-			auto conn_id = CreateConnection(options);
+			auto conn_id = CreateConnection(options, &context);
 			result.SetVectorType(VectorType::CONSTANT_VECTOR);
 			ConstantVector::GetData<int64_t>(result)[0] = conn_id;
 		}
@@ -151,7 +164,7 @@ static void AdbcConnectFunction(DataChunk &args, ExpressionState &state, Vector 
 
 	for (idx_t row_idx = 0; row_idx < count; row_idx++) {
 		auto options = ExtractOptions(options_vector, row_idx);
-		result_data[row_idx] = CreateConnection(options);
+		result_data[row_idx] = CreateConnection(options, &context);
 	}
 }
 

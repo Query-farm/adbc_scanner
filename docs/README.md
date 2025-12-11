@@ -58,6 +58,7 @@ adbc_connect(options) -> BIGINT
 - `uri`: Connection URI (driver-specific)
 - `username`: Database username
 - `password`: Database password
+- `secret`: Name of a DuckDB secret containing connection parameters (see [Secrets](#secrets))
 
 **Driver Resolution Options:**
 
@@ -117,6 +118,12 @@ SET VARIABLE conn = (SELECT adbc_connect({
     'driver': 'sqlite',
     'uri': ':memory:'
 }));
+
+-- Connect using a secret (see Secrets section below)
+SELECT adbc_connect({'secret': 'my_postgres_secret'});
+
+-- Connect using URI scope lookup (automatically finds matching secret)
+SELECT adbc_connect({'uri': 'postgresql://myhost:5432/mydb'});
 ```
 
 ### adbc_disconnect
@@ -539,6 +546,123 @@ Output:
 ```
 
 **Note:** The `field_type` shows Arrow types, which may differ from the SQL types defined in the table. The mapping depends on the ADBC driver implementation.
+
+## Secrets
+
+DuckDB secrets provide secure credential storage for ADBC connections. Instead of hardcoding credentials in your queries, you can store them in secrets and reference them by name or have them automatically looked up by URI scope.
+
+### Creating Secrets
+
+```sql
+-- Create a secret for PostgreSQL
+CREATE SECRET my_postgres (
+    TYPE adbc,
+    SCOPE 'postgresql://prod-server:5432',
+    driver 'postgresql',
+    uri 'postgresql://prod-server:5432/mydb',
+    username 'app_user',
+    password 'secret_password'
+);
+
+-- Create a secret for SQLite
+CREATE SECRET my_sqlite (
+    TYPE adbc,
+    SCOPE 'sqlite://data',
+    driver 'sqlite',
+    uri '/var/data/app.db'
+);
+```
+
+### Secret Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `TYPE` | Must be `adbc` |
+| `SCOPE` | URI pattern for automatic secret lookup |
+| `driver` | ADBC driver name or path to shared library |
+| `uri` | Connection URI passed to the driver |
+| `username` | Database username |
+| `password` | Database password (automatically redacted in logs) |
+| `database` | Database name (if not in URI) |
+| `entrypoint` | Custom driver entry point function |
+
+### Using Secrets
+
+There are three ways to use secrets with `adbc_connect`:
+
+**1. Explicit Secret Name**
+
+Reference a secret directly by name:
+
+```sql
+-- Use a specific secret
+SET VARIABLE conn = (SELECT adbc_connect({'secret': 'my_postgres'}));
+```
+
+**2. Automatic URI Scope Lookup**
+
+When you provide a `uri` option, the extension automatically searches for a secret whose `SCOPE` matches:
+
+```sql
+-- This will find 'my_postgres' secret because the URI matches its scope
+SET VARIABLE conn = (SELECT adbc_connect({
+    'uri': 'postgresql://prod-server:5432/mydb'
+}));
+```
+
+**3. Override Secret Values**
+
+You can reference a secret and override specific options:
+
+```sql
+-- Use my_postgres secret but connect to a different database
+SET VARIABLE conn = (SELECT adbc_connect({
+    'secret': 'my_postgres',
+    'uri': 'postgresql://prod-server:5432/other_db'
+}));
+
+-- Use secret but with different credentials
+SET VARIABLE conn = (SELECT adbc_connect({
+    'secret': 'my_postgres',
+    'username': 'admin',
+    'password': 'admin_pass'
+}));
+```
+
+### Persistent Secrets
+
+By default, secrets are stored in memory and lost when DuckDB closes. To persist secrets:
+
+```sql
+-- Create a persistent secret (stored in ~/.duckdb/secrets/)
+CREATE PERSISTENT SECRET my_postgres (
+    TYPE adbc,
+    SCOPE 'postgresql://prod-server:5432',
+    driver 'postgresql',
+    uri 'postgresql://prod-server:5432/mydb',
+    username 'app_user',
+    password 'secret_password'
+);
+```
+
+### Managing Secrets
+
+```sql
+-- List all secrets (passwords are redacted)
+SELECT * FROM duckdb_secrets();
+
+-- Drop a secret
+DROP SECRET my_postgres;
+
+-- Drop a persistent secret
+DROP PERSISTENT SECRET my_postgres;
+```
+
+### Security Considerations
+
+- Passwords and sensitive keys (`password`, `auth_token`, `token`, `secret`, `api_key`, `credential`) are automatically redacted when displaying secrets
+- Persistent secrets are stored encrypted on disk
+- Secrets are scoped to the current DuckDB connection/session
 
 ## ADBC Drivers
 

@@ -600,3 +600,112 @@ SELECT COUNT(*) FROM adbc_scan(getvariable('proj_conn')::BIGINT, 'SELECT * FROM 
 # Clean up projection connection
 statement ok
 SELECT adbc_disconnect(getvariable('proj_conn')::BIGINT);
+
+# ============================================
+# SECRETS TESTS
+# ============================================
+
+# Test creating an ADBC secret with scope
+statement ok
+CREATE SECRET my_sqlite_secret (
+    TYPE adbc,
+    SCOPE 'sqlite://:memory:',
+    driver 'sqlite',
+    uri ':memory:'
+);
+
+# Test connecting using a secret by URI scope
+statement ok
+SET VARIABLE secret_conn = (SELECT adbc_connect({'uri': 'sqlite://:memory:'}));
+
+# Verify the connection works
+query II
+SELECT * FROM adbc_scan(getvariable('secret_conn')::BIGINT, 'SELECT 1 AS a, 2 AS b');
+----
+1	2
+
+# Clean up
+statement ok
+SELECT adbc_disconnect(getvariable('secret_conn')::BIGINT);
+
+# Test connecting with explicit secret name
+statement ok
+CREATE SECRET named_sqlite_secret (
+    TYPE adbc,
+    SCOPE 'sqlite://named',
+    driver 'sqlite',
+    uri ':memory:'
+);
+
+statement ok
+SET VARIABLE named_conn = (SELECT adbc_connect({'secret': 'named_sqlite_secret'}));
+
+# Verify the connection works
+query II
+SELECT * FROM adbc_scan(getvariable('named_conn')::BIGINT, 'SELECT 3 AS x, 4 AS y');
+----
+3	4
+
+# Clean up
+statement ok
+SELECT adbc_disconnect(getvariable('named_conn')::BIGINT);
+
+# Test that explicit options override secret options
+statement ok
+CREATE SECRET override_test_secret (
+    TYPE adbc,
+    SCOPE 'sqlite://override',
+    driver 'sqlite',
+    uri '/nonexistent/path.db'
+);
+
+# The explicit uri should override the secret's uri (which would fail)
+statement ok
+SET VARIABLE override_conn = (SELECT adbc_connect({'secret': 'override_test_secret', 'uri': ':memory:'}));
+
+query I
+SELECT * FROM adbc_scan(getvariable('override_conn')::BIGINT, 'SELECT 42 AS val');
+----
+42
+
+statement ok
+SELECT adbc_disconnect(getvariable('override_conn')::BIGINT);
+
+# Test error when referencing non-existent secret by name
+statement error
+SELECT adbc_connect({'secret': 'nonexistent_secret'});
+----
+Binder Error: Secret with name "nonexistent_secret" not found
+
+# Test extra_options for driver-specific parameters
+statement ok
+CREATE SECRET extra_opts_secret (
+    TYPE adbc,
+    SCOPE 'sqlite://extra',
+    driver 'sqlite',
+    uri ':memory:'
+);
+
+statement ok
+SET VARIABLE extra_conn = (SELECT adbc_connect({'uri': 'sqlite://extra'}));
+
+query I
+SELECT * FROM adbc_scan(getvariable('extra_conn')::BIGINT, 'SELECT 100 AS val');
+----
+100
+
+statement ok
+SELECT adbc_disconnect(getvariable('extra_conn')::BIGINT);
+
+# Clean up secrets
+statement ok
+DROP SECRET my_sqlite_secret;
+
+statement ok
+DROP SECRET named_sqlite_secret;
+
+statement ok
+DROP SECRET override_test_secret;
+
+statement ok
+DROP SECRET extra_opts_secret;

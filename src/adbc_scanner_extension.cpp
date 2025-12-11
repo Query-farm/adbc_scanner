@@ -2,6 +2,7 @@
 
 #include "adbc_scanner_extension.hpp"
 #include "adbc_functions.hpp"
+#include "adbc_secrets.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
 #include "query_farm_telemetry.hpp"
@@ -9,6 +10,9 @@
 namespace duckdb {
 
 static void LoadInternal(ExtensionLoader &loader) {
+	// Register ADBC secret type and create secret function
+	adbc::RegisterAdbcSecrets(loader);
+
 	// Register ADBC scalar functions (adbc_connect, adbc_disconnect)
 	adbc::RegisterAdbcScalarFunctions(loader.GetDatabaseInstance());
 

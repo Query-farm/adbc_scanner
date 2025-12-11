@@ -22,8 +22,45 @@ The extension provides the following functions:
     - `entrypoint` - Custom entry point function name
     - `search_paths` - Additional paths to search for driver manifests (colon-separated on Unix, semicolon on Windows)
     - `use_manifests` - Enable/disable manifest search (default: 'true'). Set to 'false' to only use direct library paths.
+    - `secret` - Name of a DuckDB secret to use for connection parameters
     - Other options are passed directly to the ADBC driver
 - `adbc_disconnect(handle)` - Disconnect from an ADBC data source. Returns true on success.
+
+#### Secrets Support
+The extension supports DuckDB secrets for storing connection credentials. Secrets are automatically looked up based on the `uri` option (scope matching) or can be explicitly referenced by name.
+
+**Creating a secret:**
+```sql
+CREATE SECRET my_postgres (
+    TYPE adbc,
+    SCOPE 'postgresql://myhost:5432',
+    driver 'postgresql',
+    uri 'postgresql://myhost:5432/mydb',
+    username 'user',
+    password 'secret'
+);
+```
+
+**Secret parameters:**
+- `driver` - ADBC driver name or path
+- `uri` - Connection URI passed to the driver
+- `username` - Database username
+- `password` - Database password (automatically redacted in logs)
+- `database` - Database name
+- `entrypoint` - Custom driver entry point
+- `extra_options` - MAP of additional driver-specific options
+
+**Using secrets:**
+```sql
+-- Automatic lookup by URI scope
+SELECT adbc_connect({'uri': 'postgresql://myhost:5432/mydb'});
+
+-- Explicit secret by name
+SELECT adbc_connect({'secret': 'my_postgres'});
+
+-- Override secret options with explicit values
+SELECT adbc_connect({'secret': 'my_postgres', 'uri': 'postgresql://otherhost:5432/otherdb'});
+```
 
 #### Driver Manifest Support
 The extension supports ADBC driver manifests, which allow referencing drivers by name instead of full paths. When `use_manifests` is enabled (default), the driver manager searches for manifests in these locations:
@@ -153,9 +190,14 @@ Tests are written as [SQLLogicTests](https://duckdb.org/dev/sqllogictest/intro.h
 
 ## Architecture
 
-- **Extension entry point**: `src/adbc_extension.cpp` - Registers all functions with DuckDB via `LoadInternal()`
-- **ADBC functions**: `src/adbc_functions.cpp` - Implements connection management, scanning, catalog, and execute functions
+- **Extension entry point**: `src/adbc_scanner_extension.cpp` - Registers all functions with DuckDB via `LoadInternal()`
+- **ADBC functions**: `src/adbc_functions.cpp` - Implements connection management (adbc_connect, adbc_disconnect, transaction functions)
+- **Scan/Execute**: `src/adbc_scan.cpp` - Implements adbc_scan, adbc_execute, and adbc_insert table functions
+- **Catalog functions**: `src/adbc_catalog.cpp` - Implements adbc_info, adbc_tables, adbc_columns, adbc_schema
+- **Secrets**: `src/adbc_secrets.cpp` - DuckDB secrets integration for secure credential storage
 - **Extension class**: `src/include/adbc_scanner_extension.hpp` - Defines `AdbcScannerExtension` class inheriting from `duckdb::Extension`
+- **Connection wrappers**: `src/include/adbc_connection.hpp` - RAII wrappers for ADBC database, connection, and statement objects
+- **Utilities**: `src/include/adbc_utils.hpp` - Error handling and helper functions
 - **Configuration**: `extension_config.cmake` - Tells DuckDB build system to load this extension
 - **Dependencies**: `vcpkg.json` - Depends on `arrow-adbc` via vcpkg with custom overlay ports in `vcpkg-overlay/`
 

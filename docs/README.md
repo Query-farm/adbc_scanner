@@ -267,7 +267,13 @@ SELECT * FROM adbc_scan(getvariable('conn')::BIGINT, 'SELECT * FROM large_table'
 
 ### adbc_scan_table
 
-Scans an entire table by name and returns all rows. This is a convenience function that generates `SELECT * FROM "table_name"` internally.
+Scans an entire table by name and returns all rows. This function provides advanced optimizations compared to `adbc_scan`:
+
+- **Projection pushdown**: Only requested columns are fetched from the remote database
+- **Filter pushdown**: WHERE clauses are pushed to the remote database with parameter binding for SQL injection safety
+- **Cardinality estimation**: Row count statistics are fetched from the driver for query planning
+- **Progress reporting**: Scan progress is reported based on estimated row counts
+- **Column statistics**: Distinct count, null count, and min/max values are provided to the query optimizer (when available from the driver via `AdbcConnectionGetStatistics`)
 
 ```sql
 adbc_scan_table(connection_id, table_name, [batch_size := N]) -> TABLE
@@ -290,11 +296,24 @@ SELECT * FROM adbc_scan_table(getvariable('conn')::BIGINT, 'users');
 -- With batch size hint
 SELECT * FROM adbc_scan_table(getvariable('conn')::BIGINT, 'large_table', batch_size := 65536);
 
+-- Projection pushdown: only 'name' and 'email' columns are fetched
+SELECT name, email FROM adbc_scan_table(getvariable('conn')::BIGINT, 'users');
+
+-- Filter pushdown: WHERE clause is executed on the remote database
+SELECT * FROM adbc_scan_table(getvariable('conn')::BIGINT, 'users')
+WHERE id = 42 AND status = 'active';
+
+-- Combined projection and filter pushdown
+SELECT name, email FROM adbc_scan_table(getvariable('conn')::BIGINT, 'users')
+WHERE department = 'Engineering' AND salary > 100000;
+
 -- Combine with DuckDB operations
 SELECT department, AVG(salary) as avg_salary
 FROM adbc_scan_table(getvariable('conn')::BIGINT, 'employees')
 GROUP BY department;
 ```
+
+**Note:** Filter pushdown uses parameterized queries (e.g., `WHERE id = ?`) to prevent SQL injection. Filters that cannot be pushed down are applied locally by DuckDB after fetching the data.
 
 ### adbc_execute
 

@@ -64,8 +64,10 @@ struct AdbcScanBindData : public TableFunctionData {
     bool has_params = false;
     // Batch size hint for the driver (0 = use driver default)
     idx_t batch_size = 0;
-    // For adbc_scan_table: store table name and column names for projection pushdown
-    string table_name;  // Empty for adbc_scan, set for adbc_scan_table
+    // For adbc_scan_table: store catalog, schema, table name and column names for projection pushdown
+    string catalog_name;  // Optional catalog (empty = default)
+    string schema_name;   // Optional schema (empty = default)
+    string table_name;    // Empty for adbc_scan, set for adbc_scan_table
     vector<string> all_column_names;  // All columns in the table (for building projected query)
     // Cached row count from ADBC statistics (for cardinality estimation)
     idx_t estimated_row_count = 0;
@@ -192,15 +194,20 @@ static string GetColumnName(ArrowArrayView *column_name_view, int64_t row_idx) {
 
 // Fetch all statistics (table-level and column-level) from ADBC
 // Populates bind_data with row count and column statistics
-static void TryGetStatisticsFromADBC(AdbcConnectionWrapper &connection, const string &table_name,
+static void TryGetStatisticsFromADBC(AdbcConnectionWrapper &connection, const string &catalog,
+                                      const string &schema, const string &table_name,
                                       AdbcScanBindData &bind_data) {
     ArrowArrayStream stream;
     memset(&stream, 0, sizeof(stream));
 
+    // Convert empty strings to nullptr for ADBC API
+    const char *catalog_ptr = catalog.empty() ? nullptr : catalog.c_str();
+    const char *schema_ptr = schema.empty() ? nullptr : schema.c_str();
+
     // Try to get statistics (approximate is fine)
     bool got_stats = false;
     try {
-        got_stats = connection.GetStatistics(nullptr, nullptr, table_name.c_str(), 1, &stream);
+        got_stats = connection.GetStatistics(catalog_ptr, schema_ptr, table_name.c_str(), 1, &stream);
     } catch (...) {
         return;  // Statistics not supported - that's okay
     }
@@ -700,6 +707,19 @@ static InsertionOrderPreservingMap<string> AdbcScanToString(TableFunctionToStrin
 // ============================================================================
 
 // Bind function for adbc_scan_table - similar to AdbcScanBind but takes table name instead of query
+// Helper to build a fully qualified table name with proper quoting
+static string BuildQualifiedTableName(const string &catalog, const string &schema, const string &table) {
+    string result;
+    if (!catalog.empty()) {
+        result += "\"" + catalog + "\".";
+    }
+    if (!schema.empty()) {
+        result += "\"" + schema + "\".";
+    }
+    result += "\"" + table + "\"";
+    return result;
+}
+
 static unique_ptr<FunctionData> AdbcScanTableBind(ClientContext &context, TableFunctionBindInput &input,
                                                    vector<LogicalType> &return_types, vector<string> &names) {
     auto bind_data = make_uniq<AdbcScanBindData>();
@@ -710,9 +730,21 @@ static unique_ptr<FunctionData> AdbcScanTableBind(ClientContext &context, TableF
     // Get table name from second argument
     bind_data->table_name = input.inputs[1].GetValue<string>();
 
-    // Construct a SELECT * FROM table_name query for schema discovery
-    // Quote the table name to handle special characters and reserved words
-    bind_data->query = "SELECT * FROM \"" + bind_data->table_name + "\"";
+    // Check for catalog named parameter
+    auto catalog_it = input.named_parameters.find("catalog");
+    if (catalog_it != input.named_parameters.end() && !catalog_it->second.IsNull()) {
+        bind_data->catalog_name = catalog_it->second.GetValue<string>();
+    }
+
+    // Check for schema named parameter
+    auto schema_it = input.named_parameters.find("schema");
+    if (schema_it != input.named_parameters.end() && !schema_it->second.IsNull()) {
+        bind_data->schema_name = schema_it->second.GetValue<string>();
+    }
+
+    // Construct a SELECT * FROM [catalog.][schema.]table_name query for schema discovery
+    string qualified_name = BuildQualifiedTableName(bind_data->catalog_name, bind_data->schema_name, bind_data->table_name);
+    bind_data->query = "SELECT * FROM " + qualified_name;
 
     // Check for batch_size named parameter
     auto batch_size_it = input.named_parameters.find("batch_size");
@@ -809,7 +841,8 @@ static unique_ptr<FunctionData> AdbcScanTableBind(ClientContext &context, TableF
     bind_data->return_types = return_types;
 
     // Try to get statistics from ADBC (row count and column statistics)
-    TryGetStatisticsFromADBC(*bind_data->connection, bind_data->table_name, *bind_data);
+    TryGetStatisticsFromADBC(*bind_data->connection, bind_data->catalog_name, bind_data->schema_name,
+                              bind_data->table_name, *bind_data);
 
     return std::move(bind_data);
 }
@@ -857,7 +890,9 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanTableInitGlobal(ClientContex
                     first = false;
                 }
             }
-            query += " FROM \"" + bind_data.table_name + "\"";
+            // Use fully qualified table name
+            string qualified_name = BuildQualifiedTableName(bind_data.catalog_name, bind_data.schema_name, bind_data.table_name);
+            query += " FROM " + qualified_name;
         } else {
             // Use SELECT * as no projection needed
             query = bind_data.query;
@@ -1205,7 +1240,9 @@ void RegisterAdbcTableFunctions(DatabaseInstance &db) {
     TableFunction adbc_scan_table_function("adbc_scan_table", {LogicalType::BIGINT, LogicalType::VARCHAR},
                                             AdbcScanTableFunction, AdbcScanTableBind, AdbcScanTableInitGlobal, AdbcScanTableInitLocal);
 
-    // Add named parameter for batch size hint (driver-specific, best-effort)
+    // Add named parameters for catalog, schema, and batch size
+    adbc_scan_table_function.named_parameters["catalog"] = LogicalType::VARCHAR;
+    adbc_scan_table_function.named_parameters["schema"] = LogicalType::VARCHAR;
     adbc_scan_table_function.named_parameters["batch_size"] = LogicalType::BIGINT;
 
     // Enable projection pushdown and filter pushdown
@@ -1221,9 +1258,10 @@ void RegisterAdbcTableFunctions(DatabaseInstance &db) {
     CreateTableFunctionInfo scan_table_info(adbc_scan_table_function);
     FunctionDescription scan_table_desc;
     scan_table_desc.description = "Scan an entire table from an ADBC connection";
-    scan_table_desc.parameter_names = {"connection_handle", "table_name", "batch_size"};
-    scan_table_desc.parameter_types = {LogicalType::BIGINT, LogicalType::VARCHAR, LogicalType::BIGINT};
+    scan_table_desc.parameter_names = {"connection_handle", "table_name", "catalog", "schema", "batch_size"};
+    scan_table_desc.parameter_types = {LogicalType::BIGINT, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT};
     scan_table_desc.examples = {"SELECT * FROM adbc_scan_table(conn, 'users')",
+                                "SELECT * FROM adbc_scan_table(conn, 'users', schema := 'public')",
                                 "SELECT * FROM adbc_scan_table(conn, 'large_table', batch_size := 65536)"};
     scan_table_desc.categories = {"adbc"};
     scan_table_info.descriptions.push_back(std::move(scan_table_desc));

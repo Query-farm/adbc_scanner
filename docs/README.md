@@ -276,13 +276,15 @@ Scans an entire table by name and returns all rows. This function provides advan
 - **Column statistics**: Distinct count, null count, and min/max values are provided to the query optimizer (when available from the driver via `AdbcConnectionGetStatistics`)
 
 ```sql
-adbc_scan_table(connection_id, table_name, [batch_size := N]) -> TABLE
+adbc_scan_table(connection_id, table_name, [catalog := ...], [schema := ...], [batch_size := N]) -> TABLE
 ```
 
 **Parameters:**
 
 - `connection_id`: Connection handle from `adbc_connect`
 - `table_name`: Name of the table to scan
+- `catalog` (optional): Catalog containing the table (database-specific, e.g., database name in some systems)
+- `schema` (optional): Schema containing the table (e.g., `'public'` in PostgreSQL)
 - `batch_size` (optional): Hint to the driver for how many rows to return per batch (default: driver-specific)
 
 **Returns:** A table with all columns from the specified table.
@@ -292,6 +294,12 @@ adbc_scan_table(connection_id, table_name, [batch_size := N]) -> TABLE
 ```sql
 -- Scan an entire table
 SELECT * FROM adbc_scan_table(getvariable('conn')::BIGINT, 'users');
+
+-- Scan a table with schema qualification (e.g., PostgreSQL)
+SELECT * FROM adbc_scan_table(getvariable('conn')::BIGINT, 'users', schema := 'public');
+
+-- Scan a table with full catalog.schema.table qualification
+SELECT * FROM adbc_scan_table(getvariable('conn')::BIGINT, 'users', catalog := 'mydb', schema := 'sales');
 
 -- With batch size hint
 SELECT * FROM adbc_scan_table(getvariable('conn')::BIGINT, 'large_table', batch_size := 65536);

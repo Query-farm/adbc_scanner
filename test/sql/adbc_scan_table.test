@@ -448,6 +448,52 @@ EXPLAIN SELECT * FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'filter_te
 statement ok
 EXPLAIN ANALYZE SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'filter_test') WHERE value > 25.0;
 
+# ============================================
+# Schema/Catalog Parameter Tests
+# ============================================
+
+# SQLite uses 'main' as the default catalog (database name)
+# Test with explicit catalog parameter
+query ITR
+SELECT * FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'employees', catalog := 'main') ORDER BY id;
+----
+1	Alice	75000.0
+2	Bob	85000.0
+3	Charlie	95000.0
+
+# Test with NULL catalog (should use default)
+query I
+SELECT COUNT(*) FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'employees', catalog := NULL);
+----
+3
+
+# Test with NULL schema (should use default)
+query I
+SELECT COUNT(*) FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'employees', schema := NULL);
+----
+3
+
+# Test with both catalog and schema as NULL
+query I
+SELECT COUNT(*) FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'employees', catalog := NULL, schema := NULL);
+----
+3
+
+# Test projection pushdown with catalog parameter
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'employees', catalog := 'main') ORDER BY id;
+----
+1	Alice
+2	Bob
+3	Charlie
+
+# Test filter pushdown with catalog parameter
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'employees', catalog := 'main') WHERE id > 1 ORDER BY id;
+----
+2	Bob
+3	Charlie
+
 # Clean up
 statement ok
 SELECT adbc_disconnect(getvariable('conn_id')::BIGINT);

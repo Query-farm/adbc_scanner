@@ -4,7 +4,6 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
 #include "duckdb/common/arrow/arrow_converter.hpp"
-#include "duckdb/common/arrow/arrow_appender.hpp"
 #include "duckdb/function/table/arrow.hpp"
 #include "duckdb/function/table/arrow/arrow_duck_schema.hpp"
 #include "duckdb/storage/statistics/node_statistics.hpp"
@@ -14,33 +13,30 @@
 #include "duckdb/common/insertion_order_preserving_map.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
-#include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 #include <nanoarrow/nanoarrow.h>
+#include <optional>
+#include <variant>
 
 namespace adbc_scanner {
 using namespace duckdb;
 
-// Numeric value from ADBC statistics union (type_id: 0=int64, 1=uint64, 2=float64)
+// Numeric value from ADBC statistics stored as a variant (int64, uint64, or double)
 struct AdbcStatValue {
-    int8_t type_id = -1;
-    union {
-        int64_t i64;
-        uint64_t u64;
-        double f64;
-    };
-    bool has_value = false;
+    std::optional<std::variant<int64_t, uint64_t, double>> value;
 
-    void SetInt64(int64_t v) { type_id = 0; i64 = v; has_value = true; }
-    void SetUInt64(uint64_t v) { type_id = 1; u64 = v; has_value = true; }
-    void SetFloat64(double v) { type_id = 2; f64 = v; has_value = true; }
+    bool HasValue() const { return value.has_value(); }
+    void SetInt64(int64_t v) { value = v; }
+    void SetUInt64(uint64_t v) { value = v; }
+    void SetFloat64(double v) { value = v; }
+
+    // Type index: 0=int64, 1=uint64, 2=double (matches variant order)
+    size_t TypeIndex() const { return value.has_value() ? value->index() : static_cast<size_t>(-1); }
 };
 
 // Column statistics from ADBC
 struct AdbcColumnStatistics {
-    idx_t distinct_count = 0;
-    bool has_distinct_count = false;
-    idx_t null_count = 0;
-    bool has_null_count = false;
+    std::optional<idx_t> distinct_count;
+    std::optional<idx_t> null_count;
     AdbcStatValue min_value;
     AdbcStatValue max_value;
 };
@@ -60,7 +56,6 @@ struct AdbcScanBindData : public TableFunctionData {
     // Bound parameters (if any)
     vector<Value> params;
     vector<LogicalType> param_types;
-    bool has_params = false;
     // Batch size hint for the driver (0 = use driver default)
     idx_t batch_size = 0;
     // For adbc_scan_table: store catalog, schema, table name and column names for projection pushdown
@@ -69,13 +64,15 @@ struct AdbcScanBindData : public TableFunctionData {
     string table_name;    // Empty for adbc_scan, set for adbc_scan_table
     vector<string> all_column_names;  // All columns in the table (for building projected query)
     // Cached row count from ADBC statistics (for cardinality estimation)
-    idx_t estimated_row_count = 0;
-    bool has_estimated_row_count = false;
+    std::optional<idx_t> estimated_row_count;
     // Cached column statistics from ADBC (for optimizer statistics)
     // Key is column name (case-sensitive)
     unordered_map<string, AdbcColumnStatistics> column_statistics;
     // Return types for each column (needed for creating BaseStatistics)
     vector<LogicalType> return_types;
+
+    // Helper to check if we have bound parameters
+    bool HasParams() const { return !params.empty(); }
 };
 
 // Global state for adbc_scan - holds the Arrow stream and statement
@@ -95,8 +92,7 @@ struct AdbcScanGlobalState : public GlobalTableFunctionState {
     // Total rows read so far (for progress reporting)
     atomic<idx_t> total_rows_read{0};
     // Row count from ExecuteQuery (if provided by driver)
-    int64_t rows_affected = -1;
-    bool has_rows_affected = false;
+    std::optional<int64_t> rows_affected;
     // For adbc_scan_table with projection: store the projected schema
     ArrowSchemaWrapper projected_schema;
     ArrowTableSchema projected_arrow_table;
@@ -358,7 +354,6 @@ static void TryGetStatisticsFromADBC(AdbcConnectionWrapper &connection, const st
                                     // Table-level statistic
                                     if (stat_key == ADBC_STATISTIC_ROW_COUNT_KEY && value >= 0) {
                                         bind_data.estimated_row_count = static_cast<idx_t>(value);
-                                        bind_data.has_estimated_row_count = true;
                                     }
                                 } else {
                                     // Column-level statistic
@@ -367,11 +362,9 @@ static void TryGetStatisticsFromADBC(AdbcConnectionWrapper &connection, const st
                                     switch (stat_key) {
                                     case ADBC_STATISTIC_DISTINCT_COUNT_KEY:
                                         col_stats.distinct_count = static_cast<idx_t>(value);
-                                        col_stats.has_distinct_count = true;
                                         break;
                                     case ADBC_STATISTIC_NULL_COUNT_KEY:
                                         col_stats.null_count = static_cast<idx_t>(value);
-                                        col_stats.has_null_count = true;
                                         break;
                                     case ADBC_STATISTIC_MIN_VALUE_KEY:
                                         ExtractStatValueTyped(stat_value_view, i, col_stats.min_value);
@@ -481,7 +474,6 @@ static unique_ptr<FunctionData> AdbcScanBind(ClientContext &context, TableFuncti
                 bind_data->params.push_back(children[i]);
                 bind_data->param_types.push_back(child_types[i].second);
             }
-            bind_data->has_params = true;
         }
     }
 
@@ -497,7 +489,7 @@ static unique_ptr<FunctionData> AdbcScanBind(ClientContext &context, TableFuncti
     }
 
     // Bind parameters if present (needed for schema inference)
-    if (bind_data->has_params) {
+    if (bind_data->HasParams()) {
         try {
             BindParameters(context, *statement, bind_data->params, bind_data->param_types);
         } catch (Exception &e) {
@@ -547,7 +539,7 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanInitGlobal(ClientContext &co
     global_state->statement->Prepare();
 
     // Bind parameters if present
-    if (bind_data.has_params) {
+    if (bind_data.HasParams()) {
         try {
             BindParameters(context, *global_state->statement, bind_data.params, bind_data.param_types);
         } catch (Exception &e) {
@@ -568,7 +560,6 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanInitGlobal(ClientContext &co
     // Store row count for progress reporting (if driver provided it)
     if (rows_affected >= 0) {
         global_state->rows_affected = rows_affected;
-        global_state->has_rows_affected = true;
     }
 
     return std::move(global_state);
@@ -671,9 +662,9 @@ static double AdbcScanProgress(ClientContext &context, const FunctionData *bind_
     }
 
     // If driver provided row count, use it for progress
-    if (global_state.has_rows_affected && global_state.rows_affected > 0) {
+    if (global_state.rows_affected.has_value() && *global_state.rows_affected > 0) {
         idx_t rows_read = global_state.total_rows_read.load();
-        double progress = (static_cast<double>(rows_read) / static_cast<double>(global_state.rows_affected)) * 100.0;
+        double progress = (static_cast<double>(rows_read) / static_cast<double>(*global_state.rows_affected)) * 100.0;
         return MinValue(progress, 99.9); // Cap at 99.9% until done
     }
 
@@ -702,7 +693,7 @@ static InsertionOrderPreservingMap<string> AdbcScanToString(TableFunctionToStrin
     }
 
     // Show number of bound parameters if any
-    if (bind_data.has_params) {
+    if (bind_data.HasParams()) {
         result["Parameters"] = to_string(bind_data.params.size());
     }
 
@@ -934,7 +925,6 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanTableInitGlobal(ClientContex
     // Store row count for progress reporting (if driver provided it)
     if (rows_affected >= 0) {
         global_state->rows_affected = rows_affected;
-        global_state->has_rows_affected = true;
     }
 
     return std::move(global_state);
@@ -1022,10 +1012,10 @@ static InsertionOrderPreservingMap<string> AdbcScanTableToString(TableFunctionTo
 static unique_ptr<NodeStatistics> AdbcScanTableCardinality(ClientContext &context, const FunctionData *bind_data_p) {
     auto &bind_data = bind_data_p->Cast<AdbcScanBindData>();
 
-    if (bind_data.has_estimated_row_count) {
+    if (bind_data.estimated_row_count.has_value()) {
         auto result = make_uniq<NodeStatistics>();
         result->has_estimated_cardinality = true;
-        result->estimated_cardinality = bind_data.estimated_row_count;
+        result->estimated_cardinality = *bind_data.estimated_row_count;
         return result;
     }
 
@@ -1047,14 +1037,14 @@ static double AdbcScanTableProgress(ClientContext &context, const FunctionData *
     idx_t rows_read = global_state.total_rows_read.load();
 
     // First priority: use rows_affected from ExecuteQuery if driver provided it
-    if (global_state.has_rows_affected && global_state.rows_affected > 0) {
-        double progress = (static_cast<double>(rows_read) / static_cast<double>(global_state.rows_affected)) * 100.0;
+    if (global_state.rows_affected.has_value() && *global_state.rows_affected > 0) {
+        double progress = (static_cast<double>(rows_read) / static_cast<double>(*global_state.rows_affected)) * 100.0;
         return MinValue(progress, 99.9); // Cap at 99.9% until done
     }
 
     // Second priority: use estimated row count from ADBC statistics (fetched at bind time)
-    if (bind_data.has_estimated_row_count && bind_data.estimated_row_count > 0) {
-        double progress = (static_cast<double>(rows_read) / static_cast<double>(bind_data.estimated_row_count)) * 100.0;
+    if (bind_data.estimated_row_count.has_value() && *bind_data.estimated_row_count > 0) {
+        double progress = (static_cast<double>(rows_read) / static_cast<double>(*bind_data.estimated_row_count)) * 100.0;
         return MinValue(progress, 99.9); // Cap at 99.9% until done
     }
 
@@ -1090,16 +1080,16 @@ static unique_ptr<BaseStatistics> AdbcScanTableStatistics(ClientContext &context
     auto result = BaseStatistics::CreateUnknown(col_type);
 
     // Set distinct count if available
-    if (col_stats.has_distinct_count) {
-        result.SetDistinctCount(col_stats.distinct_count);
+    if (col_stats.distinct_count.has_value()) {
+        result.SetDistinctCount(*col_stats.distinct_count);
     }
 
     // Set null information based on null_count and row_count
-    if (col_stats.has_null_count && bind_data.has_estimated_row_count) {
-        if (col_stats.null_count == 0) {
+    if (col_stats.null_count.has_value() && bind_data.estimated_row_count.has_value()) {
+        if (*col_stats.null_count == 0) {
             // No nulls in this column
             result.Set(StatsInfo::CANNOT_HAVE_NULL_VALUES);
-        } else if (col_stats.null_count == bind_data.estimated_row_count) {
+        } else if (*col_stats.null_count == *bind_data.estimated_row_count) {
             // All values are null
             result.Set(StatsInfo::CANNOT_HAVE_VALID_VALUES);
         } else {
@@ -1109,39 +1099,43 @@ static unique_ptr<BaseStatistics> AdbcScanTableStatistics(ClientContext &context
     }
 
     // Set min/max for numeric types (integers, floats, timestamps, dates, times, decimals, booleans)
-    if (col_stats.min_value.has_value || col_stats.max_value.has_value) {
+    if (col_stats.min_value.HasValue() || col_stats.max_value.HasValue()) {
         if (result.GetStatsType() == StatisticsType::NUMERIC_STATS) {
             try {
                 // Convert AdbcStatValue to DuckDB Value based on target column type
                 auto to_duckdb_value = [&col_type](const AdbcStatValue &sv) -> Value {
-                    if (!sv.has_value) return Value();
+                    if (!sv.HasValue()) return Value();
 
                     auto target_type = col_type.id();
-                    if (sv.type_id == 0) {  // int64 source - handle temporal types directly
+                    auto type_index = sv.TypeIndex();
+
+                    if (type_index == 0) {  // int64 source - handle temporal types directly
+                        auto val = std::get<int64_t>(*sv.value);
                         switch (target_type) {
                         case LogicalTypeId::TIMESTAMP:
                         case LogicalTypeId::TIMESTAMP_TZ:
-                            return Value::TIMESTAMP(timestamp_t(sv.i64));
+                            return Value::TIMESTAMP(timestamp_t(val));
                         case LogicalTypeId::TIMESTAMP_SEC:
-                            return Value::TIMESTAMPSEC(timestamp_sec_t(sv.i64));
+                            return Value::TIMESTAMPSEC(timestamp_sec_t(val));
                         case LogicalTypeId::TIMESTAMP_MS:
-                            return Value::TIMESTAMPMS(timestamp_ms_t(sv.i64));
+                            return Value::TIMESTAMPMS(timestamp_ms_t(val));
                         case LogicalTypeId::TIMESTAMP_NS:
-                            return Value::TIMESTAMPNS(timestamp_ns_t(sv.i64));
+                            return Value::TIMESTAMPNS(timestamp_ns_t(val));
                         case LogicalTypeId::DATE:
-                            return Value::DATE(date_t(static_cast<int32_t>(sv.i64)));
+                            return Value::DATE(date_t(static_cast<int32_t>(val)));
                         case LogicalTypeId::TIME:
                         case LogicalTypeId::TIME_TZ:
-                            return Value::TIME(dtime_t(sv.i64));
+                            return Value::TIME(dtime_t(val));
                         default:
-                            return Value::BIGINT(sv.i64);
+                            return Value::BIGINT(val);
                         }
-                    } else if (sv.type_id == 1) {  // uint64 source
-                        return Value::UBIGINT(sv.u64);
-                    } else if (sv.type_id == 2) {  // float64 source
+                    } else if (type_index == 1) {  // uint64 source
+                        return Value::UBIGINT(std::get<uint64_t>(*sv.value));
+                    } else if (type_index == 2) {  // float64 source
+                        auto val = std::get<double>(*sv.value);
                         return (target_type == LogicalTypeId::FLOAT)
-                            ? Value::FLOAT(static_cast<float>(sv.f64))
-                            : Value::DOUBLE(sv.f64);
+                            ? Value::FLOAT(static_cast<float>(val))
+                            : Value::DOUBLE(val);
                     }
                     return Value();
                 };

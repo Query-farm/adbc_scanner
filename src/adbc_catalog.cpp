@@ -866,140 +866,8 @@ struct AdbcSchemaGlobalState : public GlobalTableFunctionState {
     }
 };
 
-// Helper to convert Arrow format string to human-readable type name
-static string ArrowFormatToTypeName(const char *format) {
-    if (!format) return "unknown";
-
-    // Handle basic types - see Arrow C Data Interface spec
-    switch (format[0]) {
-        case 'n': return "null";
-        case 'b': return "boolean";
-        case 'c': return "int8";
-        case 'C': return "uint8";
-        case 's': return "int16";
-        case 'S': return "uint16";
-        case 'i': return "int32";
-        case 'I': return "uint32";
-        case 'l': return "int64";
-        case 'L': return "uint64";
-        case 'e': return "float16";
-        case 'f': return "float32";
-        case 'g': return "float64";
-        case 'z': return "binary";
-        case 'Z': return "large_binary";
-        case 'u': return "utf8";
-        case 'U': return "large_utf8";
-        case 'd': {
-            // Decimal: d:precision,scale or d:precision,scale,bitwidth
-            return "decimal" + string(format + 1);
-        }
-        case 'w': {
-            // Fixed-width binary: w:bytewidth
-            return "fixed_binary" + string(format + 1);
-        }
-        case 't': {
-            // Temporal types
-            if (strlen(format) < 2) return "temporal";
-            switch (format[1]) {
-                case 'd': {
-                    // Date: tdD (days) or tdm (milliseconds)
-                    if (strlen(format) >= 3 && format[2] == 'D') return "date32";
-                    if (strlen(format) >= 3 && format[2] == 'm') return "date64";
-                    return "date";
-                }
-                case 't': {
-                    // Time: tt[smun] (seconds/millis/micros/nanos)
-                    if (strlen(format) >= 3) {
-                        switch (format[2]) {
-                            case 's': return "time32[s]";
-                            case 'm': return "time32[ms]";
-                            case 'u': return "time64[us]";
-                            case 'n': return "time64[ns]";
-                        }
-                    }
-                    return "time";
-                }
-                case 's': {
-                    // Timestamp: ts[smun]:timezone
-                    string result = "timestamp";
-                    if (strlen(format) >= 3) {
-                        switch (format[2]) {
-                            case 's': result += "[s]"; break;
-                            case 'm': result += "[ms]"; break;
-                            case 'u': result += "[us]"; break;
-                            case 'n': result += "[ns]"; break;
-                        }
-                    }
-                    // Include timezone if present
-                    const char *tz = strchr(format, ':');
-                    if (tz && strlen(tz) > 1) {
-                        result += " tz=" + string(tz + 1);
-                    }
-                    return result;
-                }
-                case 'D': {
-                    // Duration: tD[smun]
-                    if (strlen(format) >= 3) {
-                        switch (format[2]) {
-                            case 's': return "duration[s]";
-                            case 'm': return "duration[ms]";
-                            case 'u': return "duration[us]";
-                            case 'n': return "duration[ns]";
-                        }
-                    }
-                    return "duration";
-                }
-                case 'i': {
-                    // Interval: tiM (months), tiD (days/time), tin (month/day/nano)
-                    if (strlen(format) >= 3) {
-                        switch (format[2]) {
-                            case 'M': return "interval[months]";
-                            case 'D': return "interval[days]";
-                            case 'n': return "interval[month_day_nano]";
-                        }
-                    }
-                    return "interval";
-                }
-            }
-            return "temporal";
-        }
-        case '+': {
-            // Nested types
-            if (strlen(format) < 2) return "nested";
-            switch (format[1]) {
-                case 'l': return "list";
-                case 'L': return "large_list";
-                case 'w': return "fixed_list" + string(format + 2);
-                case 's': return "struct";
-                case 'm': return "map";
-                case 'u': {
-                    // Union: +ud:type_ids or +us:type_ids
-                    if (strlen(format) >= 3) {
-                        if (format[2] == 'd') return "dense_union";
-                        if (format[2] == 's') return "sparse_union";
-                    }
-                    return "union";
-                }
-                case 'r': return "run_end_encoded";
-                case 'v': {
-                    // List view types
-                    if (strlen(format) >= 3) {
-                        if (format[2] == 'l') return "list_view";
-                        if (format[2] == 'L') return "large_list_view";
-                    }
-                    return "list_view";
-                }
-            }
-            return "nested";
-        }
-        default:
-            // Return format string directly for unknown types
-            return string(format);
-    }
-}
-
-// Helper to extract fields from an ArrowSchema
-static void ExtractSchemaFields(ArrowSchema *schema, vector<SchemaFieldRow> &field_rows) {
+// Helper to extract fields from an ArrowSchema using DuckDB's built-in type conversion
+static void ExtractSchemaFields(DBConfig &config, ArrowSchema *schema, vector<SchemaFieldRow> &field_rows) {
     if (!schema) return;
 
     for (int64_t i = 0; i < schema->n_children; i++) {
@@ -1008,9 +876,12 @@ static void ExtractSchemaFields(ArrowSchema *schema, vector<SchemaFieldRow> &fie
 
         SchemaFieldRow row;
         row.field_name = child->name ? child->name : "";
-        row.field_type = ArrowFormatToTypeName(child->format);
-        // In Arrow C Data Interface, nullable is indicated by absence of ARROW_FLAG_NULLABLE bit NOT being set
-        // flags & 2 means nullable (ARROW_FLAG_NULLABLE = 2)
+
+        // Use DuckDB's built-in Arrow type conversion
+        auto arrow_type = duckdb::ArrowType::GetArrowLogicalType(config, *child);
+        row.field_type = arrow_type->GetDuckType().ToString();
+
+        // In Arrow C Data Interface, nullable is indicated by ARROW_FLAG_NULLABLE bit (flags & 2)
         row.nullable = (child->flags & 2) != 0;
         field_rows.push_back(row);
     }
@@ -1072,8 +943,8 @@ static unique_ptr<GlobalTableFunctionState> AdbcSchemaInitGlobal(ClientContext &
         throw IOException("adbc_schema: Failed to get table schema: " + string(e.what()));
     }
 
-    // Extract fields from the schema
-    ExtractSchemaFields(&schema, global_state->field_rows);
+    // Extract fields from the schema using DuckDB's type conversion
+    ExtractSchemaFields(DBConfig::GetConfig(context), &schema, global_state->field_rows);
 
     // Release the schema
     if (schema.release) {

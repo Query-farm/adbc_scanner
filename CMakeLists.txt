@@ -29,6 +29,8 @@ set(EXTENSION_SOURCES
     src/adbc_connection.cpp
     src/adbc_functions.cpp
     src/adbc_scan.cpp
+    src/adbc_execute.cpp
+    src/adbc_insert.cpp
     src/adbc_catalog.cpp
     src/adbc_secrets.cpp
     src/adbc_filter_pushdown.cpp

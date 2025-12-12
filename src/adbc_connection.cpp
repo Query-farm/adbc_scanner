@@ -53,16 +53,16 @@ shared_ptr<AdbcConnectionWrapper> CreateConnectionFromOptions(const vector<pair<
 	database->Init();
 
 	// Enable manifest-based driver discovery by default
-	if (use_manifests) {
-		database->SetLoadFlags(ADBC_LOAD_FLAG_DEFAULT);
-	} else {
-		database->SetLoadFlags(ADBC_LOAD_FLAG_ALLOW_RELATIVE_PATHS);
-	}
+	// if (use_manifests) {
+	// 	database->SetLoadFlags(ADBC_LOAD_FLAG_DEFAULT);
+	// } else {
+	// 	database->SetLoadFlags(ADBC_LOAD_FLAG_ALLOW_RELATIVE_PATHS);
+	// }
 
 	// Set additional search paths if provided
-	if (!search_paths.empty()) {
-		database->SetAdditionalSearchPaths(search_paths);
-	}
+	// if (!search_paths.empty()) {
+	// 	database->SetAdditionalSearchPaths(search_paths);
+	// }
 
 	// Set driver (required)
 	database->SetOption("driver", driver);

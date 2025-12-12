@@ -13,7 +13,8 @@
 #include "storage/adbc_transaction.hpp"
 #include "duckdb/common/reference_map.hpp"
 
-namespace duckdb {
+namespace adbc_scanner {
+using namespace duckdb;
 
 class AdbcTransactionManager : public TransactionManager {
 public:
@@ -31,4 +32,4 @@ private:
 	reference_map_t<Transaction, unique_ptr<AdbcTransaction>> transactions;
 };
 
-} // namespace duckdb
+} // namespace adbc_scanner

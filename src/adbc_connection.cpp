@@ -1,7 +1,7 @@
 #include "adbc_connection.hpp"
 
-namespace duckdb {
-namespace adbc {
+namespace adbc_scanner {
+using namespace duckdb;
 
 shared_ptr<AdbcConnectionWrapper> GetValidatedConnection(int64_t connection_id, const string &function_name) {
 	auto &registry = ConnectionRegistry::Get();
@@ -94,5 +94,4 @@ shared_ptr<AdbcConnectionWrapper> CreateConnectionFromOptions(const vector<pair<
 	return connection;
 }
 
-} // namespace adbc
-} // namespace duckdb
+} // namespace adbc_scanner

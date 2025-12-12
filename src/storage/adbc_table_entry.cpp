@@ -10,7 +10,8 @@
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/main/database.hpp"
 
-namespace duckdb {
+namespace adbc_scanner {
+using namespace duckdb;
 
 AdbcTableEntry::AdbcTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info)
     : TableCatalogEntry(catalog, schema, info) {
@@ -101,4 +102,4 @@ TableStorageInfo AdbcTableEntry::GetStorageInfo(ClientContext &context) {
 	return result;
 }
 
-} // namespace duckdb
+} // namespace adbc_scanner

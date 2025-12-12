@@ -9,39 +9,43 @@
 #include "duckdb/main/config.hpp"
 #include "query_farm_telemetry.hpp"
 
-namespace duckdb {
+namespace adbc_scanner {
 
-static void LoadInternal(ExtensionLoader &loader) {
+static void LoadInternal(duckdb::ExtensionLoader &loader) {
 	// Register ADBC secret type and create secret function
-	adbc::RegisterAdbcSecrets(loader);
+	RegisterAdbcSecrets(loader);
 
 	// Register ADBC scalar functions (adbc_connect, adbc_disconnect)
-	adbc::RegisterAdbcScalarFunctions(loader.GetDatabaseInstance());
+	RegisterAdbcScalarFunctions(loader.GetDatabaseInstance());
 
 	// Register ADBC table functions (adbc_scan)
-	adbc::RegisterAdbcTableFunctions(loader.GetDatabaseInstance());
+	RegisterAdbcTableFunctions(loader.GetDatabaseInstance());
 
 	// Register ADBC catalog functions (adbc_info, adbc_tables)
-	adbc::RegisterAdbcCatalogFunctions(loader.GetDatabaseInstance());
+	RegisterAdbcCatalogFunctions(loader.GetDatabaseInstance());
 
 	// Register ADBC execute function (adbc_execute for DDL/DML)
-	adbc::RegisterAdbcExecuteFunction(loader.GetDatabaseInstance());
+	RegisterAdbcExecuteFunction(loader.GetDatabaseInstance());
 
 	// Register ADBC insert function (adbc_insert for bulk ingestion)
-	adbc::RegisterAdbcInsertFunction(loader.GetDatabaseInstance());
+	RegisterAdbcInsertFunction(loader.GetDatabaseInstance());
 
 	// Register ADBC clear cache function
 	RegisterAdbcClearCacheFunction(loader.GetDatabaseInstance());
 
 	// Register ADBC storage extension for ATTACH support
-	auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
-	config.storage_extensions["adbc"] = make_uniq<AdbcStorageExtension>();
+	auto &config = duckdb::DBConfig::GetConfig(loader.GetDatabaseInstance());
+	config.storage_extensions["adbc"] = duckdb::make_uniq<AdbcStorageExtension>();
 
 	QueryFarmSendTelemetry(loader, "adbc", "2025120801");
 }
 
+} // namespace adbc_scanner
+
+namespace duckdb {
+
 void AdbcScannerExtension::Load(ExtensionLoader &loader) {
-	LoadInternal(loader);
+	adbc_scanner::LoadInternal(loader);
 }
 
 std::string AdbcScannerExtension::Name() {
@@ -57,6 +61,6 @@ std::string AdbcScannerExtension::Version() const {
 extern "C" {
 
 DUCKDB_CPP_EXTENSION_ENTRY(adbc_scanner, loader) {
-	duckdb::LoadInternal(loader);
+	adbc_scanner::LoadInternal(loader);
 }
 }

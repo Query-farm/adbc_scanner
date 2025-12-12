@@ -10,9 +10,12 @@
 
 #include "storage/adbc_catalog_set.hpp"
 #include "storage/adbc_table_entry.hpp"
+#include "duckdb/planner/parsed_data/bound_create_table_info.hpp"
 
-namespace duckdb {
-struct CreateTableInfo;
+namespace adbc_scanner {
+using namespace duckdb;
+
+// Forward declaration for type defined in this namespace
 class AdbcSchemaEntry;
 
 class AdbcTableSet : public AdbcInSchemaSet {
@@ -29,4 +32,4 @@ protected:
 	void LoadEntries(AdbcTransaction &transaction) override;
 };
 
-} // namespace duckdb
+} // namespace adbc_scanner

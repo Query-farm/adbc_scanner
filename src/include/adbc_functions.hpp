@@ -2,8 +2,8 @@
 
 #include "duckdb.hpp"
 
-namespace duckdb {
-namespace adbc {
+namespace adbc_scanner {
+using namespace duckdb;
 
 // Register scalar functions (adbc_connect, adbc_disconnect)
 void RegisterAdbcScalarFunctions(DatabaseInstance &db);
@@ -20,9 +20,7 @@ void RegisterAdbcExecuteFunction(DatabaseInstance &db);
 // Register insert function (adbc_insert for bulk ingestion)
 void RegisterAdbcInsertFunction(DatabaseInstance &db);
 
-} // namespace adbc
-
-// Register adbc_clear_cache scalar function (outside adbc namespace)
+// Register adbc_clear_cache scalar function
 void RegisterAdbcClearCacheFunction(DatabaseInstance &db);
 
-} // namespace duckdb
+} // namespace adbc_scanner

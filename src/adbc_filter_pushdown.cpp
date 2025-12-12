@@ -6,8 +6,8 @@
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/constants.hpp"
 
-namespace duckdb {
-namespace adbc {
+namespace adbc_scanner {
+using namespace duckdb;
 
 string AdbcFilterPushdown::CreateExpression(string &column_name, vector<unique_ptr<TableFilter>> &filters,
                                             string op, vector<Value> &params, vector<LogicalType> &param_types) {
@@ -145,5 +145,4 @@ FilterPushdownResult AdbcFilterPushdown::TransformFilters(const vector<column_t>
 	return result;
 }
 
-} // namespace adbc
-} // namespace duckdb
+} // namespace adbc_scanner

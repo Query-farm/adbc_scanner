@@ -7,7 +7,8 @@
 #include "duckdb/common/shared_ptr.hpp"
 #include <nanoarrow/nanoarrow.h>
 
-namespace duckdb {
+namespace adbc_scanner {
+using namespace duckdb;
 
 AdbcTableSet::AdbcTableSet(AdbcSchemaEntry &schema)
     : AdbcInSchemaSet(schema, false) {
@@ -248,4 +249,4 @@ optional_ptr<CatalogEntry> AdbcTableSet::CreateTable(AdbcTransaction &transactio
 	throw BinderException("ADBC databases do not support creating tables through DDL");
 }
 
-} // namespace duckdb
+} // namespace adbc_scanner

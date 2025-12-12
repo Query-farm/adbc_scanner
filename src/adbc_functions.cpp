@@ -5,8 +5,8 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 
-namespace duckdb {
-namespace adbc {
+namespace adbc_scanner {
+using namespace duckdb;
 
 // Helper to extract key-value pairs from either a STRUCT or MAP
 static vector<pair<string, string>> ExtractOptions(Vector &options_vector, idx_t row_idx) {
@@ -231,5 +231,4 @@ void RegisterAdbcScalarFunctions(DatabaseInstance &db) {
 	}
 }
 
-} // namespace adbc
-} // namespace duckdb
+} // namespace adbc_scanner

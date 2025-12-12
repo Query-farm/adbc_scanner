@@ -9,8 +9,8 @@
 #include <future>
 using namespace duckdb_yyjson; // NOLINT
 
-namespace duckdb
-{
+namespace adbc_scanner {
+using namespace duckdb;
 
 	namespace
 	{
@@ -108,4 +108,4 @@ namespace duckdb
 #endif
 	}
 
-} // namespace duckdb
+} // namespace adbc_scanner

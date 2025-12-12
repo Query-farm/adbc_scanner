@@ -4,7 +4,8 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 
-namespace duckdb {
+namespace adbc_scanner {
+using namespace duckdb;
 
 //===--------------------------------------------------------------------===//
 // adbc_clear_cache - Clear cached schemas/tables for all ADBC catalogs
@@ -48,4 +49,4 @@ void RegisterAdbcClearCacheFunction(DatabaseInstance &db) {
 	loader.RegisterFunction(info);
 }
 
-} // namespace duckdb
+} // namespace adbc_scanner

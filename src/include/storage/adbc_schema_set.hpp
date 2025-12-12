@@ -10,9 +10,10 @@
 
 #include "storage/adbc_catalog_set.hpp"
 #include "storage/adbc_schema_entry.hpp"
+#include "duckdb/parser/parsed_data/create_schema_info.hpp"
 
-namespace duckdb {
-struct CreateSchemaInfo;
+namespace adbc_scanner {
+using namespace duckdb;
 
 class AdbcSchemaSet : public AdbcCatalogSet {
 public:
@@ -25,4 +26,4 @@ protected:
 	void LoadEntries(AdbcTransaction &transaction) override;
 };
 
-} // namespace duckdb
+} // namespace adbc_scanner

@@ -10,26 +10,27 @@
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/enums/access_mode.hpp"
+#include "duckdb/parser/parsed_data/create_schema_info.hpp"
+#include "duckdb/parser/parsed_data/drop_info.hpp"
+#include "duckdb/planner/operator/logical_create_table.hpp"
+#include "duckdb/planner/operator/logical_insert.hpp"
+#include "duckdb/planner/operator/logical_delete.hpp"
+#include "duckdb/planner/operator/logical_update.hpp"
+#include "duckdb/execution/physical_plan_generator.hpp"
 #include "adbc_connection.hpp"
 #include "storage/adbc_schema_set.hpp"
 
-namespace duckdb {
-class AdbcCatalog;
-class AdbcSchemaEntry;
-class PhysicalPlanGenerator;
-class LogicalCreateTable;
-class LogicalInsert;
-class LogicalDelete;
-class LogicalUpdate;
+namespace adbc_scanner {
+using namespace duckdb;
 
 class AdbcCatalog : public Catalog {
 public:
-	explicit AdbcCatalog(AttachedDatabase &db_p, shared_ptr<adbc::AdbcConnectionWrapper> connection,
+	explicit AdbcCatalog(AttachedDatabase &db_p, shared_ptr<AdbcConnectionWrapper> connection,
 	                     const string &path, AccessMode access_mode);
 	~AdbcCatalog();
 
 	//! The ADBC connection (shared ownership with the catalog)
-	shared_ptr<adbc::AdbcConnectionWrapper> connection;
+	shared_ptr<AdbcConnectionWrapper> connection;
 	//! The connection handle registered in the ConnectionRegistry
 	int64_t connection_handle;
 	//! The attach path (driver info)
@@ -70,7 +71,7 @@ public:
 	bool InMemory() override;
 	string GetDBPath() override;
 
-	shared_ptr<adbc::AdbcConnectionWrapper> GetConnection() {
+	shared_ptr<AdbcConnectionWrapper> GetConnection() {
 		return connection;
 	}
 
@@ -95,4 +96,4 @@ private:
 	string default_schema;
 };
 
-} // namespace duckdb
+} // namespace adbc_scanner

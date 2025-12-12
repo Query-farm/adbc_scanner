@@ -8,8 +8,8 @@
 #include <mutex>
 #include <unordered_set>
 
-namespace duckdb {
-namespace adbc {
+namespace adbc_scanner {
+using namespace duckdb;
 
 // Forward declaration
 class AdbcConnectionWrapper;
@@ -465,5 +465,4 @@ void ForEachArrowBatch(ArrowArrayStream &stream, const string &function_name, Ca
 	}
 }
 
-} // namespace adbc
-} // namespace duckdb
+} // namespace adbc_scanner

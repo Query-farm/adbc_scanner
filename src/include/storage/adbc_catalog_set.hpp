@@ -12,9 +12,12 @@
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/shared_ptr.hpp"
+#include "duckdb/parser/parsed_data/drop_info.hpp"
 
-namespace duckdb {
-struct DropInfo;
+namespace adbc_scanner {
+using namespace duckdb;
+
+// Forward declarations for types defined in this namespace
 class AdbcSchemaEntry;
 class AdbcTransaction;
 
@@ -53,4 +56,4 @@ protected:
 	AdbcSchemaEntry &schema;
 };
 
-} // namespace duckdb
+} // namespace adbc_scanner

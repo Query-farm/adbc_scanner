@@ -1,7 +1,8 @@
 #include "storage/adbc_transaction_manager.hpp"
 #include "duckdb/main/attached_database.hpp"
 
-namespace duckdb {
+namespace adbc_scanner {
+using namespace duckdb;
 
 AdbcTransactionManager::AdbcTransactionManager(AttachedDatabase &db_p, AdbcCatalog &adbc_catalog)
     : TransactionManager(db_p), adbc_catalog(adbc_catalog) {
@@ -35,4 +36,4 @@ void AdbcTransactionManager::Checkpoint(ClientContext &context, bool force) {
 	// ADBC doesn't have a checkpoint operation
 }
 
-} // namespace duckdb
+} // namespace adbc_scanner

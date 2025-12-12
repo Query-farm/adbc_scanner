@@ -10,11 +10,12 @@
 
 #include "duckdb/storage/storage_extension.hpp"
 
-namespace duckdb {
+namespace adbc_scanner {
+using namespace duckdb;
 
 class AdbcStorageExtension : public StorageExtension {
 public:
 	AdbcStorageExtension();
 };
 
-} // namespace duckdb
+} // namespace adbc_scanner

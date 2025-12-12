@@ -3,7 +3,8 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 
-namespace duckdb {
+namespace adbc_scanner {
+using namespace duckdb;
 
 AdbcTransaction::AdbcTransaction(AdbcCatalog &adbc_catalog, TransactionManager &manager, ClientContext &context)
     : Transaction(manager, context), adbc_catalog(adbc_catalog),
@@ -29,7 +30,7 @@ void AdbcTransaction::Rollback() {
 	}
 }
 
-shared_ptr<adbc::AdbcConnectionWrapper> AdbcTransaction::GetConnection() {
+shared_ptr<AdbcConnectionWrapper> AdbcTransaction::GetConnection() {
 	return adbc_catalog.GetConnection();
 }
 
@@ -37,4 +38,4 @@ AdbcTransaction &AdbcTransaction::Get(ClientContext &context, Catalog &catalog) 
 	return Transaction::Get(context, catalog).Cast<AdbcTransaction>();
 }
 
-} // namespace duckdb
+} // namespace adbc_scanner

@@ -11,7 +11,8 @@
 #include "duckdb/transaction/transaction.hpp"
 #include "adbc_connection.hpp"
 
-namespace duckdb {
+namespace adbc_scanner {
+using namespace duckdb;
 class AdbcCatalog;
 class AdbcSchemaEntry;
 class AdbcTableEntry;
@@ -27,7 +28,7 @@ public:
 	void Commit();
 	void Rollback();
 
-	shared_ptr<adbc::AdbcConnectionWrapper> GetConnection();
+	shared_ptr<AdbcConnectionWrapper> GetConnection();
 
 	static AdbcTransaction &Get(ClientContext &context, Catalog &catalog);
 
@@ -41,4 +42,4 @@ private:
 	AccessMode access_mode;
 };
 
-} // namespace duckdb
+} // namespace adbc_scanner

@@ -10,14 +10,15 @@
 #include "duckdb/planner/operator/logical_delete.hpp"
 #include "duckdb/planner/operator/logical_update.hpp"
 
-namespace duckdb {
+namespace adbc_scanner {
+using namespace duckdb;
 
-AdbcCatalog::AdbcCatalog(AttachedDatabase &db_p, shared_ptr<adbc::AdbcConnectionWrapper> connection_p,
+AdbcCatalog::AdbcCatalog(AttachedDatabase &db_p, shared_ptr<AdbcConnectionWrapper> connection_p,
                          const string &path, AccessMode access_mode_p)
     : Catalog(db_p), connection(std::move(connection_p)), attach_path(path),
       access_mode(access_mode_p), schemas(*this) {
 	// Register the connection in the ConnectionRegistry so adbc_scan_table can use it
-	auto &registry = adbc::ConnectionRegistry::Get();
+	auto &registry = ConnectionRegistry::Get();
 	connection_handle = registry.Add(connection);
 
 	// Try to determine default schema from the connection
@@ -27,7 +28,7 @@ AdbcCatalog::AdbcCatalog(AttachedDatabase &db_p, shared_ptr<adbc::AdbcConnection
 
 AdbcCatalog::~AdbcCatalog() {
 	// Remove the connection from the registry when the catalog is destroyed
-	auto &registry = adbc::ConnectionRegistry::Get();
+	auto &registry = ConnectionRegistry::Get();
 	registry.Remove(connection_handle);
 }
 
@@ -119,4 +120,4 @@ PhysicalOperator &AdbcCatalog::PlanUpdate(ClientContext &context, PhysicalPlanGe
 	throw NotImplementedException("ADBC databases do not support UPDATE");
 }
 
-} // namespace duckdb
+} // namespace adbc_scanner

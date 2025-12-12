@@ -12,8 +12,8 @@
 #include "duckdb/planner/filter/conjunction_filter.hpp"
 #include "duckdb/planner/filter/constant_filter.hpp"
 
-namespace duckdb {
-namespace adbc {
+namespace adbc_scanner {
+using namespace duckdb;
 
 // Result of transforming filters - contains both the WHERE clause and bound parameters
 struct FilterPushdownResult {
@@ -47,5 +47,4 @@ private:
 	                               string op, vector<Value> &params, vector<LogicalType> &param_types);
 };
 
-} // namespace adbc
-} // namespace duckdb
+} // namespace adbc_scanner

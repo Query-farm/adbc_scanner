@@ -3,8 +3,8 @@
 #include "duckdb.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
 
-namespace duckdb {
-namespace adbc {
+namespace adbc_scanner {
+using namespace duckdb;
 
 // Get a secret by name, checking both memory and local_file storage
 unique_ptr<SecretEntry> AdbcGetSecretByName(ClientContext &context, const string &secret_name);
@@ -20,5 +20,4 @@ vector<pair<string, string>> MergeSecretOptions(ClientContext &context,
 // Register the ADBC secret type and create secret function
 void RegisterAdbcSecrets(ExtensionLoader &loader);
 
-} // namespace adbc
-} // namespace duckdb
+} // namespace adbc_scanner

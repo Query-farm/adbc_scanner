@@ -9,7 +9,8 @@
 #include "duckdb/parser/parsed_data/attach_info.hpp"
 #include "duckdb/storage/storage_extension.hpp"
 
-namespace duckdb {
+namespace adbc_scanner {
+using namespace duckdb;
 
 //===--------------------------------------------------------------------===//
 // Adbc Attach
@@ -65,10 +66,10 @@ static unique_ptr<Catalog> AdbcAttach(optional_ptr<StorageExtensionInfo> storage
 	}
 
 	// Merge with secrets (this looks up secrets by name or URI scope)
-	auto options = adbc::MergeSecretOptions(context, explicit_options);
+	auto options = MergeSecretOptions(context, explicit_options);
 
 	// Create the connection using the shared helper
-	auto connection = adbc::CreateConnectionFromOptions(options);
+	auto connection = CreateConnectionFromOptions(options);
 
 	// Create and return the catalog
 	auto catalog = make_uniq<AdbcCatalog>(db, connection, info.path, attach_options.access_mode);
@@ -87,4 +88,4 @@ AdbcStorageExtension::AdbcStorageExtension() {
 	create_transaction_manager = AdbcCreateTransactionManager;
 }
 
-} // namespace duckdb
+} // namespace adbc_scanner

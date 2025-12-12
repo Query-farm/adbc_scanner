@@ -9,9 +9,13 @@
 #pragma once
 
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
+#include "duckdb/parser/parsed_data/create_schema_info.hpp"
 #include "storage/adbc_table_set.hpp"
 
-namespace duckdb {
+namespace adbc_scanner {
+using namespace duckdb;
+
+// Forward declarations for types defined in this namespace
 class AdbcTransaction;
 
 class AdbcSchemaEntry : public SchemaCatalogEntry {
@@ -47,4 +51,4 @@ private:
 	AdbcTableSet tables;
 };
 
-} // namespace duckdb
+} // namespace adbc_scanner

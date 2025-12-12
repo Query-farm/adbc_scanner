@@ -6,7 +6,8 @@
 #include "duckdb/parser/keyword_helper.hpp"
 #include <nanoarrow/nanoarrow.h>
 
-namespace duckdb {
+namespace adbc_scanner {
+using namespace duckdb;
 
 AdbcSchemaSet::AdbcSchemaSet(Catalog &catalog)
     : AdbcCatalogSet(catalog, false) {
@@ -125,7 +126,7 @@ optional_ptr<CatalogEntry> AdbcSchemaSet::CreateSchema(AdbcTransaction &transact
 	sql += KeywordHelper::WriteQuoted(info.schema, '"');
 
 	// Execute on remote database
-	auto statement = make_uniq<adbc::AdbcStatementWrapper>(connection);
+	auto statement = make_uniq<AdbcStatementWrapper>(connection);
 	statement->Init();
 	statement->SetSqlQuery(sql);
 	statement->ExecuteUpdate();
@@ -135,4 +136,4 @@ optional_ptr<CatalogEntry> AdbcSchemaSet::CreateSchema(AdbcTransaction &transact
 	return CreateEntry(transaction, std::move(schema_entry));
 }
 
-} // namespace duckdb
+} // namespace adbc_scanner

@@ -17,13 +17,13 @@ require-env HAS_ADBC_SQLITE_DRIVER
 statement error
 SELECT adbc_connect({'uri': 'test'});
 ----
-Invalid Input Error: adbc_connect: 'driver' option is required
+Invalid Input Error: ADBC connection requires a 'driver' option
 
 # Test that adbc_connect requires 'driver' option (MAP syntax - backwards compatibility)
 statement error
 SELECT adbc_connect(MAP {'uri': 'test'});
 ----
-Invalid Input Error: adbc_connect: 'driver' option is required
+Invalid Input Error: ADBC connection requires a 'driver' option
 
 # Test disconnect with invalid handle
 statement error

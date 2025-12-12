@@ -2,8 +2,8 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/common/string_util.hpp"
 
-namespace duckdb {
-namespace adbc {
+namespace adbc_scanner {
+using namespace duckdb;
 
 unique_ptr<SecretEntry> AdbcGetSecretByName(ClientContext &context, const string &secret_name) {
 	auto &secret_manager = SecretManager::Get(context);
@@ -202,5 +202,4 @@ void RegisterAdbcSecrets(ExtensionLoader &loader) {
 	loader.RegisterFunction(adbc_secret_function);
 }
 
-} // namespace adbc
-} // namespace duckdb
+} // namespace adbc_scanner

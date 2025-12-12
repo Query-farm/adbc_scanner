@@ -11,7 +11,8 @@
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
 
-namespace duckdb {
+namespace adbc_scanner {
+using namespace duckdb;
 
 struct AdbcTableInfo {
 	AdbcTableInfo() {
@@ -56,4 +57,4 @@ public:
 	vector<string> column_names;
 };
 
-} // namespace duckdb
+} // namespace adbc_scanner

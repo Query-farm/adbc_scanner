@@ -3,7 +3,8 @@
 #include "storage/adbc_transaction.hpp"
 #include "duckdb/parser/parsed_data/drop_info.hpp"
 
-namespace duckdb {
+namespace adbc_scanner {
+using namespace duckdb;
 
 AdbcCatalogSet::AdbcCatalogSet(Catalog &catalog, bool is_loaded_p)
     : catalog(catalog), is_loaded(is_loaded_p) {
@@ -72,4 +73,4 @@ optional_ptr<CatalogEntry> AdbcInSchemaSet::CreateEntry(AdbcTransaction &transac
 	return AdbcCatalogSet::CreateEntry(transaction, std::move(entry));
 }
 
-} // namespace duckdb
+} // namespace adbc_scanner

@@ -7,7 +7,8 @@
 #include "duckdb/planner/parsed_data/bound_create_table_info.hpp"
 #include "duckdb/parser/parsed_data/drop_info.hpp"
 
-namespace duckdb {
+namespace adbc_scanner {
+using namespace duckdb;
 
 AdbcSchemaEntry::AdbcSchemaEntry(Catalog &catalog, CreateSchemaInfo &info)
     : SchemaCatalogEntry(catalog, info), tables(*this) {
@@ -105,4 +106,4 @@ optional_ptr<CatalogEntry> AdbcSchemaEntry::LookupEntry(CatalogTransaction trans
 	return tables.GetEntry(adbc_transaction, lookup_info.GetEntryName());
 }
 
-} // namespace duckdb
+} // namespace adbc_scanner

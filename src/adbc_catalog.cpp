@@ -9,8 +9,8 @@
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #include <nanoarrow/nanoarrow.h>
 
-namespace duckdb {
-namespace adbc {
+namespace adbc_scanner {
+using namespace duckdb;
 
 // Info code to name mapping
 static string GetInfoName(uint32_t info_code) {
@@ -1215,5 +1215,4 @@ void RegisterAdbcCatalogFunctions(DatabaseInstance &db) {
     }
 }
 
-} // namespace adbc
-} // namespace duckdb
+} // namespace adbc_scanner

@@ -6,8 +6,8 @@
 #include <arrow-adbc/adbc_driver_manager.h>
 #include <string>
 
-namespace duckdb {
-namespace adbc {
+namespace adbc_scanner {
+using namespace duckdb;
 
 // Convert ADBC status code to a human-readable string
 inline const char *StatusCodeToString(AdbcStatusCode code) {
@@ -176,5 +176,4 @@ private:
     AdbcError error;
 };
 
-} // namespace adbc
-} // namespace duckdb
+} // namespace adbc_scanner

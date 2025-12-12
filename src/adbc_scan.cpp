@@ -18,8 +18,8 @@
 #include <nanoarrow/nanoarrow.h>
 #include <queue>
 
-namespace duckdb {
-namespace adbc {
+namespace adbc_scanner {
+using namespace duckdb;
 
 // Numeric value from ADBC statistics union (type_id: 0=int64, 1=uint64, 2=float64)
 struct AdbcStatValue {
@@ -1728,5 +1728,4 @@ void RegisterAdbcInsertFunction(DatabaseInstance &db) {
     loader.RegisterFunction(info);
 }
 
-} // namespace adbc
-} // namespace duckdb
+} // namespace adbc_scanner

@@ -1,0 +1,171 @@
+# name: test/sql/adbc_attach.test
+# description: test ADBC storage extension (ATTACH functionality)
+# group: [adbc]
+
+require adbc_scanner
+
+require-env HAS_ADBC_SQLITE_DRIVER
+
+# ============================================
+# Setup - Create a SQLite database with test data
+# ============================================
+
+statement ok
+SET VARIABLE conn_id = (SELECT adbc_connect({'driver': 'sqlite', 'uri': '/tmp/test_attach.db'}));
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'DROP TABLE IF EXISTS test_table');
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE test_table (id INTEGER, name TEXT, value REAL)');
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO test_table VALUES (1, ''hello'', 1.5), (2, ''world'', 2.5), (3, ''test'', 3.5)');
+
+statement ok
+SELECT adbc_disconnect(getvariable('conn_id')::BIGINT);
+
+# ============================================
+# Basic ATTACH Tests
+# ============================================
+
+# Test basic ATTACH
+statement ok
+ATTACH '/tmp/test_attach.db' AS sqlite_db (TYPE adbc, driver 'sqlite');
+
+# Test querying attached database
+query ITR
+SELECT * FROM sqlite_db.test_table ORDER BY id;
+----
+1	hello	1.5
+2	world	2.5
+3	test	3.5
+
+# Test projection pushdown
+query I
+SELECT id FROM sqlite_db.test_table ORDER BY id;
+----
+1
+2
+3
+
+# Test filter pushdown
+query ITR
+SELECT * FROM sqlite_db.test_table WHERE id > 1 ORDER BY id;
+----
+2	world	2.5
+3	test	3.5
+
+# Test aggregation (count(*) with no columns)
+query I
+SELECT COUNT(*) FROM sqlite_db.test_table;
+----
+3
+
+# Test multiple aggregations
+query II
+SELECT COUNT(*), SUM(id) FROM sqlite_db.test_table;
+----
+3	6
+
+statement ok
+DETACH sqlite_db;
+
+# ============================================
+# ATTACH with batch_size Tests
+# ============================================
+
+# Test ATTACH with batch_size option
+statement ok
+ATTACH '/tmp/test_attach.db' AS sqlite_db_batch (TYPE adbc, driver 'sqlite', batch_size 1024);
+
+# Verify querying still works with batch_size
+query ITR
+SELECT * FROM sqlite_db_batch.test_table ORDER BY id;
+----
+1	hello	1.5
+2	world	2.5
+3	test	3.5
+
+# Test count(*) with batch_size
+query I
+SELECT COUNT(*) FROM sqlite_db_batch.test_table;
+----
+3
+
+statement ok
+DETACH sqlite_db_batch;
+
+# ============================================
+# ATTACH with small batch_size
+# ============================================
+
+# Test with very small batch size (should still work correctly)
+statement ok
+ATTACH '/tmp/test_attach.db' AS sqlite_db_small (TYPE adbc, driver 'sqlite', batch_size 1);
+
+query ITR
+SELECT * FROM sqlite_db_small.test_table ORDER BY id;
+----
+1	hello	1.5
+2	world	2.5
+3	test	3.5
+
+statement ok
+DETACH sqlite_db_small;
+
+# ============================================
+# ATTACH with large batch_size
+# ============================================
+
+# Test with large batch size
+statement ok
+ATTACH '/tmp/test_attach.db' AS sqlite_db_large (TYPE adbc, driver 'sqlite', batch_size 65536);
+
+query ITR
+SELECT * FROM sqlite_db_large.test_table ORDER BY id;
+----
+1	hello	1.5
+2	world	2.5
+3	test	3.5
+
+statement ok
+DETACH sqlite_db_large;
+
+# ============================================
+# CREATE SCHEMA Tests
+# ============================================
+
+# Attach database for schema tests
+statement ok
+ATTACH '/tmp/test_attach.db' AS sqlite_schema_test (TYPE adbc, driver 'sqlite');
+
+# SQLite doesn't support CREATE SCHEMA, so this should fail with a driver error
+statement error
+CREATE SCHEMA sqlite_schema_test.my_new_schema;
+----
+Failed to execute update
+
+# CREATE SCHEMA IF NOT EXISTS should also fail on SQLite (it doesn't support schemas)
+statement error
+CREATE SCHEMA IF NOT EXISTS sqlite_schema_test.another_schema;
+----
+Failed to execute update
+
+statement ok
+DETACH sqlite_schema_test;
+
+# ============================================
+# Cleanup
+# ============================================
+
+# Clean up the test file (using a new connection)
+statement ok
+SET VARIABLE cleanup_conn = (SELECT adbc_connect({'driver': 'sqlite', 'uri': '/tmp/test_attach.db'}));
+
+statement ok
+SELECT adbc_execute(getvariable('cleanup_conn')::BIGINT, 'DROP TABLE IF EXISTS test_table');
+
+statement ok
+SELECT adbc_disconnect(getvariable('cleanup_conn')::BIGINT);
+

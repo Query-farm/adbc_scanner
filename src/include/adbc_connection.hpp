@@ -419,5 +419,51 @@ private:
     unordered_map<int64_t, shared_ptr<AdbcConnectionWrapper>> connections_;
 };
 
+// Helper to create a connection from a vector of options
+// Extracts driver, entrypoint, uri, search_paths, use_manifests and configures the connection
+// Returns the initialized connection wrapper
+shared_ptr<AdbcConnectionWrapper> CreateConnectionFromOptions(const vector<pair<string, string>> &options);
+
+// Helper to get a validated connection from the registry
+// Throws InvalidInputException if connection not found or closed
+// function_name is used in error messages (e.g., "adbc_scan", "adbc_tables")
+shared_ptr<AdbcConnectionWrapper> GetValidatedConnection(int64_t connection_id, const string &function_name);
+
+// Helper to iterate over batches in an ArrowArrayStream
+// Calls the callback for each batch, automatically handles errors and cleanup
+// callback should return true to continue, false to stop early
+// function_name is used in error messages
+template <typename Callback>
+void ForEachArrowBatch(ArrowArrayStream &stream, const string &function_name, Callback callback) {
+	ArrowArray batch;
+	while (true) {
+		memset(&batch, 0, sizeof(batch));
+		int ret = stream.get_next(&stream, &batch);
+		if (ret != 0) {
+			const char *error_msg = stream.get_last_error(&stream);
+			string msg = function_name + ": Failed to get next batch";
+			if (error_msg) {
+				msg += ": ";
+				msg += error_msg;
+			}
+			throw IOException(msg);
+		}
+
+		if (!batch.release) {
+			break; // End of stream
+		}
+
+		bool should_continue = callback(&batch);
+
+		if (batch.release) {
+			batch.release(&batch);
+		}
+
+		if (!should_continue) {
+			break;
+		}
+	}
+}
+
 } // namespace adbc
 } // namespace duckdb

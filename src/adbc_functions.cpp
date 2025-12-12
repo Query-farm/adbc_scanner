@@ -54,82 +54,8 @@ static int64_t CreateConnection(const vector<pair<string, string>> &explicit_opt
 		options = explicit_options;
 	}
 
-	string driver;
-	string entrypoint;
-	string search_paths;
-	bool use_manifests = true;  // Enable manifest search by default
-	vector<pair<string, string>> db_options;
-	vector<pair<string, string>> conn_options;
-
-	for (const auto &opt : options) {
-		if (opt.first == "driver") {
-			driver = opt.second;
-		} else if (opt.first == "entrypoint") {
-			entrypoint = opt.second;
-		} else if (opt.first == "search_paths") {
-			// Additional paths to search for driver manifests
-			search_paths = opt.second;
-		} else if (opt.first == "use_manifests") {
-			// Allow disabling manifest search (e.g., for direct library paths)
-			use_manifests = (opt.second == "true" || opt.second == "1");
-		} else {
-			// All other options go to database (driver-specific options)
-			db_options.emplace_back(opt.first, opt.second);
-		}
-	}
-
-	// Validate required options
-	if (driver.empty()) {
-		throw InvalidInputException("adbc_connect: 'driver' option is required");
-	}
-
-	// Create database wrapper
-	auto database = make_shared_ptr<AdbcDatabaseWrapper>();
-	database->Init();
-
-	// Enable manifest-based driver discovery by default
-	// This allows using driver names like "sqlite" instead of full paths
-	if (use_manifests) {
-		database->SetLoadFlags(ADBC_LOAD_FLAG_DEFAULT);
-	} else {
-		database->SetLoadFlags(ADBC_LOAD_FLAG_ALLOW_RELATIVE_PATHS);
-	}
-
-	// Set additional search paths if provided
-	if (!search_paths.empty()) {
-		database->SetAdditionalSearchPaths(search_paths);
-	}
-
-	// Set driver (required) - can be a name, path, or manifest file
-	database->SetOption("driver", driver);
-
-	// Store driver name for error messages
-	database->SetDriverName(driver);
-
-	// Set entrypoint if provided
-	if (!entrypoint.empty()) {
-		database->SetOption("entrypoint", entrypoint);
-	}
-
-	// Set driver-specific database options
-	for (const auto &opt : db_options) {
-		database->SetOption(opt.first, opt.second);
-	}
-
-	// Initialize database
-	database->Initialize();
-
-	// Create connection wrapper
-	auto connection = make_shared_ptr<AdbcConnectionWrapper>(database);
-	connection->Init();
-
-	// Set connection options
-	for (const auto &opt : conn_options) {
-		connection->SetOption(opt.first, opt.second);
-	}
-
-	// Initialize connection
-	connection->Initialize();
+	// Create connection using shared helper
+	auto connection = CreateConnectionFromOptions(options);
 
 	// Register connection and return handle
 	auto &registry = ConnectionRegistry::Get();
@@ -190,11 +116,7 @@ static void AdbcCommitFunction(DataChunk &args, ExpressionState &state, Vector &
 	auto &connection_vector = args.data[0];
 
 	UnaryExecutor::Execute<int64_t, bool>(connection_vector, result, args.size(), [&](int64_t connection_id) {
-		auto &registry = ConnectionRegistry::Get();
-		auto connection = registry.Get(connection_id);
-		if (!connection) {
-			throw InvalidInputException("adbc_commit: Invalid connection handle: " + to_string(connection_id));
-		}
+		auto connection = GetValidatedConnection(connection_id, "adbc_commit");
 		connection->Commit();
 		return true;
 	});
@@ -206,11 +128,7 @@ static void AdbcRollbackFunction(DataChunk &args, ExpressionState &state, Vector
 	auto &connection_vector = args.data[0];
 
 	UnaryExecutor::Execute<int64_t, bool>(connection_vector, result, args.size(), [&](int64_t connection_id) {
-		auto &registry = ConnectionRegistry::Get();
-		auto connection = registry.Get(connection_id);
-		if (!connection) {
-			throw InvalidInputException("adbc_rollback: Invalid connection handle: " + to_string(connection_id));
-		}
+		auto connection = GetValidatedConnection(connection_id, "adbc_rollback");
 		connection->Rollback();
 		return true;
 	});
@@ -224,12 +142,7 @@ static void AdbcSetAutocommitFunction(DataChunk &args, ExpressionState &state, V
 
 	BinaryExecutor::Execute<int64_t, bool, bool>(
 	    connection_vector, enabled_vector, result, args.size(), [&](int64_t connection_id, bool enabled) {
-		    auto &registry = ConnectionRegistry::Get();
-		    auto connection = registry.Get(connection_id);
-		    if (!connection) {
-			    throw InvalidInputException("adbc_set_autocommit: Invalid connection handle: " +
-			                                to_string(connection_id));
-		    }
+		    auto connection = GetValidatedConnection(connection_id, "adbc_set_autocommit");
 		    connection->SetAutocommit(enabled);
 		    return true;
 	    });

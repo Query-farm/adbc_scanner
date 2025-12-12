@@ -1,12 +1,7 @@
 Roadmap Items:
 
-1. DuckDB ATTACH style interface.
-2. With the ATTACH style interface in place:
-  1. Implement statistics for tables and columns.
-  2. Transform DuckDB predicates into ADBC predicates.
   3. Implement INSERT INTO for attached tables.
-  4. Implement projection.
-  5. Implement catalog change detection.
+    * Roadmap for pseudo rows its.
 3. Implement partition parallelism for scans. Snowflake can produce partition data in parallel, DuckDB could consume in parallel.
 
 

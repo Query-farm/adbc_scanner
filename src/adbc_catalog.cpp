@@ -66,16 +66,7 @@ static unique_ptr<FunctionData> AdbcInfoBind(ClientContext &context, TableFuncti
     }
 
     bind_data->connection_id = input.inputs[0].GetValue<int64_t>();
-
-    auto &registry = ConnectionRegistry::Get();
-    bind_data->connection = registry.Get(bind_data->connection_id);
-    if (!bind_data->connection) {
-        throw InvalidInputException("adbc_info: Invalid connection handle: " + to_string(bind_data->connection_id));
-    }
-
-    if (!bind_data->connection->IsInitialized()) {
-        throw InvalidInputException("adbc_info: Connection has been closed");
-    }
+    bind_data->connection = GetValidatedConnection(bind_data->connection_id, "adbc_info");
 
     // Return simple key-value schema
     names = {"info_name", "info_value"};
@@ -132,10 +123,6 @@ static unique_ptr<GlobalTableFunctionState> AdbcInfoInitGlobal(ClientContext &co
     auto &bind_data = input.bind_data->Cast<AdbcInfoBindData>();
     auto global_state = make_uniq<AdbcInfoGlobalState>();
 
-    if (!bind_data.connection->IsInitialized()) {
-        throw InvalidInputException("adbc_info: Connection has been closed");
-    }
-
     memset(&global_state->stream, 0, sizeof(global_state->stream));
     try {
         bind_data.connection->GetInfo(nullptr, 0, &global_state->stream);
@@ -145,44 +132,23 @@ static unique_ptr<GlobalTableFunctionState> AdbcInfoInitGlobal(ClientContext &co
     global_state->stream_initialized = true;
 
     // Pre-extract all info into simple key-value pairs
-    // This avoids the union type issue by converting to strings
-    ArrowArray batch;
-    while (true) {
-        memset(&batch, 0, sizeof(batch));
-        int ret = global_state->stream.get_next(&global_state->stream, &batch);
-        if (ret != 0) {
-            const char *error_msg = global_state->stream.get_last_error(&global_state->stream);
-            string msg = "adbc_info: Failed to get next batch";
-            if (error_msg) {
-                msg += ": ";
-                msg += error_msg;
-            }
-            throw IOException(msg);
-        }
-
-        if (!batch.release) {
-            break; // End of stream
-        }
-
+    ForEachArrowBatch(global_state->stream, "adbc_info", [&](ArrowArray *batch) {
         // batch has 2 children: info_name (uint32) and info_value (union)
-        if (batch.n_children >= 2) {
-            ArrowArray *info_name_array = batch.children[0];
-            ArrowArray *info_value_array = batch.children[1];
+        if (batch->n_children >= 2) {
+            ArrowArray *info_name_array = batch->children[0];
+            ArrowArray *info_value_array = batch->children[1];
 
             auto info_codes = static_cast<const uint32_t *>(info_name_array->buffers[1]);
 
-            for (int64_t i = 0; i < batch.length; i++) {
+            for (int64_t i = 0; i < batch->length; i++) {
                 uint32_t info_code = info_codes[i];
                 string name = GetInfoName(info_code);
                 string value = ExtractUnionValue(info_value_array, i);
                 global_state->info_rows.emplace_back(name, value);
             }
         }
-
-        if (batch.release) {
-            batch.release(&batch);
-        }
-    }
+        return true; // continue
+    });
 
     return std::move(global_state);
 }
@@ -375,15 +341,7 @@ static unique_ptr<FunctionData> AdbcTablesBind(ClientContext &context, TableFunc
         bind_data->has_table_filter = true;
     }
 
-    auto &registry = ConnectionRegistry::Get();
-    bind_data->connection = registry.Get(bind_data->connection_id);
-    if (!bind_data->connection) {
-        throw InvalidInputException("adbc_tables: Invalid connection handle: " + to_string(bind_data->connection_id));
-    }
-
-    if (!bind_data->connection->IsInitialized()) {
-        throw InvalidInputException("adbc_tables: Connection has been closed");
-    }
+    bind_data->connection = GetValidatedConnection(bind_data->connection_id, "adbc_tables");
 
     // Return a simple schema for tables: catalog, schema, table_name, table_type
     names = {"catalog_name", "schema_name", "table_name", "table_type"};
@@ -395,10 +353,6 @@ static unique_ptr<FunctionData> AdbcTablesBind(ClientContext &context, TableFunc
 static unique_ptr<GlobalTableFunctionState> AdbcTablesInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
     auto &bind_data = input.bind_data->Cast<AdbcTablesBindData>();
     auto global_state = make_uniq<AdbcTablesGlobalState>();
-
-    if (!bind_data.connection->IsInitialized()) {
-        throw InvalidInputException("adbc_tables: Connection has been closed");
-    }
 
     memset(&global_state->stream, 0, sizeof(global_state->stream));
 
@@ -415,30 +369,10 @@ static unique_ptr<GlobalTableFunctionState> AdbcTablesInitGlobal(ClientContext &
     global_state->stream_initialized = true;
 
     // Pre-extract all tables by flattening the hierarchical structure
-    ArrowArray batch;
-    while (true) {
-        memset(&batch, 0, sizeof(batch));
-        int ret = global_state->stream.get_next(&global_state->stream, &batch);
-        if (ret != 0) {
-            const char *error_msg = global_state->stream.get_last_error(&global_state->stream);
-            string msg = "adbc_tables: Failed to get next batch";
-            if (error_msg) {
-                msg += ": ";
-                msg += error_msg;
-            }
-            throw IOException(msg);
-        }
-
-        if (!batch.release) {
-            break; // End of stream
-        }
-
-        ExtractTables(&batch, global_state->table_rows);
-
-        if (batch.release) {
-            batch.release(&batch);
-        }
-    }
+    ForEachArrowBatch(global_state->stream, "adbc_tables", [&](ArrowArray *batch) {
+        ExtractTables(batch, global_state->table_rows);
+        return true;
+    });
 
     return std::move(global_state);
 }
@@ -513,16 +447,7 @@ static unique_ptr<FunctionData> AdbcTableTypesBind(ClientContext &context, Table
     }
 
     bind_data->connection_id = input.inputs[0].GetValue<int64_t>();
-
-    auto &registry = ConnectionRegistry::Get();
-    bind_data->connection = registry.Get(bind_data->connection_id);
-    if (!bind_data->connection) {
-        throw InvalidInputException("adbc_table_types: Invalid connection handle: " + to_string(bind_data->connection_id));
-    }
-
-    if (!bind_data->connection->IsInitialized()) {
-        throw InvalidInputException("adbc_table_types: Connection has been closed");
-    }
+    bind_data->connection = GetValidatedConnection(bind_data->connection_id, "adbc_table_types");
 
     // Return single column schema
     names = {"table_type"};
@@ -535,10 +460,6 @@ static unique_ptr<GlobalTableFunctionState> AdbcTableTypesInitGlobal(ClientConte
     auto &bind_data = input.bind_data->Cast<AdbcTableTypesBindData>();
     auto global_state = make_uniq<AdbcTableTypesGlobalState>();
 
-    if (!bind_data.connection->IsInitialized()) {
-        throw InvalidInputException("adbc_table_types: Connection has been closed");
-    }
-
     memset(&global_state->stream, 0, sizeof(global_state->stream));
     try {
         bind_data.connection->GetTableTypes(&global_state->stream);
@@ -548,37 +469,17 @@ static unique_ptr<GlobalTableFunctionState> AdbcTableTypesInitGlobal(ClientConte
     global_state->stream_initialized = true;
 
     // Extract all table types from the Arrow stream
-    ArrowArray batch;
-    while (true) {
-        memset(&batch, 0, sizeof(batch));
-        int ret = global_state->stream.get_next(&global_state->stream, &batch);
-        if (ret != 0) {
-            const char *error_msg = global_state->stream.get_last_error(&global_state->stream);
-            string msg = "adbc_table_types: Failed to get next batch";
-            if (error_msg) {
-                msg += ": ";
-                msg += error_msg;
-            }
-            throw IOException(msg);
-        }
-
-        if (!batch.release) {
-            break; // End of stream
-        }
-
+    ForEachArrowBatch(global_state->stream, "adbc_table_types", [&](ArrowArray *batch) {
         // The result has a single column: table_type (utf8)
-        if (batch.n_children >= 1) {
-            ArrowArray *table_type_array = batch.children[0];
-            for (int64_t i = 0; i < batch.length; i++) {
+        if (batch->n_children >= 1) {
+            ArrowArray *table_type_array = batch->children[0];
+            for (int64_t i = 0; i < batch->length; i++) {
                 string table_type = ExtractString(table_type_array, i);
                 global_state->table_types.push_back(table_type);
             }
         }
-
-        if (batch.release) {
-            batch.release(&batch);
-        }
-    }
+        return true;
+    });
 
     return std::move(global_state);
 }
@@ -856,15 +757,7 @@ static unique_ptr<FunctionData> AdbcColumnsBind(ClientContext &context, TableFun
         bind_data->has_column_filter = true;
     }
 
-    auto &registry = ConnectionRegistry::Get();
-    bind_data->connection = registry.Get(bind_data->connection_id);
-    if (!bind_data->connection) {
-        throw InvalidInputException("adbc_columns: Invalid connection handle: " + to_string(bind_data->connection_id));
-    }
-
-    if (!bind_data->connection->IsInitialized()) {
-        throw InvalidInputException("adbc_columns: Connection has been closed");
-    }
+    bind_data->connection = GetValidatedConnection(bind_data->connection_id, "adbc_columns");
 
     // Return schema for columns
     names = {"catalog_name", "schema_name", "table_name", "column_name", "ordinal_position", "remarks", "type_name", "is_nullable"};
@@ -877,10 +770,6 @@ static unique_ptr<FunctionData> AdbcColumnsBind(ClientContext &context, TableFun
 static unique_ptr<GlobalTableFunctionState> AdbcColumnsInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
     auto &bind_data = input.bind_data->Cast<AdbcColumnsBindData>();
     auto global_state = make_uniq<AdbcColumnsGlobalState>();
-
-    if (!bind_data.connection->IsInitialized()) {
-        throw InvalidInputException("adbc_columns: Connection has been closed");
-    }
 
     memset(&global_state->stream, 0, sizeof(global_state->stream));
 
@@ -898,30 +787,10 @@ static unique_ptr<GlobalTableFunctionState> AdbcColumnsInitGlobal(ClientContext 
     global_state->stream_initialized = true;
 
     // Pre-extract all columns by flattening the hierarchical structure
-    ArrowArray batch;
-    while (true) {
-        memset(&batch, 0, sizeof(batch));
-        int ret = global_state->stream.get_next(&global_state->stream, &batch);
-        if (ret != 0) {
-            const char *error_msg = global_state->stream.get_last_error(&global_state->stream);
-            string msg = "adbc_columns: Failed to get next batch";
-            if (error_msg) {
-                msg += ": ";
-                msg += error_msg;
-            }
-            throw IOException(msg);
-        }
-
-        if (!batch.release) {
-            break; // End of stream
-        }
-
-        ExtractColumns(&batch, global_state->column_rows);
-
-        if (batch.release) {
-            batch.release(&batch);
-        }
-    }
+    ForEachArrowBatch(global_state->stream, "adbc_columns", [&](ArrowArray *batch) {
+        ExtractColumns(batch, global_state->column_rows);
+        return true;
+    });
 
     return std::move(global_state);
 }
@@ -1178,15 +1047,7 @@ static unique_ptr<FunctionData> AdbcSchemaBind(ClientContext &context, TableFunc
         bind_data->has_schema_filter = true;
     }
 
-    auto &registry = ConnectionRegistry::Get();
-    bind_data->connection = registry.Get(bind_data->connection_id);
-    if (!bind_data->connection) {
-        throw InvalidInputException("adbc_schema: Invalid connection handle: " + to_string(bind_data->connection_id));
-    }
-
-    if (!bind_data->connection->IsInitialized()) {
-        throw InvalidInputException("adbc_schema: Connection has been closed");
-    }
+    bind_data->connection = GetValidatedConnection(bind_data->connection_id, "adbc_schema");
 
     // Return schema for fields
     names = {"field_name", "field_type", "nullable"};
@@ -1198,10 +1059,6 @@ static unique_ptr<FunctionData> AdbcSchemaBind(ClientContext &context, TableFunc
 static unique_ptr<GlobalTableFunctionState> AdbcSchemaInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
     auto &bind_data = input.bind_data->Cast<AdbcSchemaBindData>();
     auto global_state = make_uniq<AdbcSchemaGlobalState>();
-
-    if (!bind_data.connection->IsInitialized()) {
-        throw InvalidInputException("adbc_schema: Connection has been closed");
-    }
 
     const char *catalog = bind_data.has_catalog_filter ? bind_data.catalog_filter.c_str() : nullptr;
     const char *db_schema = bind_data.has_schema_filter ? bind_data.schema_filter.c_str() : nullptr;

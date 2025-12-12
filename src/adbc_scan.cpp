@@ -414,17 +414,8 @@ static unique_ptr<FunctionData> AdbcScanBind(ClientContext &context, TableFuncti
         }
     }
 
-    // Look up connection in registry
-    auto &registry = ConnectionRegistry::Get();
-    bind_data->connection = registry.Get(bind_data->connection_id);
-    if (!bind_data->connection) {
-        throw InvalidInputException("adbc_scan: Invalid connection handle: " + to_string(bind_data->connection_id));
-    }
-
-    // Validate connection is still active
-    if (!bind_data->connection->IsInitialized()) {
-        throw InvalidInputException(FormatError("adbc_scan: Connection has been closed", bind_data->query));
-    }
+    // Look up and validate connection
+    bind_data->connection = GetValidatedConnection(bind_data->connection_id, "adbc_scan");
 
     // Create and prepare statement
     auto statement = make_shared_ptr<AdbcStatementWrapper>(bind_data->connection);
@@ -779,17 +770,8 @@ static unique_ptr<FunctionData> AdbcScanTableBind(ClientContext &context, TableF
         }
     }
 
-    // Look up connection in registry
-    auto &registry = ConnectionRegistry::Get();
-    bind_data->connection = registry.Get(bind_data->connection_id);
-    if (!bind_data->connection) {
-        throw InvalidInputException("adbc_scan_table: Invalid connection handle: " + to_string(bind_data->connection_id));
-    }
-
-    // Validate connection is still active
-    if (!bind_data->connection->IsInitialized()) {
-        throw InvalidInputException("adbc_scan_table: Connection has been closed");
-    }
+    // Look up and validate connection
+    bind_data->connection = GetValidatedConnection(bind_data->connection_id, "adbc_scan_table");
 
     // Create and prepare statement
     auto statement = make_shared_ptr<AdbcStatementWrapper>(bind_data->connection);
@@ -1341,17 +1323,8 @@ static unique_ptr<FunctionData> AdbcExecuteBind(ClientContext &context, ScalarFu
 
 // Helper to execute a single DDL/DML statement and return rows affected
 static int64_t ExecuteStatement(int64_t connection_id, const string &query) {
-    // Look up connection in registry
-    auto &registry = ConnectionRegistry::Get();
-    auto connection = registry.Get(connection_id);
-    if (!connection) {
-        throw InvalidInputException("adbc_execute: Invalid connection handle: " + to_string(connection_id));
-    }
-
-    // Validate connection is still active
-    if (!connection->IsInitialized()) {
-        throw InvalidInputException(FormatError("adbc_execute: Connection has been closed", query));
-    }
+    // Look up and validate connection
+    auto connection = GetValidatedConnection(connection_id, "adbc_execute");
 
     // Create and prepare statement
     auto statement = make_shared_ptr<AdbcStatementWrapper>(connection);
@@ -1615,16 +1588,8 @@ static unique_ptr<FunctionData> AdbcInsertBind(ClientContext &context, TableFunc
         bind_data->mode = "append";  // Default to append
     }
 
-    // Get connection from registry
-    auto &registry = ConnectionRegistry::Get();
-    bind_data->connection = registry.Get(bind_data->connection_id);
-    if (!bind_data->connection) {
-        throw InvalidInputException("adbc_insert: Invalid connection handle: " + to_string(bind_data->connection_id));
-    }
-
-    if (!bind_data->connection->IsInitialized()) {
-        throw InvalidInputException("adbc_insert: Connection has been closed");
-    }
+    // Get and validate connection
+    bind_data->connection = GetValidatedConnection(bind_data->connection_id, "adbc_insert");
 
     // Store input table types and names for Arrow conversion
     bind_data->input_types = input.input_table_types;

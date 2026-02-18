@@ -2,7 +2,7 @@ vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO apache/arrow-adbc
     REF apache-arrow-adbc-${VERSION}
-    SHA512 74d9dedd15bce71bfbc5bce00ad1aa91be84623010e2a01e6846343a7acc93e36fb263a08cc8437a9467bf63a2c7aca4b14d413325d5afb96b590408d918b27e
+    SHA512 2c15c67d12b6b5ceafdd284038bff71136bac24b9aff1791ed0657e0f0a56ca713e641f9d1032918179af6c387762491c022f43d32995f94a749a60c7b91f20b
     HEAD_REF main
     PATCHES
         toml.patch

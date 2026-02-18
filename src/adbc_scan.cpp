@@ -195,7 +195,7 @@ static void GetSchemaFromStatement(AdbcStatementWrapper &statement, const string
 static void PopulateReturnTypesFromSchema(ClientContext &context, AdbcScanBindData &bind_data,
                                            vector<LogicalType> &return_types, vector<string> &names) {
     // Convert Arrow schema to DuckDB types
-    ArrowTableFunction::PopulateArrowTableSchema(DBConfig::GetConfig(context), bind_data.arrow_table,
+    ArrowTableFunction::PopulateArrowTableSchema(context, bind_data.arrow_table,
                                                   bind_data.schema_root.arrow_schema);
 
     // Extract column names and types
@@ -917,7 +917,7 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanTableInitGlobal(ClientContex
             }
             throw IOException(msg);
         }
-        ArrowTableFunction::PopulateArrowTableSchema(DBConfig::GetConfig(context), global_state->projected_arrow_table,
+        ArrowTableFunction::PopulateArrowTableSchema(context, global_state->projected_arrow_table,
                                                       global_state->projected_schema.arrow_schema);
         global_state->has_projected_schema = true;
     }

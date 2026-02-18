@@ -867,7 +867,7 @@ struct AdbcSchemaGlobalState : public GlobalTableFunctionState {
 };
 
 // Helper to extract fields from an ArrowSchema using DuckDB's built-in type conversion
-static void ExtractSchemaFields(DBConfig &config, ArrowSchema *schema, vector<SchemaFieldRow> &field_rows) {
+static void ExtractSchemaFields(ClientContext &context, ArrowSchema *schema, vector<SchemaFieldRow> &field_rows) {
     if (!schema) return;
 
     for (int64_t i = 0; i < schema->n_children; i++) {
@@ -878,7 +878,7 @@ static void ExtractSchemaFields(DBConfig &config, ArrowSchema *schema, vector<Sc
         row.field_name = child->name ? child->name : "";
 
         // Use DuckDB's built-in Arrow type conversion
-        auto arrow_type = duckdb::ArrowType::GetArrowLogicalType(config, *child);
+        auto arrow_type = duckdb::ArrowType::GetArrowLogicalType(context, *child);
         row.field_type = arrow_type->GetDuckType().ToString();
 
         // In Arrow C Data Interface, nullable is indicated by ARROW_FLAG_NULLABLE bit (flags & 2)
@@ -944,7 +944,7 @@ static unique_ptr<GlobalTableFunctionState> AdbcSchemaInitGlobal(ClientContext &
     }
 
     // Extract fields from the schema using DuckDB's type conversion
-    ExtractSchemaFields(DBConfig::GetConfig(context), &schema, global_state->field_rows);
+    ExtractSchemaFields(context, &schema, global_state->field_rows);
 
     // Release the schema
     if (schema.release) {

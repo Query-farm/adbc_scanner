@@ -35,9 +35,9 @@ static void LoadInternal(duckdb::ExtensionLoader &loader) {
 
 	// Register ADBC storage extension for ATTACH support
 	auto &config = duckdb::DBConfig::GetConfig(loader.GetDatabaseInstance());
-	config.storage_extensions["adbc"] = duckdb::make_uniq<AdbcStorageExtension>();
+	StorageExtension::Register(config, "adbc", make_shared_ptr<AdbcStorageExtension>());
 
-	QueryFarmSendTelemetry(loader, "adbc", "2025120801");
+	duckdb::QueryFarmSendTelemetry(loader, "adbc", "2025120801");
 }
 
 } // namespace adbc_scanner

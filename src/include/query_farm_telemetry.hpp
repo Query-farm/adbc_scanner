@@ -12,7 +12,6 @@
 #define INTERNAL_FUNC
 #endif
 
-namespace adbc_scanner {
-using namespace duckdb;
+namespace duckdb {
 void QueryFarmSendTelemetry(ExtensionLoader &loader, const string &extension_name, const string &extension_version);
-} // namespace adbc_scanner
+}

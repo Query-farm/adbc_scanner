@@ -399,7 +399,7 @@ SELECT * FROM adbc_insert(getvariable('conn')::BIGINT, 'users',
 ```
 
 Output:
-```
+```text
 ┌───────────────┐
 │ rows_inserted │
 ├───────────────┤
@@ -436,7 +436,7 @@ SELECT * FROM adbc_info(getvariable('conn')::BIGINT);
 ```
 
 Output:
-```
+```text
 ┌──────────────────────┬────────────────────┐
 │      info_name       │     info_value     │
 ├──────────────────────┼────────────────────┤
@@ -504,7 +504,7 @@ SELECT * FROM adbc_table_types(getvariable('conn')::BIGINT);
 ```
 
 Output:
-```
+```text
 ┌────────────┐
 │ table_type │
 ├────────────┤
@@ -558,7 +558,7 @@ ORDER BY table_name, ordinal_position;
 ```
 
 Output:
-```
+```text
 ┌──────────────┬─────────────┬────────────┬─────────────┬──────────────────┬─────────┬───────────┬─────────────┐
 │ catalog_name │ schema_name │ table_name │ column_name │ ordinal_position │ remarks │ type_name │ is_nullable │
 ├──────────────┼─────────────┼────────────┼─────────────┼──────────────────┼─────────┼───────────┼─────────────┤
@@ -596,7 +596,7 @@ SELECT * FROM adbc_schema(getvariable('conn')::BIGINT, 'users');
 ```
 
 Output:
-```
+```text
 ┌────────────┬────────────┬──────────┐
 │ field_name │ field_type │ nullable │
 ├────────────┼────────────┼──────────┤

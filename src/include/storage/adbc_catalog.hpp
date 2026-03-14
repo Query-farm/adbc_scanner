@@ -71,7 +71,7 @@ public:
 	bool InMemory() override;
 	string GetDBPath() override;
 
-	shared_ptr<AdbcConnectionWrapper> GetConnection() {
+	shared_ptr<AdbcConnectionWrapper> GetConnection() const {
 		return connection;
 	}
 

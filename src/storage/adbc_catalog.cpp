@@ -100,24 +100,16 @@ void AdbcCatalog::ClearCache() {
 	schemas.ClearEntries();
 }
 
-PhysicalOperator &AdbcCatalog::PlanCreateTableAs(ClientContext &context, PhysicalPlanGenerator &planner,
-                                                  LogicalCreateTable &op, PhysicalOperator &plan) {
-	throw NotImplementedException("ADBC databases do not support CREATE TABLE AS");
-}
-
-PhysicalOperator &AdbcCatalog::PlanInsert(ClientContext &context, PhysicalPlanGenerator &planner, LogicalInsert &op,
-                                           optional_ptr<PhysicalOperator> plan) {
-	throw NotImplementedException("ADBC databases do not support INSERT");
-}
+// PlanInsert and PlanCreateTableAs are implemented in adbc_insert.cpp
 
 PhysicalOperator &AdbcCatalog::PlanDelete(ClientContext &context, PhysicalPlanGenerator &planner, LogicalDelete &op,
                                            PhysicalOperator &plan) {
-	throw NotImplementedException("ADBC databases do not support DELETE");
+	throw NotImplementedException("ADBC databases do not yet support DELETE");
 }
 
 PhysicalOperator &AdbcCatalog::PlanUpdate(ClientContext &context, PhysicalPlanGenerator &planner, LogicalUpdate &op,
                                            PhysicalOperator &plan) {
-	throw NotImplementedException("ADBC databases do not support UPDATE");
+	throw NotImplementedException("ADBC databases do not yet support UPDATE");
 }
 
 } // namespace adbc_scanner

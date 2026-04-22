@@ -2,9 +2,10 @@ cmake_minimum_required(VERSION 3.5)
 
 # Set extension name here
 set(TARGET_NAME adbc_scanner)
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
+
+set(CMAKE_CXX_STANDARD 17 CACHE STRING "C++ standard to enforce" FORCE)
+set(CMAKE_CXX_STANDARD_REQUIRED True)
+
 
 find_package(tomlplusplus REQUIRED)
 find_package(AdbcDriverManager CONFIG REQUIRED)

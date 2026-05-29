@@ -22,7 +22,11 @@ using namespace duckdb;
 // full source size. Overridable via ADBC_INSERT_MAX_PENDING_BATCHES.
 static constexpr size_t DEFAULT_MAX_PENDING_BATCHES = 32;
 
-static size_t ResolveMaxPendingBatches() {
+static size_t ResolveMaxPendingBatches(int64_t override_value) {
+    // Per-call named parameter wins, then the env override, then the default.
+    if (override_value > 0) {
+        return static_cast<size_t>(override_value);
+    }
     const char *env = std::getenv("ADBC_INSERT_MAX_PENDING_BATCHES");
     if (env && *env) {
         char *end = nullptr;
@@ -41,6 +45,10 @@ struct AdbcInsertBindData : public TableFunctionData {
     shared_ptr<AdbcConnectionWrapper> connection;
     vector<LogicalType> input_types;
     vector<string> input_names;
+    // Per-call override for the bounded-queue depth (0 = fall back to
+    // ADBC_INSERT_MAX_PENDING_BATCHES / the built-in default). Lets callers with
+    // fat rows (e.g. raster BLOB blocks) cap memory tighter than the default.
+    int64_t max_batches = 0;
 };
 
 // Bounded, blocking ArrowArrayStream bridging the DuckDB producer and the ADBC
@@ -297,6 +305,12 @@ static unique_ptr<FunctionData> AdbcInsertBind(ClientContext &context, TableFunc
         bind_data->mode = "append";  // Default to append
     }
 
+    // Optional per-call queue-depth override.
+    auto mb_it = input.named_parameters.find("max_batches");
+    if (mb_it != input.named_parameters.end() && !mb_it->second.IsNull()) {
+        bind_data->max_batches = mb_it->second.GetValue<int64_t>();
+    }
+
     // Get and validate connection
     bind_data->connection = GetValidatedConnection(bind_data->connection_id, "adbc_insert");
 
@@ -337,7 +351,7 @@ static unique_ptr<GlobalTableFunctionState> AdbcInsertInitGlobal(ClientContext &
     global_state->statement->SetOption("adbc.ingest.mode", mode_value);
 
     // Create the bounded insert stream
-    global_state->insert_stream = make_uniq<AdbcInsertStream>(ResolveMaxPendingBatches());
+    global_state->insert_stream = make_uniq<AdbcInsertStream>(ResolveMaxPendingBatches(bind_data.max_batches));
 
     // Set up the schema from the input types
     ArrowSchema schema;
@@ -430,12 +444,14 @@ void RegisterAdbcInsertFunction(DatabaseInstance &db) {
     adbc_insert_function.in_out_function = AdbcInsertInOut;
     adbc_insert_function.in_out_function_final = AdbcInsertFinalize;
     adbc_insert_function.named_parameters["mode"] = LogicalType::VARCHAR;
+    // Optional bounded-queue depth override (default 32 / ADBC_INSERT_MAX_PENDING_BATCHES).
+    adbc_insert_function.named_parameters["max_batches"] = LogicalType::BIGINT;
 
     CreateTableFunctionInfo info(adbc_insert_function);
     FunctionDescription desc;
     desc.description = "Bulk insert data from a query into an ADBC table";
-    desc.parameter_names = {"connection_handle", "table_name", "data", "mode"};
-    desc.parameter_types = {LogicalType::BIGINT, LogicalType::VARCHAR, LogicalType::TABLE, LogicalType::VARCHAR};
+    desc.parameter_names = {"connection_handle", "table_name", "data", "mode", "max_batches"};
+    desc.parameter_types = {LogicalType::BIGINT, LogicalType::VARCHAR, LogicalType::TABLE, LogicalType::VARCHAR, LogicalType::BIGINT};
     desc.examples = {"SELECT * FROM adbc_insert(conn, 'target_table', (SELECT * FROM source_table))",
                      "SELECT * FROM adbc_insert(conn, 'target', (SELECT * FROM source), mode := 'create')",
                      "SELECT * FROM adbc_insert(conn, 'target', (SELECT * FROM source), mode := 'append')"};

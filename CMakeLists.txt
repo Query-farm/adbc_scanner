@@ -37,6 +37,7 @@ set(EXTENSION_SOURCES
     src/adbc_filter_pushdown.cpp
     src/query_farm_telemetry.cpp
     src/storage/adbc_catalog.cpp
+    src/storage/adbc_connection_pool.cpp
     src/storage/adbc_insert.cpp
     src/storage/adbc_catalog_set.cpp
     src/storage/adbc_schema_set.cpp

@@ -39,17 +39,23 @@ string AdbcFilterPushdown::TransformComparison(ExpressionType type) {
 	case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
 		return ">=";
 	default:
-		throw NotImplementedException("Unsupported expression type");
+		// Unsupported comparison — signal "cannot push down" with an empty string
+		// rather than throwing. DuckDB re-applies every filter locally, so dropping
+		// it is always correct; throwing would hard-fail the whole query.
+		return string();
 	}
 }
 
 string AdbcFilterPushdown::TransformConstantFilter(string &column_name, ConstantFilter &constant_filter,
                                                    vector<Value> &params, vector<LogicalType> &param_types) {
-	// Add the constant value as a parameter
+	// Determine the operator first; if it isn't one we can push, drop the filter
+	// WITHOUT binding a parameter (otherwise we'd leave a dangling placeholder).
+	auto operator_string = TransformComparison(constant_filter.comparison_type);
+	if (operator_string.empty()) {
+		return string();
+	}
 	params.push_back(constant_filter.constant);
 	param_types.push_back(constant_filter.constant.type());
-
-	auto operator_string = TransformComparison(constant_filter.comparison_type);
 	return StringUtil::Format("%s %s ?", column_name, operator_string);
 }
 
@@ -99,7 +105,9 @@ string AdbcFilterPushdown::TransformFilter(string &column_name, TableFilter &fil
 		// Dynamic filters can't be pushed down
 		return string();
 	default:
-		throw InternalException("Unsupported table filter type");
+		// Unknown/unsupported filter type (including future ones DuckDB may add):
+		// drop it and let DuckDB apply it locally instead of failing the query.
+		return string();
 	}
 }
 

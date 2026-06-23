@@ -18,20 +18,58 @@ void AdbcTransaction::Start() {
 }
 
 void AdbcTransaction::Commit() {
-	if (transaction_state == AdbcTransactionState::TRANSACTION_STARTED) {
-		transaction_state = AdbcTransactionState::TRANSACTION_FINISHED;
-		// ADBC transactions are auto-commit by default, so nothing to do here
+	transaction_state = AdbcTransactionState::TRANSACTION_FINISHED;
+	if (write_started) {
+		// Commit the ADBC transaction, then restore autocommit so the pooled
+		// connection is clean when the lease returns it to the pool.
+		auto conn = write_lease.GetConnection();
+		conn->Commit();
+		conn->SetAutocommit(true);
+		write_started = false;
 	}
 }
 
 void AdbcTransaction::Rollback() {
-	if (transaction_state == AdbcTransactionState::TRANSACTION_STARTED) {
-		transaction_state = AdbcTransactionState::TRANSACTION_FINISHED;
+	transaction_state = AdbcTransactionState::TRANSACTION_FINISHED;
+	if (write_started) {
+		auto conn = write_lease.GetConnection();
+		conn->Rollback();
+		conn->SetAutocommit(true);
+		write_started = false;
 	}
 }
 
 shared_ptr<AdbcConnectionWrapper> AdbcTransaction::GetConnection() {
 	return adbc_catalog.GetConnection();
+}
+
+ClientContext &AdbcTransaction::GetContext() {
+	return *context.lock();
+}
+
+shared_ptr<AdbcConnectionWrapper> AdbcTransaction::GetWriteConnection() {
+	if (adbc_catalog.access_mode == AccessMode::READ_ONLY) {
+		throw PermissionException("Cannot write to ADBC database \"%s\" — it is attached read-only",
+		                          adbc_catalog.GetName());
+	}
+	if (!write_lease.HasConnection()) {
+		// Pin a dedicated connection for the lifetime of this transaction so all
+		// writes share one connection and commit/roll back together.
+		write_lease = adbc_catalog.GetPool().GetConnection();
+	}
+	auto conn = write_lease.GetConnection();
+	if (!write_started) {
+		try {
+			conn->SetAutocommit(false);
+		} catch (std::exception &e) {
+			throw NotImplementedException(
+			    "ADBC driver does not support multi-statement transactions (could not disable "
+			    "autocommit): %s",
+			    e.what());
+		}
+		write_started = true;
+	}
+	return conn;
 }
 
 AdbcTransaction &AdbcTransaction::Get(ClientContext &context, Catalog &catalog) {

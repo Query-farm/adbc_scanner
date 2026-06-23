@@ -14,6 +14,7 @@
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
+#include "duckdb/parser/keyword_helper.hpp"
 #include <nanoarrow/nanoarrow.h>
 #include <optional>
 #include <variant>
@@ -770,14 +771,16 @@ static InsertionOrderPreservingMap<string> AdbcScanToString(TableFunctionToStrin
 // Bind function for adbc_scan_table - similar to AdbcScanBind but takes table name instead of query
 // Helper to build a fully qualified table name with proper quoting
 static string BuildQualifiedTableName(const string &catalog, const string &schema, const string &table) {
+    // Quote each identifier and double any embedded quotes (KeywordHelper handles
+    // escaping) so names containing special characters can't break or inject SQL.
     string result;
     if (!catalog.empty()) {
-        result += "\"" + catalog + "\".";
+        result += KeywordHelper::WriteQuoted(catalog, '"') + ".";
     }
     if (!schema.empty()) {
-        result += "\"" + schema + "\".";
+        result += KeywordHelper::WriteQuoted(schema, '"') + ".";
     }
-    result += "\"" + table + "\"";
+    result += KeywordHelper::WriteQuoted(table, '"');
     return result;
 }
 
@@ -907,8 +910,9 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanTableInitGlobal(ClientContex
                     if (!first) {
                         query += ", ";
                     }
-                    // Quote column name to handle special characters
-                    query += "\"" + bind_data.all_column_names[col_id] + "\"";
+                    // Quote column name (escaping embedded quotes) to handle
+                    // special characters safely.
+                    query += KeywordHelper::WriteQuoted(bind_data.all_column_names[col_id], '"');
                     first = false;
                 }
             }

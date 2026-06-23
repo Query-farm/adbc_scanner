@@ -5,6 +5,8 @@
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
 #include "duckdb/planner/parsed_data/bound_create_table_info.hpp"
 #include "duckdb/common/shared_ptr.hpp"
+#include "duckdb/function/table/arrow/arrow_duck_schema.hpp"
+#include "duckdb/main/client_context.hpp"
 #include <nanoarrow/nanoarrow.h>
 
 namespace adbc_scanner {
@@ -86,7 +88,10 @@ static LogicalType ArrowFormatToLogicalType(const char *format) {
 
 void AdbcTableSet::LoadEntries(AdbcTransaction &transaction) {
 	auto &adbc_catalog = catalog.Cast<AdbcCatalog>();
-	auto connection = adbc_catalog.GetConnection();
+	// Lease a connection for this introspection so concurrent catalog binds don't
+	// share one ADBC connection. The lease returns to the pool when this returns.
+	auto lease = adbc_catalog.GetPool().GetConnection();
+	auto connection = lease.GetConnection();
 	auto &schema_name = schema.name;
 
 	// Use GetObjects with depth=3 to get ALL tables, then filter by schema
@@ -96,9 +101,16 @@ void AdbcTableSet::LoadEntries(AdbcTransaction &transaction) {
 	// For "main" schema, also accept NULL schema_name from drivers like SQLite
 	bool accept_null_schema = (schema_name == "main");
 
+	// Push the schema filter down to the driver when we have a concrete schema
+	// name. For "main" we pass nullptr because some drivers (e.g. SQLite) report
+	// their single schema as NULL rather than "main", and a "main" filter would
+	// match nothing — the client-side filtering below still narrows results.
+	const char *schema_filter = accept_null_schema ? nullptr : schema_name.c_str();
+
 	try {
-		// depth=3 means get tables; pass nullptr to get all
-		connection->GetObjects(3, nullptr, nullptr, nullptr, nullptr, nullptr, &stream);
+		// depth=3 means get tables; pass the schema filter to avoid fetching every
+		// table in every schema and filtering them all client-side.
+		connection->GetObjects(3, nullptr, schema_filter, nullptr, nullptr, nullptr, &stream);
 	} catch (Exception &e) {
 		// If GetObjects fails, we can't enumerate tables
 		return;
@@ -204,7 +216,8 @@ void AdbcTableSet::LoadEntries(AdbcTransaction &transaction) {
 unique_ptr<AdbcTableInfo> AdbcTableSet::GetTableInfo(AdbcTransaction &transaction, AdbcSchemaEntry &schema,
                                                       const string &table_name) {
 	auto &adbc_catalog = schema.ParentCatalog().Cast<AdbcCatalog>();
-	auto connection = adbc_catalog.GetConnection();
+	auto lease = adbc_catalog.GetPool().GetConnection();
+	auto connection = lease.GetConnection();
 	auto &schema_name = schema.name;
 
 	auto table_info = make_uniq<AdbcTableInfo>(schema, table_name);
@@ -223,13 +236,23 @@ unique_ptr<AdbcTableInfo> AdbcTableSet::GetTableInfo(AdbcTransaction &transactio
 		return nullptr;
 	}
 
-	// Convert Arrow schema to DuckDB columns
+	// Convert Arrow schema to DuckDB columns. Prefer DuckDB's own Arrow type
+	// mapping (handles timestamps with unit/timezone, lists, structs, maps,
+	// decimals, etc.) and fall back to the lightweight format parser only if it
+	// can't represent a type, so column types match what the scan actually returns.
+	auto &context = transaction.GetContext();
 	for (int64_t i = 0; i < arrow_schema.n_children; i++) {
 		ArrowSchema *child = arrow_schema.children[i];
 		if (!child) continue;
 
 		string col_name = child->name ? child->name : "column" + to_string(i);
-		LogicalType col_type = ArrowFormatToLogicalType(child->format);
+		LogicalType col_type;
+		try {
+			auto arrow_type = duckdb::ArrowType::GetArrowLogicalType(context, *child);
+			col_type = arrow_type->GetDuckType();
+		} catch (...) {
+			col_type = ArrowFormatToLogicalType(child->format);
+		}
 
 		table_info->column_names.push_back(col_name);
 

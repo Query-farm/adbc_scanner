@@ -21,6 +21,10 @@ AdbcCatalog::AdbcCatalog(AttachedDatabase &db_p, shared_ptr<AdbcConnectionWrappe
 	auto &registry = ConnectionRegistry::Get();
 	connection_handle = registry.Add(connection);
 
+	// Build a connection pool over the same shared database so concurrent reads
+	// (scans, catalog introspection) each get their own ADBC connection.
+	connection_pool = make_uniq<AdbcConnectionPool>(connection->GetDatabase());
+
 	// Try to determine default schema from the connection
 	// For most databases, "main" is a reasonable default
 	default_schema = "main";

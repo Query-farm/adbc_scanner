@@ -1,0 +1,103 @@
+# name: test/sql/adbc_storage_write.test
+# description: test ADBC storage write path (CREATE TABLE AS / INSERT INTO an attached DB) with streaming ingestion
+# group: [adbc]
+
+require adbc_scanner
+
+require-env HAS_ADBC_SQLITE_DRIVER
+
+# ============================================
+# Setup - start from a clean SQLite file
+# ============================================
+
+statement ok
+SET VARIABLE setup_conn = (SELECT adbc_connect({'driver': 'sqlite', 'uri': '/tmp/test_storage_write.db'}));
+
+statement ok
+SELECT adbc_execute(getvariable('setup_conn')::BIGINT, 'DROP TABLE IF EXISTS big');
+
+statement ok
+SELECT adbc_execute(getvariable('setup_conn')::BIGINT, 'DROP TABLE IF EXISTS small');
+
+statement ok
+SELECT adbc_disconnect(getvariable('setup_conn')::BIGINT);
+
+statement ok
+ATTACH '/tmp/test_storage_write.db' AS w (TYPE adbc, driver 'sqlite');
+
+# ============================================
+# CREATE TABLE AS - large source exercises the bounded-queue streaming insert
+# (100k rows ≈ 49 batches > the 32-batch backpressure cap, so it must stream
+# rather than buffer the whole input).
+# ============================================
+
+statement ok
+CREATE TABLE w.big AS SELECT i AS id, 'name_' || i AS name FROM range(100000) t(i);
+
+query I
+SELECT COUNT(*) FROM w.big;
+----
+100000
+
+query II
+SELECT MIN(id), MAX(id) FROM w.big;
+----
+0	99999
+
+# ============================================
+# INSERT INTO - append more rows (also streamed)
+# ============================================
+
+statement ok
+INSERT INTO w.big SELECT i AS id, 'extra_' || i AS name FROM range(100000, 150000) t(i);
+
+query I
+SELECT COUNT(*) FROM w.big;
+----
+150000
+
+query I
+SELECT COUNT(*) FROM w.big WHERE name LIKE 'extra_%';
+----
+50000
+
+# value integrity spot-check across the streamed boundary
+query II
+SELECT id, name FROM w.big WHERE id IN (0, 99999, 100000, 149999) ORDER BY id;
+----
+0	name_0
+99999	name_99999
+100000	extra_100000
+149999	extra_149999
+
+# ============================================
+# Small CREATE TABLE AS - single-batch path still works
+# ============================================
+
+statement ok
+CREATE TABLE w.small AS SELECT 1 AS a, 'x' AS b UNION ALL SELECT 2, 'y';
+
+query IT
+SELECT a, b FROM w.small ORDER BY a;
+----
+1	x
+2	y
+
+# ============================================
+# Concurrent scans - a self-join and a cross-table join each open multiple
+# scans on the same attached database simultaneously. With the connection pool
+# each scan leases its own ADBC connection (sharing one would race / corrupt).
+# ============================================
+
+query I
+SELECT COUNT(*) FROM w.big a JOIN w.big b ON a.id = b.id WHERE a.id < 5;
+----
+5
+
+query I
+SELECT COUNT(*) FROM w.big b JOIN w.small s ON b.id = s.a;
+----
+2
+
+statement ok
+DETACH w;

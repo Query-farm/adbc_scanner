@@ -34,7 +34,9 @@ static string ExtractArrowString(ArrowArray *array, int64_t idx) {
 
 void AdbcSchemaSet::LoadEntries(AdbcTransaction &transaction) {
 	auto &adbc_catalog = catalog.Cast<AdbcCatalog>();
-	auto connection = adbc_catalog.GetConnection();
+	// Lease a connection so concurrent catalog binds don't share one connection.
+	auto lease = adbc_catalog.GetPool().GetConnection();
+	auto connection = lease.GetConnection();
 
 	// Use GetObjects with depth=2 to get catalogs and schemas
 	ArrowArrayStream stream;

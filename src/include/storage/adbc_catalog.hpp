@@ -19,6 +19,7 @@
 #include "duckdb/execution/physical_plan_generator.hpp"
 #include "adbc_connection.hpp"
 #include "storage/adbc_schema_set.hpp"
+#include "storage/adbc_connection_pool.hpp"
 
 namespace adbc_scanner {
 using namespace duckdb;
@@ -29,8 +30,12 @@ public:
 	                     const string &path, AccessMode access_mode);
 	~AdbcCatalog();
 
-	//! The ADBC connection (shared ownership with the catalog)
+	//! The ADBC connection (shared ownership with the catalog). Kept as the
+	//! primary connection (registered in the ConnectionRegistry); concurrent reads
+	//! lease their own from connection_pool instead.
 	shared_ptr<AdbcConnectionWrapper> connection;
+	//! Pool of connections over the same shared AdbcDatabase.
+	unique_ptr<AdbcConnectionPool> connection_pool;
 	//! The connection handle registered in the ConnectionRegistry
 	int64_t connection_handle;
 	//! The attach path (driver info)
@@ -73,6 +78,13 @@ public:
 
 	shared_ptr<AdbcConnectionWrapper> GetConnection() const {
 		return connection;
+	}
+
+	//! The connection pool — used for concurrent reads (scans, catalog
+	//! introspection) so each operation gets its own ADBC connection rather than
+	//! sharing one (ADBC connections are not safe for concurrent statement use).
+	AdbcConnectionPool &GetPool() const {
+		return *connection_pool;
 	}
 
 	void ClearCache();

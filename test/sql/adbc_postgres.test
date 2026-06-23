@@ -1,0 +1,117 @@
+# name: test/sql/adbc_postgres.test
+# description: ADBC against a real PostgreSQL server (filter pushdown placeholders, type mapping, transactions)
+# group: [adbc]
+#
+# Requires the postgresql ADBC driver (e.g. `dbc install postgresql`) and a
+# PostgreSQL server reachable at postgresql://postgres:postgres@localhost:5432/postgres.
+# Gate by setting ADBC_POSTGRES_TEST_AVAILABLE=1 (mirrors duckdb-postgres'
+# POSTGRES_TEST_DATABASE_AVAILABLE convention).
+
+require adbc_scanner
+
+require-env ADBC_POSTGRES_TEST_AVAILABLE
+
+# Clean slate via the imperative API
+statement ok
+SET VARIABLE c = (SELECT adbc_connect({'driver':'postgresql','uri':'postgresql://postgres:postgres@localhost:5432/postgres'}));
+
+statement ok
+SELECT adbc_execute(getvariable('c')::BIGINT, 'DROP TABLE IF EXISTS adbc_pg_events');
+
+statement ok
+SELECT adbc_execute(getvariable('c')::BIGINT, 'CREATE TABLE adbc_pg_events (id INTEGER PRIMARY KEY, name TEXT, ts TIMESTAMPTZ, amount NUMERIC(10,2), tags TEXT[], active BOOLEAN)');
+
+statement ok
+SELECT adbc_execute(getvariable('c')::BIGINT, 'INSERT INTO adbc_pg_events VALUES (1,''alpha'',''2024-01-01 10:00:00+00'',12.50,ARRAY[''a'',''b''],true),(2,''beta'',''2024-06-15 08:30:00+00'',99.99,ARRAY[''c''],false),(3,''gamma'',''2024-12-31 23:59:59+00'',0.01,ARRAY[]::text[],true)');
+
+statement ok
+SELECT adbc_disconnect(getvariable('c')::BIGINT);
+
+statement ok
+ATTACH 'postgresql://postgres:postgres@localhost:5432/postgres' AS pg (TYPE adbc, driver 'postgresql');
+
+# Type mapping: timestamptz and arrays map to real DuckDB types (not VARCHAR)
+query I
+SELECT COUNT(*) FROM information_schema.columns
+WHERE table_catalog='pg' AND table_name='adbc_pg_events'
+  AND ((column_name='ts' AND data_type LIKE 'TIMESTAMP%') OR (column_name='tags' AND data_type LIKE '%[]'));
+----
+2
+
+# Filter pushdown — these emit Postgres $1/$2 placeholders; a bare ? would be a
+# remote syntax error (the bug this test guards against).
+query II
+SELECT id, name FROM pg.public.adbc_pg_events WHERE id > 1 ORDER BY id;
+----
+2	beta
+3	gamma
+
+query I
+SELECT id FROM pg.public.adbc_pg_events WHERE name = 'beta';
+----
+2
+
+query II
+SELECT id, name FROM pg.public.adbc_pg_events WHERE id IN (1, 3) ORDER BY id;
+----
+1	alpha
+3	gamma
+
+query I
+SELECT id FROM pg.public.adbc_pg_events WHERE id >= 2 AND active = false;
+----
+2
+
+# Streaming CTAS into Postgres
+statement ok
+CREATE TABLE pg.public.adbc_pg_big AS SELECT i AS id, 'n'||i AS name FROM range(50000) t(i);
+
+query I
+SELECT COUNT(*) FROM pg.public.adbc_pg_big;
+----
+50000
+
+# Real transactions: ROLLBACK undoes, COMMIT persists
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO pg.public.adbc_pg_big SELECT i, 'x'||i FROM range(100000,100010) t(i);
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT COUNT(*) FROM pg.public.adbc_pg_big;
+----
+50000
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO pg.public.adbc_pg_big SELECT i, 'y'||i FROM range(100000,100010) t(i);
+
+statement ok
+COMMIT;
+
+query I
+SELECT COUNT(*) FROM pg.public.adbc_pg_big;
+----
+50010
+
+statement ok
+DETACH pg;
+
+# Cleanup
+statement ok
+SET VARIABLE c2 = (SELECT adbc_connect({'driver':'postgresql','uri':'postgresql://postgres:postgres@localhost:5432/postgres'}));
+
+statement ok
+SELECT adbc_execute(getvariable('c2')::BIGINT, 'DROP TABLE IF EXISTS adbc_pg_big');
+
+statement ok
+SELECT adbc_execute(getvariable('c2')::BIGINT, 'DROP TABLE IF EXISTS adbc_pg_events');
+
+statement ok
+SELECT adbc_disconnect(getvariable('c2')::BIGINT);

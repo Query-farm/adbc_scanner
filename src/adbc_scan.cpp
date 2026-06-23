@@ -929,8 +929,13 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanTableInitGlobal(ClientContex
         query = bind_data.query;
     }
 
-    // Apply filter pushdown - transform DuckDB filters into SQL WHERE clause with parameter placeholders
-    auto filter_result = AdbcFilterPushdown::TransformFilters(input.column_ids, input.filters, bind_data.all_column_names);
+    // Apply filter pushdown - transform DuckDB filters into SQL WHERE clause with parameter
+    // placeholders. Use the driver-appropriate placeholder style (PostgreSQL needs $1/$2,
+    // others use ?) or the remote prepare fails with a syntax error.
+    auto placeholder_style = PlaceholderStyleForDriver(bind_data.connection->GetDriverName());
+    auto filter_result =
+        AdbcFilterPushdown::TransformFilters(input.column_ids, input.filters, bind_data.all_column_names,
+                                             placeholder_style);
     if (filter_result.HasFilters()) {
         query += " WHERE " + filter_result.where_clause;
     }

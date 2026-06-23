@@ -9,11 +9,19 @@
 namespace adbc_scanner {
 using namespace duckdb;
 
+string AdbcFilterPushdown::MakePlaceholder(ParamPlaceholderStyle style, idx_t one_based_index) {
+	if (style == ParamPlaceholderStyle::DOLLAR_NUMBERED) {
+		return "$" + std::to_string(one_based_index);
+	}
+	return "?";
+}
+
 string AdbcFilterPushdown::CreateExpression(string &column_name, vector<unique_ptr<TableFilter>> &filters,
-                                            string op, vector<Value> &params, vector<LogicalType> &param_types) {
+                                            string op, vector<Value> &params, vector<LogicalType> &param_types,
+                                            ParamPlaceholderStyle style) {
 	vector<string> filter_entries;
 	for (auto &filter : filters) {
-		auto filter_str = TransformFilter(column_name, *filter, params, param_types);
+		auto filter_str = TransformFilter(column_name, *filter, params, param_types, style);
 		if (!filter_str.empty()) {
 			filter_entries.push_back(std::move(filter_str));
 		}
@@ -47,7 +55,8 @@ string AdbcFilterPushdown::TransformComparison(ExpressionType type) {
 }
 
 string AdbcFilterPushdown::TransformConstantFilter(string &column_name, ConstantFilter &constant_filter,
-                                                   vector<Value> &params, vector<LogicalType> &param_types) {
+                                                   vector<Value> &params, vector<LogicalType> &param_types,
+                                                   ParamPlaceholderStyle style) {
 	// Determine the operator first; if it isn't one we can push, drop the filter
 	// WITHOUT binding a parameter (otherwise we'd leave a dangling placeholder).
 	auto operator_string = TransformComparison(constant_filter.comparison_type);
@@ -56,11 +65,13 @@ string AdbcFilterPushdown::TransformConstantFilter(string &column_name, Constant
 	}
 	params.push_back(constant_filter.constant);
 	param_types.push_back(constant_filter.constant.type());
-	return StringUtil::Format("%s %s ?", column_name, operator_string);
+	auto placeholder = MakePlaceholder(style, params.size());
+	return StringUtil::Format("%s %s %s", column_name, operator_string, placeholder);
 }
 
 string AdbcFilterPushdown::TransformFilter(string &column_name, TableFilter &filter,
-                                           vector<Value> &params, vector<LogicalType> &param_types) {
+                                           vector<Value> &params, vector<LogicalType> &param_types,
+                                           ParamPlaceholderStyle style) {
 	switch (filter.filter_type) {
 	case TableFilterType::IS_NULL:
 		return column_name + " IS NULL";
@@ -68,25 +79,25 @@ string AdbcFilterPushdown::TransformFilter(string &column_name, TableFilter &fil
 		return column_name + " IS NOT NULL";
 	case TableFilterType::CONJUNCTION_AND: {
 		auto &conjunction_filter = filter.Cast<ConjunctionAndFilter>();
-		return CreateExpression(column_name, conjunction_filter.child_filters, "AND", params, param_types);
+		return CreateExpression(column_name, conjunction_filter.child_filters, "AND", params, param_types, style);
 	}
 	case TableFilterType::CONJUNCTION_OR: {
 		auto &conjunction_filter = filter.Cast<ConjunctionOrFilter>();
-		return CreateExpression(column_name, conjunction_filter.child_filters, "OR", params, param_types);
+		return CreateExpression(column_name, conjunction_filter.child_filters, "OR", params, param_types, style);
 	}
 	case TableFilterType::CONSTANT_COMPARISON: {
 		auto &constant_filter = filter.Cast<ConstantFilter>();
-		return TransformConstantFilter(column_name, constant_filter, params, param_types);
+		return TransformConstantFilter(column_name, constant_filter, params, param_types, style);
 	}
 	case TableFilterType::STRUCT_EXTRACT: {
 		auto &struct_filter = filter.Cast<StructFilter>();
 		auto child_name = KeywordHelper::WriteQuoted(struct_filter.child_name, '\"');
 		auto new_name = "(" + column_name + ")." + child_name;
-		return TransformFilter(new_name, *struct_filter.child_filter, params, param_types);
+		return TransformFilter(new_name, *struct_filter.child_filter, params, param_types, style);
 	}
 	case TableFilterType::OPTIONAL_FILTER: {
 		auto &optional_filter = filter.Cast<OptionalFilter>();
-		return TransformFilter(column_name, *optional_filter.child_filter, params, param_types);
+		return TransformFilter(column_name, *optional_filter.child_filter, params, param_types, style);
 	}
 	case TableFilterType::IN_FILTER: {
 		auto &in_filter = filter.Cast<InFilter>();
@@ -95,9 +106,9 @@ string AdbcFilterPushdown::TransformFilter(string &column_name, TableFilter &fil
 			if (!placeholders.empty()) {
 				placeholders += ", ";
 			}
-			placeholders += "?";
 			params.push_back(val);
 			param_types.push_back(val.type());
+			placeholders += MakePlaceholder(style, params.size());
 		}
 		return column_name + " IN (" + placeholders + ")";
 	}
@@ -113,7 +124,8 @@ string AdbcFilterPushdown::TransformFilter(string &column_name, TableFilter &fil
 
 FilterPushdownResult AdbcFilterPushdown::TransformFilters(const vector<column_t> &column_ids,
                                                           optional_ptr<TableFilterSet> filters,
-                                                          const vector<string> &names) {
+                                                          const vector<string> &names,
+                                                          ParamPlaceholderStyle style) {
 	FilterPushdownResult result;
 
 	if (!filters || filters->filters.empty()) {
@@ -138,7 +150,7 @@ FilterPushdownResult AdbcFilterPushdown::TransformFilters(const vector<column_t>
 
 		string column_name = KeywordHelper::WriteQuoted(names[column_id], '"');
 		auto &filter = *entry.second;
-		auto filter_text = TransformFilter(column_name, filter, result.params, result.param_types);
+		auto filter_text = TransformFilter(column_name, filter, result.params, result.param_types, style);
 
 		if (filter_text.empty()) {
 			continue;

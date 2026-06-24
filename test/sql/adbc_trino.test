@@ -1,0 +1,53 @@
+# name: test/sql/adbc_trino.test
+# description: ADBC against a real Trino server (scan, filter pushdown) via the built-in tpch catalog
+# group: [adbc]
+#
+# Requires the trino ADBC driver (e.g. `dbc install trino`) and a Trino server
+# reachable at http://localhost:18080 with the built-in tpch connector. In CI this
+# is the trinodb/trino image. Gate by setting ADBC_TRINO_TEST_AVAILABLE=1.
+#
+# Read-only: queries the read-only tpch.tiny dataset. Trino uses standard "..."
+# identifier quoting and ? placeholders, so filter pushdown works unmodified.
+
+require adbc_scanner
+
+require-env ADBC_TRINO_TEST_AVAILABLE
+
+statement ok
+SET VARIABLE c = (SELECT adbc_connect({'driver':'trino','uri':'http://localhost:18080','username':'trino'}));
+
+# Server-side query
+query T
+SELECT name FROM adbc_scan(getvariable('c')::BIGINT, 'SELECT name FROM tpch.tiny.region ORDER BY regionkey LIMIT 2') AS t(name);
+----
+AFRICA
+AMERICA
+
+# scan_table with catalog/schema qualification
+query IT
+SELECT regionkey, name FROM adbc_scan_table(getvariable('c')::BIGINT, 'region', catalog:='tpch', schema:='tiny') ORDER BY regionkey LIMIT 3;
+----
+0	AFRICA
+1	AMERICA
+2	ASIA
+
+# Filter pushdown (? placeholders)
+query T
+SELECT name FROM adbc_scan_table(getvariable('c')::BIGINT, 'region', catalog:='tpch', schema:='tiny') WHERE regionkey < 2 ORDER BY regionkey;
+----
+AFRICA
+AMERICA
+
+query I
+SELECT regionkey FROM adbc_scan_table(getvariable('c')::BIGINT, 'nation', catalog:='tpch', schema:='tiny') WHERE name = 'BRAZIL';
+----
+1
+
+# Aggregate over a full scan
+query I
+SELECT COUNT(*) AS n FROM adbc_scan_table(getvariable('c')::BIGINT, 'nation', catalog:='tpch', schema:='tiny');
+----
+25
+
+statement ok
+SELECT adbc_disconnect(getvariable('c')::BIGINT);

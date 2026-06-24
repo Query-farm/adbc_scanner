@@ -56,6 +56,12 @@ jobs:
           PRINT_QUERIES: "1"
         ports:
           - 31337:31337
+      # Trino with the built-in tpch connector (read-only TPC-H data). Readiness
+      # is polled below (the image has no curl for a container health check).
+      trino:
+        image: trinodb/trino:latest
+        ports:
+          - 18080:8080
 
     env:
       # Pin vcpkg to the commit this DuckDB version is built against (matches
@@ -98,6 +104,7 @@ jobs:
           "$HOME/.local/bin/dbc" install mysql
           "$HOME/.local/bin/dbc" install flightsql
           "$HOME/.local/bin/dbc" install datafusion
+          "$HOME/.local/bin/dbc" install trino
 
       - name: Wait for Flight SQL server
         run: |
@@ -109,6 +116,16 @@ jobs:
           done
           echo "Flight SQL server did not become ready"; exit 1
 
+      - name: Wait for Trino server
+        run: |
+          for i in $(seq 1 60); do
+            if curl -s http://localhost:18080/v1/info | grep -q '"starting":false'; then
+              echo "Trino is ready"; exit 0
+            fi
+            sleep 3
+          done
+          echo "Trino did not become ready"; exit 1
+
       - name: Run driver test suite
         env:
           # SQLite tests resolve the driver from the dbc-installed manifest.
@@ -119,6 +136,7 @@ jobs:
           ADBC_FLIGHTSQL_TEST_AVAILABLE: 1
           # DataFusion is an in-process engine — no service container needed.
           ADBC_DATAFUSION_TEST_AVAILABLE: 1
+          ADBC_TRINO_TEST_AVAILABLE: 1
         run: |
           fail=0
           for t in test/sql/*.test; do

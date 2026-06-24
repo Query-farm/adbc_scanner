@@ -19,6 +19,9 @@ statement ok
 SELECT adbc_execute(getvariable('c')::BIGINT, 'DROP TABLE IF EXISTS adbc_pg_events');
 
 statement ok
+SELECT adbc_execute(getvariable('c')::BIGINT, 'DROP TABLE IF EXISTS adbc_pg_big');
+
+statement ok
 SELECT adbc_execute(getvariable('c')::BIGINT, 'CREATE TABLE adbc_pg_events (id INTEGER PRIMARY KEY, name TEXT, ts TIMESTAMPTZ, amount NUMERIC(10,2), tags TEXT[], active BOOLEAN)');
 
 statement ok

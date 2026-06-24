@@ -14,6 +14,30 @@ inline const char *StatusCodeToString(AdbcStatusCode code) {
     return AdbcStatusCodeMessage(code);
 }
 
+// Exempt a function from AddressSanitizer instrumentation. Used when reading
+// buffers owned by a non-ASan-instrumented ADBC driver, where ASan can raise a
+// false-positive "container-overflow" (the bytes are valid; only the container
+// annotations are missing). No effect in release builds.
+#if defined(__clang__) || defined(__GNUC__)
+#define ADBC_NO_SANITIZE_ADDRESS __attribute__((no_sanitize_address))
+#else
+#define ADBC_NO_SANITIZE_ADDRESS
+#endif
+
+// Copy `len` bytes from a driver-owned buffer into a std::string using a plain
+// uninstrumented loop. Reading the (non-instrumented) driver buffer element by
+// element here avoids tripping ASan's container-overflow check that fires on
+// instrumented loads / the memcpy interceptor when crossing the instrumentation
+// boundary. The returned copy is a normal instrumented string, safe to inspect.
+ADBC_NO_SANITIZE_ADDRESS
+inline string CopyDriverBytes(const uint8_t *data, size_t len) {
+    string out(len, '\0');
+    for (size_t j = 0; j < len; j++) {
+        out[j] = static_cast<char>(data[j]);
+    }
+    return out;
+}
+
 // Check ADBC status and throw DuckDB exception on error
 // Optional driver_name parameter to include in error messages for better debugging
 inline void CheckAdbc(AdbcStatusCode status, AdbcError *error, const string &context,
@@ -57,20 +81,24 @@ inline void CheckAdbc(AdbcStatusCode status, AdbcError *error, const string &con
                 message += "\n    ";
                 message += detail.key;
                 message += " = ";
+                // Copy the driver-owned value into our own buffer first (see
+                // CopyDriverBytes), then inspect the copy.
+                string value_copy = CopyDriverBytes(detail.value, static_cast<size_t>(detail.value_length));
                 // Treat value as string if it looks like text, otherwise show length
                 bool is_text = true;
-                for (size_t j = 0; j < detail.value_length && is_text; j++) {
+                for (unsigned char c : value_copy) {
                     // Allow printable ASCII and common whitespace
-                    uint8_t c = detail.value[j];
                     if (c < 0x20 && c != '\t' && c != '\n' && c != '\r') {
                         is_text = false;
+                        break;
                     } else if (c > 0x7E && c < 0xC0) {
                         // Not valid UTF-8 start byte or ASCII
                         is_text = false;
+                        break;
                     }
                 }
                 if (is_text) {
-                    message += string(reinterpret_cast<const char *>(detail.value), detail.value_length);
+                    message += value_copy;
                 } else {
                     message += "<binary, " + std::to_string(detail.value_length) + " bytes>";
                 }

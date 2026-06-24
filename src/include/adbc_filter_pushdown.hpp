@@ -16,10 +16,12 @@
 namespace adbc_scanner {
 using namespace duckdb;
 
-// Positional parameter placeholder syntax. Most drivers (SQLite, DuckDB, MySQL,
-// Snowflake) use a bare "?"; PostgreSQL requires "$1", "$2", ... numbered by bind
-// order. The wrong style makes the remote prepare fail with a syntax error.
-enum class ParamPlaceholderStyle { QUESTION_MARK, DOLLAR_NUMBERED };
+// Positional parameter placeholder syntax. Drivers disagree:
+//   - QUESTION_MARK: bare "?" (SQLite, MySQL, Trino, Flight SQL, ...)
+//   - DOLLAR_NUMBERED: "$1", "$2", ... (PostgreSQL, DataFusion)
+//   - AT_P_NUMBERED: "@p1", "@p2", ... (Microsoft SQL Server / T-SQL)
+// The wrong style makes the remote prepare fail with a syntax error.
+enum class ParamPlaceholderStyle { QUESTION_MARK, DOLLAR_NUMBERED, AT_P_NUMBERED };
 
 // Pick the placeholder style for a driver, keyed on its name. PostgreSQL and
 // DataFusion use "$1", "$2", ... numbered placeholders; most others use a bare
@@ -28,6 +30,9 @@ inline ParamPlaceholderStyle PlaceholderStyleForDriver(const string &driver_name
 	auto lower = StringUtil::Lower(driver_name);
 	if (lower.find("postgres") != string::npos || lower.find("datafusion") != string::npos) {
 		return ParamPlaceholderStyle::DOLLAR_NUMBERED;
+	}
+	if (lower.find("mssql") != string::npos || lower.find("sqlserver") != string::npos) {
+		return ParamPlaceholderStyle::AT_P_NUMBERED;
 	}
 	return ParamPlaceholderStyle::QUESTION_MARK;
 }

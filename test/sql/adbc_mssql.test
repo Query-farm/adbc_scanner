@@ -1,0 +1,61 @@
+# name: test/sql/adbc_mssql.test
+# description: ADBC against a real Microsoft SQL Server (T-SQL @p1 placeholders, scan, filter)
+# group: [adbc]
+#
+# Requires the mssql ADBC driver (e.g. `dbc install mssql`) and a SQL Server
+# reachable at localhost:1433 with sa / 'Adbc_Test_Pass123'. In CI this is the
+# mcr.microsoft.com/mssql/server image. Gate with ADBC_MSSQL_TEST_AVAILABLE=1.
+#
+# NOTE: T-SQL uses "@p1", "@p2" numbered placeholders (not ? or $1) — the wrong
+# style fails with "Incorrect syntax near '?'". Identifier quoting is standard
+# "...". Tables live in the dbo schema; objects are created in the default
+# database via the imperative adbc_execute path (outside the transactional write
+# path, which would need autocommit control).
+
+require adbc_scanner
+
+require-env ADBC_MSSQL_TEST_AVAILABLE
+
+statement ok
+SET VARIABLE c = (SELECT adbc_connect({'driver':'mssql','uri':'sqlserver://sa:Adbc_Test_Pass123@localhost:1433'}));
+
+statement ok
+SELECT adbc_execute(getvariable('c')::BIGINT, 'IF OBJECT_ID(''dbo.adbc_mssql_items'', ''U'') IS NOT NULL DROP TABLE dbo.adbc_mssql_items');
+
+statement ok
+SELECT adbc_execute(getvariable('c')::BIGINT, 'CREATE TABLE dbo.adbc_mssql_items (id INT PRIMARY KEY, name VARCHAR(50))');
+
+statement ok
+SELECT adbc_execute(getvariable('c')::BIGINT, 'INSERT INTO dbo.adbc_mssql_items VALUES (1, ''apple''), (2, ''pear''), (3, ''plum'')');
+
+# Full scan ("..." quoting works)
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('c')::BIGINT, 'adbc_mssql_items', schema:='dbo') ORDER BY id;
+----
+1	apple
+2	pear
+3	plum
+
+# Filter pushdown — emits @p1; a bare ? would fail T-SQL's parser
+query I
+SELECT id FROM adbc_scan_table(getvariable('c')::BIGINT, 'adbc_mssql_items', schema:='dbo') WHERE id > 1 ORDER BY id;
+----
+2
+3
+
+query I
+SELECT id FROM adbc_scan_table(getvariable('c')::BIGINT, 'adbc_mssql_items', schema:='dbo') WHERE name = 'pear';
+----
+2
+
+# Compound filter (@p1 AND @p2)
+query I
+SELECT id FROM adbc_scan_table(getvariable('c')::BIGINT, 'adbc_mssql_items', schema:='dbo') WHERE id >= 2 AND name <> 'plum';
+----
+2
+
+statement ok
+SELECT adbc_execute(getvariable('c')::BIGINT, 'DROP TABLE dbo.adbc_mssql_items');
+
+statement ok
+SELECT adbc_disconnect(getvariable('c')::BIGINT);

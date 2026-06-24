@@ -62,6 +62,19 @@ jobs:
         image: trinodb/trino:latest
         ports:
           - 18080:8080
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: Adbc_Test_Pass123
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P Adbc_Test_Pass123 -C -Q 'SELECT 1' -b"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 20
+          --health-start-period 30s
 
     env:
       # Pin vcpkg to the commit this DuckDB version is built against (matches
@@ -105,6 +118,7 @@ jobs:
           "$HOME/.local/bin/dbc" install flightsql
           "$HOME/.local/bin/dbc" install datafusion
           "$HOME/.local/bin/dbc" install trino
+          "$HOME/.local/bin/dbc" install mssql
 
       - name: Wait for Flight SQL server
         run: |
@@ -137,6 +151,7 @@ jobs:
           # DataFusion is an in-process engine — no service container needed.
           ADBC_DATAFUSION_TEST_AVAILABLE: 1
           ADBC_TRINO_TEST_AVAILABLE: 1
+          ADBC_MSSQL_TEST_AVAILABLE: 1
         run: |
           fail=0
           for t in test/sql/*.test; do

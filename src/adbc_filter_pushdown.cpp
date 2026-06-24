@@ -10,10 +10,14 @@ namespace adbc_scanner {
 using namespace duckdb;
 
 string AdbcFilterPushdown::MakePlaceholder(ParamPlaceholderStyle style, idx_t one_based_index) {
-	if (style == ParamPlaceholderStyle::DOLLAR_NUMBERED) {
+	switch (style) {
+	case ParamPlaceholderStyle::DOLLAR_NUMBERED:
 		return "$" + std::to_string(one_based_index);
+	case ParamPlaceholderStyle::AT_P_NUMBERED:
+		return "@p" + std::to_string(one_based_index);
+	default:
+		return "?";
 	}
-	return "?";
 }
 
 string AdbcFilterPushdown::CreateExpression(string &column_name, vector<unique_ptr<TableFilter>> &filters,

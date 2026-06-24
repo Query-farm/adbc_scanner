@@ -97,6 +97,7 @@ jobs:
           "$HOME/.local/bin/dbc" install postgresql
           "$HOME/.local/bin/dbc" install mysql
           "$HOME/.local/bin/dbc" install flightsql
+          "$HOME/.local/bin/dbc" install datafusion
 
       - name: Wait for Flight SQL server
         run: |
@@ -116,6 +117,8 @@ jobs:
           ADBC_POSTGRES_TEST_AVAILABLE: 1
           ADBC_MYSQL_TEST_AVAILABLE: 1
           ADBC_FLIGHTSQL_TEST_AVAILABLE: 1
+          # DataFusion is an in-process engine — no service container needed.
+          ADBC_DATAFUSION_TEST_AVAILABLE: 1
         run: |
           fail=0
           for t in test/sql/*.test; do

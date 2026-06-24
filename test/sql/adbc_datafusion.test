@@ -1,0 +1,57 @@
+# name: test/sql/adbc_datafusion.test
+# description: ADBC against the embedded Apache DataFusion driver (in-process, no server)
+# group: [adbc]
+#
+# Requires the datafusion ADBC driver (e.g. `dbc install datafusion`). DataFusion
+# is an in-process engine (no service needed), so the data is created in the same
+# connection it is read from. Gate by setting ADBC_DATAFUSION_TEST_AVAILABLE=1.
+#
+# NOTE: covered via the imperative API. DataFusion does not support disabling
+# autocommit, so the transactional ATTACH write path (CREATE TABLE / INSERT)
+# fails loud — but adbc_execute runs outside that path. DataFusion uses $1/$2
+# numbered placeholders (like PostgreSQL); the wrong style breaks filter pushdown.
+
+require adbc_scanner
+
+require-env ADBC_DATAFUSION_TEST_AVAILABLE
+
+statement ok
+SET VARIABLE c = (SELECT adbc_connect({'driver':'datafusion'}));
+
+statement ok
+SELECT adbc_execute(getvariable('c')::BIGINT, 'CREATE TABLE items AS SELECT 1 AS id, ''apple'' AS name UNION ALL SELECT 2, ''pear'' UNION ALL SELECT 3, ''plum''');
+
+# Full scan
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('c')::BIGINT, 'items') ORDER BY id;
+----
+1	apple
+2	pear
+3	plum
+
+# Filter pushdown (emits $1 — a bare ? would fail DataFusion's placeholder parse)
+query IT
+SELECT id, name FROM adbc_scan_table(getvariable('c')::BIGINT, 'items') WHERE id > 1 ORDER BY id;
+----
+2	pear
+3	plum
+
+query I
+SELECT id FROM adbc_scan_table(getvariable('c')::BIGINT, 'items') WHERE name = 'pear';
+----
+2
+
+# Compound filter ($1 AND $2)
+query I
+SELECT id FROM adbc_scan_table(getvariable('c')::BIGINT, 'items') WHERE id >= 2 AND name <> 'plum';
+----
+2
+
+# Server-side query via adbc_scan
+query I
+SELECT c FROM adbc_scan(getvariable('c')::BIGINT, 'SELECT COUNT(*) AS c FROM items') AS t(c);
+----
+3
+
+statement ok
+SELECT adbc_disconnect(getvariable('c')::BIGINT);

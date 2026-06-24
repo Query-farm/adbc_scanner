@@ -106,9 +106,14 @@ inline void CheckAdbc(AdbcStatusCode status, AdbcError *error, const string &con
         }
     }
 
-    // Release error resources
+    // Release error resources. Null the release callback afterward so the owning
+    // AdbcErrorGuard's destructor does not release a second time — calling an
+    // AdbcError's release twice is undefined behavior, and some drivers (e.g. the
+    // Rust DataFusion driver, which frees the message with CString::from_raw)
+    // crash with a use-after-free on the second call.
     if (error && error->release) {
         error->release(error);
+        error->release = nullptr;
     }
 
     // Throw appropriate exception based on status code

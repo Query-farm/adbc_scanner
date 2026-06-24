@@ -21,10 +21,12 @@ using namespace duckdb;
 // order. The wrong style makes the remote prepare fail with a syntax error.
 enum class ParamPlaceholderStyle { QUESTION_MARK, DOLLAR_NUMBERED };
 
-// Pick the placeholder style for a driver, keyed on its name (e.g. "postgresql").
+// Pick the placeholder style for a driver, keyed on its name. PostgreSQL and
+// DataFusion use "$1", "$2", ... numbered placeholders; most others use a bare
+// "?". The wrong style makes the remote prepare fail with a syntax error.
 inline ParamPlaceholderStyle PlaceholderStyleForDriver(const string &driver_name) {
 	auto lower = StringUtil::Lower(driver_name);
-	if (lower.find("postgres") != string::npos) {
+	if (lower.find("postgres") != string::npos || lower.find("datafusion") != string::npos) {
 		return ParamPlaceholderStyle::DOLLAR_NUMBERED;
 	}
 	return ParamPlaceholderStyle::QUESTION_MARK;

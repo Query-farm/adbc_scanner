@@ -1,0 +1,81 @@
+# name: test/sql/adbc_mysql.test
+# description: ADBC against a real MySQL server (backtick identifier quoting, filter pushdown, ATTACH)
+# group: [adbc]
+#
+# Requires the mysql ADBC driver (e.g. `dbc install mysql`) and a MySQL server
+# reachable at mysql://root:root@localhost:3306/testdb. Gate by setting
+# ADBC_MYSQL_TEST_AVAILABLE=1.
+#
+# NOTE: only reads are covered. The MySQL ADBC driver (0.4.0) does not support
+# disabling autocommit, so the extension's transactional write path correctly
+# fails loud rather than silently auto-committing. MySQL maps the connection
+# database to the "main" schema.
+
+require adbc_scanner
+
+require-env ADBC_MYSQL_TEST_AVAILABLE
+
+# Seed via the imperative API (adbc_execute runs outside the transactional write
+# path, so it works even though the driver lacks autocommit control).
+statement ok
+SET VARIABLE c = (SELECT adbc_connect({'driver':'mysql','uri':'mysql://root:root@localhost:3306/testdb'}));
+
+statement ok
+SELECT adbc_execute(getvariable('c')::BIGINT, 'DROP TABLE IF EXISTS adbc_my_items');
+
+statement ok
+SELECT adbc_execute(getvariable('c')::BIGINT, 'CREATE TABLE adbc_my_items (id INT PRIMARY KEY, name VARCHAR(50), active BOOLEAN)');
+
+statement ok
+SELECT adbc_execute(getvariable('c')::BIGINT, 'INSERT INTO adbc_my_items VALUES (1,''apple'',1),(2,''pear'',0),(3,''plum'',1)');
+
+# Imperative scan_table builds `SELECT * FROM `adbc_my_items`` — backtick quoting,
+# a double-quote here would be a MySQL syntax error (the bug this guards against).
+query ITI
+SELECT id, name, active FROM adbc_scan_table(getvariable('c')::BIGINT, 'adbc_my_items') ORDER BY id;
+----
+1	apple	1
+2	pear	0
+3	plum	1
+
+# Filter pushdown (backtick column quoting + ? placeholders)
+query I
+SELECT id FROM adbc_scan_table(getvariable('c')::BIGINT, 'adbc_my_items') WHERE id > 1 ORDER BY id;
+----
+2
+3
+
+query I
+SELECT id FROM adbc_scan_table(getvariable('c')::BIGINT, 'adbc_my_items') WHERE name = 'pear';
+----
+2
+
+statement ok
+SELECT adbc_disconnect(getvariable('c')::BIGINT);
+
+# ATTACH storage path: MySQL exposes the database as the "main" schema.
+statement ok
+ATTACH 'mysql://root:root@localhost:3306/testdb' AS my (TYPE adbc, driver 'mysql');
+
+query I
+SELECT COUNT(*) FROM my.main.adbc_my_items;
+----
+3
+
+query IT
+SELECT id, name FROM my.main.adbc_my_items WHERE id >= 2 AND active = true ORDER BY id;
+----
+3	plum
+
+statement ok
+DETACH my;
+
+# Cleanup
+statement ok
+SET VARIABLE c2 = (SELECT adbc_connect({'driver':'mysql','uri':'mysql://root:root@localhost:3306/testdb'}));
+
+statement ok
+SELECT adbc_execute(getvariable('c2')::BIGINT, 'DROP TABLE IF EXISTS adbc_my_items');
+
+statement ok
+SELECT adbc_disconnect(getvariable('c2')::BIGINT);

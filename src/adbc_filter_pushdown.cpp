@@ -125,7 +125,7 @@ string AdbcFilterPushdown::TransformFilter(string &column_name, TableFilter &fil
 FilterPushdownResult AdbcFilterPushdown::TransformFilters(const vector<column_t> &column_ids,
                                                           optional_ptr<TableFilterSet> filters,
                                                           const vector<string> &names,
-                                                          ParamPlaceholderStyle style) {
+                                                          ParamPlaceholderStyle style, char quote_char) {
 	FilterPushdownResult result;
 
 	if (!filters || filters->filters.empty()) {
@@ -148,7 +148,7 @@ FilterPushdownResult AdbcFilterPushdown::TransformFilters(const vector<column_t>
 			continue;
 		}
 
-		string column_name = KeywordHelper::WriteQuoted(names[column_id], '"');
+		string column_name = KeywordHelper::WriteQuoted(names[column_id], quote_char);
 		auto &filter = *entry.second;
 		auto filter_text = TransformFilter(column_name, filter, result.params, result.param_types, style);
 

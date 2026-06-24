@@ -770,17 +770,19 @@ static InsertionOrderPreservingMap<string> AdbcScanToString(TableFunctionToStrin
 
 // Bind function for adbc_scan_table - similar to AdbcScanBind but takes table name instead of query
 // Helper to build a fully qualified table name with proper quoting
-static string BuildQualifiedTableName(const string &catalog, const string &schema, const string &table) {
-    // Quote each identifier and double any embedded quotes (KeywordHelper handles
-    // escaping) so names containing special characters can't break or inject SQL.
+static string BuildQualifiedTableName(const string &catalog, const string &schema, const string &table,
+                                      char quote_char) {
+    // Quote each identifier with the driver's quote char (double-quote for most,
+    // backtick for MySQL) and double any embedded quotes (KeywordHelper handles
+    // escaping) so names with special characters can't break or inject SQL.
     string result;
     if (!catalog.empty()) {
-        result += KeywordHelper::WriteQuoted(catalog, '"') + ".";
+        result += KeywordHelper::WriteQuoted(catalog, quote_char) + ".";
     }
     if (!schema.empty()) {
-        result += KeywordHelper::WriteQuoted(schema, '"') + ".";
+        result += KeywordHelper::WriteQuoted(schema, quote_char) + ".";
     }
-    result += KeywordHelper::WriteQuoted(table, '"');
+    result += KeywordHelper::WriteQuoted(table, quote_char);
     return result;
 }
 
@@ -812,15 +814,18 @@ static unique_ptr<FunctionData> AdbcScanTableBind(ClientContext &context, TableF
         bind_data->schema_name = schema_it->second.GetValue<string>();
     }
 
-    // Construct a SELECT * FROM [catalog.][schema.]table_name query for schema discovery
-    string qualified_name = BuildQualifiedTableName(bind_data->catalog_name, bind_data->schema_name, bind_data->table_name);
-    bind_data->query = "SELECT * FROM " + qualified_name;
-
     // Extract batch_size parameter
     bind_data->batch_size = ExtractBatchSize(input, "adbc_scan_table");
 
-    // Now validate and get connection wrapper
+    // Validate and get connection wrapper (needed to pick the SQL dialect below)
     bind_data->connection = GetValidatedConnection(bind_data->connection_id, "adbc_scan_table");
+
+    // Construct a SELECT * FROM [catalog.][schema.]table_name query for schema
+    // discovery, quoting identifiers with the driver's quote char.
+    char quote_char = IdentifierQuoteForDriver(bind_data->connection->GetDriverName());
+    string qualified_name =
+        BuildQualifiedTableName(bind_data->catalog_name, bind_data->schema_name, bind_data->table_name, quote_char);
+    bind_data->query = "SELECT * FROM " + qualified_name;
 
     // Get schema by executing the query and reading the stream schema.
     // We intentionally do NOT use GetTableSchema or ExecuteSchema here because some
@@ -870,6 +875,10 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanTableInitGlobal(ClientContex
     }
 
     // Build the query with projection pushdown
+    // SQL dialect for the target driver (identifier quote char + placeholder style).
+    char quote_char = IdentifierQuoteForDriver(bind_data.connection->GetDriverName());
+    auto placeholder_style = PlaceholderStyleForDriver(bind_data.connection->GetDriverName());
+
     // If we have column_ids and they're a subset of all columns, build a projected query
     string query;
     bool needs_projection = false;
@@ -910,14 +919,15 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanTableInitGlobal(ClientContex
                     if (!first) {
                         query += ", ";
                     }
-                    // Quote column name (escaping embedded quotes) to handle
-                    // special characters safely.
-                    query += KeywordHelper::WriteQuoted(bind_data.all_column_names[col_id], '"');
+                    // Quote column name (escaping embedded quotes) with the
+                    // driver's quote char to handle special characters safely.
+                    query += KeywordHelper::WriteQuoted(bind_data.all_column_names[col_id], quote_char);
                     first = false;
                 }
             }
             // Use fully qualified table name
-            string qualified_name = BuildQualifiedTableName(bind_data.catalog_name, bind_data.schema_name, bind_data.table_name);
+            string qualified_name = BuildQualifiedTableName(bind_data.catalog_name, bind_data.schema_name,
+                                                            bind_data.table_name, quote_char);
             query += " FROM " + qualified_name;
         } else {
             // Use SELECT * as no projection needed
@@ -929,13 +939,12 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanTableInitGlobal(ClientContex
         query = bind_data.query;
     }
 
-    // Apply filter pushdown - transform DuckDB filters into SQL WHERE clause with parameter
-    // placeholders. Use the driver-appropriate placeholder style (PostgreSQL needs $1/$2,
-    // others use ?) or the remote prepare fails with a syntax error.
-    auto placeholder_style = PlaceholderStyleForDriver(bind_data.connection->GetDriverName());
+    // Apply filter pushdown - transform DuckDB filters into a SQL WHERE clause.
+    // Use the driver-appropriate placeholder style (PostgreSQL needs $1/$2) and
+    // identifier quote char (MySQL needs backticks) or the remote prepare fails.
     auto filter_result =
         AdbcFilterPushdown::TransformFilters(input.column_ids, input.filters, bind_data.all_column_names,
-                                             placeholder_style);
+                                             placeholder_style, quote_char);
     if (filter_result.HasFilters()) {
         query += " WHERE " + filter_result.where_clause;
     }

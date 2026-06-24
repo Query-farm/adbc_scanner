@@ -30,6 +30,17 @@ inline ParamPlaceholderStyle PlaceholderStyleForDriver(const string &driver_name
 	return ParamPlaceholderStyle::QUESTION_MARK;
 }
 
+// Pick the identifier-quote character for a driver. MySQL/MariaDB use backticks;
+// most others (PostgreSQL, SQLite, DuckDB, standard SQL) use double quotes. The
+// wrong quote makes the remote parse fail with a syntax error.
+inline char IdentifierQuoteForDriver(const string &driver_name) {
+	auto lower = StringUtil::Lower(driver_name);
+	if (lower.find("mysql") != string::npos || lower.find("mariadb") != string::npos) {
+		return '`';
+	}
+	return '"';
+}
+
 // Result of transforming filters - contains both the WHERE clause and bound parameters
 struct FilterPushdownResult {
 	// The WHERE clause (without the "WHERE" keyword), e.g., "col1 = ? AND col2 > ?"
@@ -52,7 +63,8 @@ public:
 	static FilterPushdownResult TransformFilters(const vector<column_t> &column_ids,
 	                                             optional_ptr<TableFilterSet> filters,
 	                                             const vector<string> &names,
-	                                             ParamPlaceholderStyle style = ParamPlaceholderStyle::QUESTION_MARK);
+	                                             ParamPlaceholderStyle style = ParamPlaceholderStyle::QUESTION_MARK,
+	                                             char quote_char = '"');
 
 private:
 	// Emit the placeholder for the next parameter (1-based index = params.size()

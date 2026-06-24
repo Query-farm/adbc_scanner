@@ -1,0 +1,107 @@
+name: ADBC Driver Tests
+
+# Builds the extension on Linux and runs the SQLLogicTest suite against real ADBC
+# drivers installed via `dbc` (columnar.tech), with PostgreSQL and MySQL service
+# containers. This is what catches driver-dialect regressions that the SQLite-only
+# tests can't (e.g. PostgreSQL's $1/$2 placeholders, MySQL's backtick quoting).
+
+on:
+  push:
+    branches: [v1.5]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: driver-tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  driver-tests:
+    name: ADBC driver tests (Linux)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: testdb
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 15
+
+    env:
+      # Pin vcpkg to the commit this DuckDB version is built against (matches
+      # extension-ci-tools' _extension_distribution.yml default) and use DuckDB's
+      # public read-only binary cache so dependencies don't build from source.
+      VCPKG_COMMIT: "84bab45d415d22042bd0b9081aea57f362da3f35"
+      VCPKG_TARGET_TRIPLET: x64-linux
+      VCPKG_BINARY_SOURCES: "clear;http,https://vcpkg-cache.duckdb.org,read"
+      GEN: ninja
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ccache build-essential cmake curl zip unzip tar pkg-config
+
+      - name: Setup vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git
+          cd vcpkg
+          git checkout "$VCPKG_COMMIT"
+          ./bootstrap-vcpkg.sh
+
+      - name: Build extension (release)
+        run: GEN=ninja make release
+        env:
+          VCPKG_TOOLCHAIN_PATH: ${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+          VCPKG_OVERLAY_PORTS: ${{ github.workspace }}/extension-ci-tools/vcpkg_ports
+
+      - name: Install dbc and ADBC drivers
+        run: |
+          curl -LsSf https://dbc.columnar.tech/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/dbc" install sqlite
+          "$HOME/.local/bin/dbc" install postgresql
+          "$HOME/.local/bin/dbc" install mysql
+
+      - name: Run driver test suite
+        env:
+          # SQLite tests resolve the driver from the dbc-installed manifest.
+          HAS_ADBC_SQLITE_DRIVER: 1
+          # Gated real-server tests (services above provide the databases).
+          ADBC_POSTGRES_TEST_AVAILABLE: 1
+          ADBC_MYSQL_TEST_AVAILABLE: 1
+        run: |
+          fail=0
+          for t in test/sql/*.test; do
+            echo "::group::$t"
+            if ! ./build/release/test/unittest "$t"; then
+              fail=1
+              echo "::error::Test failed: $t"
+            fi
+            echo "::endgroup::"
+          done
+          exit $fail

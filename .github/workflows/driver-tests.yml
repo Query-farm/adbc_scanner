@@ -46,6 +46,16 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 15
+      # Arrow Flight SQL server (DuckDB backend, TPC-H-small dataset). No usable
+      # container health check, so a readiness wait step follows below.
+      flightsql:
+        image: voltrondata/sqlflite:latest
+        env:
+          TLS_ENABLED: "0"
+          SQLFLITE_PASSWORD: flight_password
+          PRINT_QUERIES: "1"
+        ports:
+          - 31337:31337
 
     env:
       # Pin vcpkg to the commit this DuckDB version is built against (matches
@@ -86,6 +96,17 @@ jobs:
           "$HOME/.local/bin/dbc" install sqlite
           "$HOME/.local/bin/dbc" install postgresql
           "$HOME/.local/bin/dbc" install mysql
+          "$HOME/.local/bin/dbc" install flightsql
+
+      - name: Wait for Flight SQL server
+        run: |
+          for i in $(seq 1 30); do
+            if (echo > /dev/tcp/localhost/31337) >/dev/null 2>&1; then
+              echo "Flight SQL server is accepting connections"; exit 0
+            fi
+            sleep 2
+          done
+          echo "Flight SQL server did not become ready"; exit 1
 
       - name: Run driver test suite
         env:
@@ -94,6 +115,7 @@ jobs:
           # Gated real-server tests (services above provide the databases).
           ADBC_POSTGRES_TEST_AVAILABLE: 1
           ADBC_MYSQL_TEST_AVAILABLE: 1
+          ADBC_FLIGHTSQL_TEST_AVAILABLE: 1
         run: |
           fail=0
           for t in test/sql/*.test; do

@@ -1,0 +1,64 @@
+# name: test/sql/adbc_flightsql.test
+# description: ADBC over Arrow Flight SQL (connection, auth, scan, ATTACH) against a real server
+# group: [adbc]
+#
+# Requires the flightsql ADBC driver (e.g. `dbc install flightsql`) and a Flight
+# SQL server reachable at grpc://localhost:31337 with the TPC-H-small dataset.
+# In CI this is the voltrondata/sqlflite image (TLS disabled). Gate by setting
+# ADBC_FLIGHTSQL_TEST_AVAILABLE=1.
+#
+# NOTE: read-only. Pushed parameterized filters (WHERE col = ?) are avoided here
+# because the DuckDB-backed sqlflite server infers untyped placeholders as VARCHAR
+# at prepare time and rejects the comparison; literal WHERE clauses inside an
+# adbc_scan() query string run server-side and are fine. The server presents its
+# schema as "main".
+
+require adbc_scanner
+
+require-env ADBC_FLIGHTSQL_TEST_AVAILABLE
+
+# Imperative scan: the WHERE here is part of the query string (server-side), not a
+# pushed-down placeholder, so it exercises the Flight SQL transport end to end.
+statement ok
+SET VARIABLE c = (SELECT adbc_connect({'driver':'flightsql','uri':'grpc://localhost:31337','username':'sqlflite_username','password':'flight_password'}));
+
+query IT
+SELECT n_nationkey, n_name FROM adbc_scan(getvariable('c')::BIGINT, 'SELECT n_nationkey, n_name FROM nation WHERE n_nationkey < 3 ORDER BY n_nationkey');
+----
+0	ALGERIA
+1	ARGENTINA
+2	BRAZIL
+
+# Unfiltered scan_table (SELECT * FROM region, no pushed filter)
+query I
+SELECT COUNT(*) AS n FROM adbc_scan_table(getvariable('c')::BIGINT, 'region');
+----
+5
+
+statement ok
+SELECT adbc_disconnect(getvariable('c')::BIGINT);
+
+# ATTACH storage path (read-only)
+statement ok
+ATTACH 'grpc://localhost:31337' AS f (TYPE adbc, driver 'flightsql', username 'sqlflite_username', password 'flight_password');
+
+query I
+SELECT COUNT(*) FROM f.main.nation;
+----
+25
+
+query IT
+SELECT r_regionkey, r_name FROM f.main.region ORDER BY r_regionkey LIMIT 3;
+----
+0	AFRICA
+1	AMERICA
+2	ASIA
+
+# Aggregates push down as a full scan + local aggregation (no parameterized filter)
+query III
+SELECT COUNT(*), MIN(n_nationkey), MAX(n_nationkey) FROM f.main.nation;
+----
+25	0	24
+
+statement ok
+DETACH f;

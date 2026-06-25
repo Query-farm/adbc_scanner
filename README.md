@@ -181,29 +181,46 @@ Passwords/tokens are redacted in logs. Parameters: `driver`, `uri`, `username`, 
 ## Connection profiles
 
 [ADBC connection profiles](https://arrow.apache.org/adbc/main/format/connection_profiles.html) are
-named TOML files that bundle a driver plus its options, resolved natively by the driver manager. Drop
-`mydb.toml` into a profile search path (`~/.config/adbc/profiles` on Linux,
-`~/Library/Application Support/ADBC/Profiles` on macOS, `%LOCALAPPDATA%\ADBC\Profiles` on Windows, the
-`ADBC_PROFILE_PATH` env var, or a `search_paths` directory):
+named TOML files that bundle a driver plus its options, resolved natively by the driver manager.
+
+**1. Write the profile.** Values may pull from the environment with `{{ env_var(NAME) }}`, so secrets
+stay out of the file:
 
 ```toml
 profile_version = 1
-driver = "sqlite"
+driver = "postgresql"
 
 [Options]
-uri = ":memory:"
-# password = "{{ env_var(MYDB_PASSWORD) }}"   # values can read env vars
+uri = "postgresql://localhost:5432/analytics"
+password = "{{ env_var(PG_PASSWORD) }}"
 ```
 
-Then reference it by name — the driver and options come from the profile (explicitly passed options win):
+**2. Save it as `<name>.toml`** (the file name is the profile name — e.g. `analytics.toml` →
+`profile://analytics`) in one of the standard profile directories:
+
+| OS | Directory |
+|----|-----------|
+| macOS | `~/Library/Application Support/ADBC/Profiles/` |
+| Linux | `~/.config/adbc/profiles/` (or `$XDG_CONFIG_HOME/adbc/profiles/`) |
+| Windows | `%LOCALAPPDATA%\ADBC\Profiles\` |
+
+Profiles are resolved in this order: directories passed via the `search_paths` option → the
+`ADBC_PROFILE_PATH` environment variable (colon-separated on Unix, semicolon on Windows) → the per-OS
+directory above. You can also bypass the search with a direct path:
+`profile:///abs/path/to/analytics.toml`.
+
+**3. Reference it by name** — the driver and options come from the profile (explicitly passed options win):
 
 ```sql
-SELECT adbc_connect({'uri': 'profile://mydb'});         -- via profile:// URI
-SELECT adbc_connect({'profile': 'mydb'});               -- via the 'profile' option
-ATTACH 'profile://mydb' AS mydb (TYPE adbc);            -- attach via a profile
+SELECT adbc_connect({'uri': 'profile://analytics'});      -- via profile:// URI
+SELECT adbc_connect({'profile': 'analytics'});            -- via the 'profile' option
+ATTACH 'profile://analytics' AS pg (TYPE adbc);           -- attach via a profile
 
--- List discoverable profiles
-SELECT name, driver, source FROM adbc_profiles();
+-- Point at a custom directory
+SELECT adbc_connect({'profile': 'analytics', 'search_paths': '/opt/adbc/profiles'});
+
+-- List discoverable profiles (and where each resolved from)
+SELECT name, driver, path, source FROM adbc_profiles();
 SELECT * FROM adbc_profiles(search_paths := '/opt/adbc/profiles');
 ```
 

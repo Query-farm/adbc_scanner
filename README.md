@@ -17,7 +17,8 @@ This extension lets you:
   **streaming writes**, and **real transactions**.
 - Call remote systems directly with **table functions** (`adbc_scan`, `adbc_scan_table`, `adbc_execute`,
   `adbc_insert`) and **catalog functions** (`adbc_tables`, `adbc_columns`, `adbc_schema`, …).
-- Store credentials in **DuckDB secrets** and reference drivers by name via **ADBC driver manifests**.
+- Store credentials in **DuckDB secrets**, reference drivers by name via **ADBC driver manifests**, and
+  bundle a driver plus its connection settings into a named **connection profile** (`profile://mydb`).
 
 > The extension registers as `adbc_scanner` internally; its functions and the `ATTACH ... (TYPE adbc)`
 > storage type are exposed under the `adbc` name. It targets **DuckDB v1.5** (and v1.4.x).

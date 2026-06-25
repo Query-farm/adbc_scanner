@@ -127,7 +127,7 @@ struct AdbcProfilesGlobalState : public GlobalTableFunctionState {
 	}
 };
 
-unique_ptr<FunctionData> AdbcProfilesBind(ClientContext &context, TableFunctionBindInput &input,
+unique_ptr<FunctionData> AdbcProfilesBind(ClientContext &, TableFunctionBindInput &input,
                                           vector<LogicalType> &return_types, vector<string> &names) {
 	auto bind_data = make_uniq<AdbcProfilesBindData>();
 
@@ -180,11 +180,11 @@ unique_ptr<FunctionData> AdbcProfilesBind(ClientContext &context, TableFunctionB
 	return std::move(bind_data);
 }
 
-unique_ptr<GlobalTableFunctionState> AdbcProfilesInit(ClientContext &context, TableFunctionInitInput &input) {
+unique_ptr<GlobalTableFunctionState> AdbcProfilesInit(ClientContext &, TableFunctionInitInput &) {
 	return make_uniq<AdbcProfilesGlobalState>();
 }
 
-void AdbcProfilesFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+void AdbcProfilesFunction(ClientContext &, TableFunctionInput &data_p, DataChunk &output) {
 	auto &bind_data = data_p.bind_data->Cast<AdbcProfilesBindData>();
 	auto &state = data_p.global_state->Cast<AdbcProfilesGlobalState>();
 

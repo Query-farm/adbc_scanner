@@ -2,7 +2,7 @@ vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO apache/arrow-adbc
     REF apache-arrow-adbc-${VERSION}
-    SHA512 5d4610ae2efa503347e2db8b216b8e5149091edb8752b73c871288b549cba8254d927dc0a0ccd7eb1f55075a126fc11d29128cf7ba22e51b9f6d4c7b33047466
+    SHA512 48f3e5663ae59d3910f0e545f0bad68778151017e7a67804143832a5812126ff5796db18e9584be75dcedae751f294f13457600964bb84c1038f65eb285c2d05
     HEAD_REF main
     PATCHES
         toml.patch
@@ -12,6 +12,25 @@ vcpkg_from_github(
 #        unvendor.patch
 )
 file(REMOVE_RECURSE "${SOURCE_PATH}/c/vendor")
+
+# Rename the driver manager's internal SetError() helper to avoid a duplicate
+# symbol clash with DuckDB's own bundled ADBC implementation, which also defines
+# a global SetError(AdbcError*, const std::string&). As of arrow-adbc 23 the
+# driver manager promoted this helper to external linkage (shared with the new
+# connection-profile code), which collides at link time. This helper is declared
+# only in the internal (non-installed) header, so renaming it is invisible to
+# consumers. The regex requires a non-identifier char before the name so it does
+# not touch InternalAdbcSetError().
+foreach(_dm_file
+    c/driver_manager/adbc_driver_manager_internal.h
+    c/driver_manager/adbc_driver_manager.cc
+    c/driver_manager/adbc_driver_manager_api.cc
+    c/driver_manager/adbc_driver_manager_driver_loading.cc
+    c/driver_manager/adbc_driver_manager_profiles.cc)
+    file(READ "${SOURCE_PATH}/${_dm_file}" _dm_contents)
+    string(REGEX REPLACE "([^A-Za-z0-9_])SetError\\(" "\\1AdbcDmSetError(" _dm_contents "${_dm_contents}")
+    file(WRITE "${SOURCE_PATH}/${_dm_file}" "${_dm_contents}")
+endforeach()
 
 vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
     FEATURES

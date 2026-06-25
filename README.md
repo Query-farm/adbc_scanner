@@ -104,7 +104,7 @@ ATTACH '/path/to/file.sqlite'                          AS sl (TYPE adbc, driver 
 
 | Function | Description |
 |----------|-------------|
-| `adbc_connect(options)` → `BIGINT` | Open a connection; returns a handle. `options` is a `STRUCT` (preferred) or `MAP`. Required: `driver`. Optional: `entrypoint`, `search_paths`, `use_manifests`, `secret`, plus driver options. |
+| `adbc_connect(options)` → `BIGINT` | Open a connection; returns a handle. `options` is a `STRUCT` (preferred) or `MAP`. Required: `driver` (unless a profile supplies it). Optional: `entrypoint`, `profile`, `search_paths`, `use_manifests`, `secret`, plus driver options. |
 | `adbc_disconnect(handle)` | Close a connection. |
 | `adbc_set_autocommit(handle, enabled)` / `adbc_commit(handle)` / `adbc_rollback(handle)` | Transaction control on a handle. |
 
@@ -120,7 +120,8 @@ ATTACH '/path/to/file.sqlite'                          AS sl (TYPE adbc, driver 
 ### Catalog introspection
 
 `adbc_info(handle)`, `adbc_tables(handle)`, `adbc_table_types(handle)`,
-`adbc_columns(handle, [table_name := ...])`, `adbc_schema(handle, table_name)`.
+`adbc_columns(handle, [table_name := ...])`, `adbc_schema(handle, table_name)`,
+`adbc_profiles([search_paths := ...])`.
 
 ```sql
 SET VARIABLE conn = (SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:'}));
@@ -173,6 +174,37 @@ SELECT adbc_connect({'secret': 'my_pg'});
 
 Passwords/tokens are redacted in logs. Parameters: `driver`, `uri`, `username`, `password`, `database`,
 `entrypoint`, `extra_options` (a `MAP`).
+
+---
+
+## Connection profiles
+
+[ADBC connection profiles](https://arrow.apache.org/adbc/main/format/connection_profiles.html) are
+named TOML files that bundle a driver plus its options, resolved natively by the driver manager. Drop
+`mydb.toml` into a profile search path (`~/.config/adbc/profiles` on Linux,
+`~/Library/Application Support/ADBC/Profiles` on macOS, `%LOCALAPPDATA%\ADBC\Profiles` on Windows, the
+`ADBC_PROFILE_PATH` env var, or a `search_paths` directory):
+
+```toml
+profile_version = 1
+driver = "sqlite"
+
+[Options]
+uri = ":memory:"
+# password = "{{ env_var(MYDB_PASSWORD) }}"   # values can read env vars
+```
+
+Then reference it by name — the driver and options come from the profile (explicitly passed options win):
+
+```sql
+SELECT adbc_connect({'uri': 'profile://mydb'});         -- via profile:// URI
+SELECT adbc_connect({'profile': 'mydb'});               -- via the 'profile' option
+ATTACH 'profile://mydb' AS mydb (TYPE adbc);            -- attach via a profile
+
+-- List discoverable profiles
+SELECT name, driver, source FROM adbc_profiles();
+SELECT * FROM adbc_profiles(search_paths := '/opt/adbc/profiles');
+```
 
 ---
 

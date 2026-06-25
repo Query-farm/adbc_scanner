@@ -33,6 +33,9 @@ static void LoadInternal(duckdb::ExtensionLoader &loader) {
 	// Register ADBC clear cache function
 	RegisterAdbcClearCacheFunction(loader.GetDatabaseInstance());
 
+	// Register ADBC profiles function (adbc_profiles)
+	RegisterAdbcProfilesFunction(loader.GetDatabaseInstance());
+
 	// Register ADBC storage extension for ATTACH support
 	auto &config = duckdb::DBConfig::GetConfig(loader.GetDatabaseInstance());
 	StorageExtension::Register(config, "adbc", make_shared_ptr<AdbcStorageExtension>());

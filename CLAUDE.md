@@ -19,10 +19,11 @@ The extension provides the following functions:
 ### Connection Management
 - `adbc_connect(options)` - Connect to an ADBC data source. Returns a connection handle (BIGINT). Options can be passed as a STRUCT (preferred) or MAP.
   - **Required options:**
-    - `driver` - Driver name, path to shared library, or path to manifest file (.toml)
+    - `driver` - Driver name, path to shared library, or path to manifest file (.toml). Not required when a connection profile is supplied (via `profile` or a `profile://` URI), since the profile provides the driver.
   - **Optional options:**
     - `entrypoint` - Custom entry point function name
-    - `search_paths` - Additional paths to search for driver manifests (colon-separated on Unix, semicolon on Windows)
+    - `profile` - Name of a connection profile to resolve (see Connection Profiles). Equivalent to a `profile://<name>` URI.
+    - `search_paths` - Additional paths to search for driver manifests *and* connection profiles (colon-separated on Unix, semicolon on Windows)
     - `use_manifests` - Enable/disable manifest search (default: 'true'). Set to 'false' to only use direct library paths.
     - `secret` - Name of a DuckDB secret to use for connection parameters
     - Other options are passed directly to the ADBC driver
@@ -82,6 +83,52 @@ The extension supports ADBC driver manifests, which allow referencing drivers by
 
 A manifest file is a TOML file (e.g., `sqlite.toml`) containing driver metadata and the path to the shared library.
 
+#### Connection Profiles
+The extension supports [ADBC connection profiles](https://arrow.apache.org/adbc/main/format/connection_profiles.html) — named TOML files that bundle a driver name plus a set of connection options, so credentials and endpoints do not need to be hardcoded in SQL. Profile resolution is handled natively by the ADBC driver manager (arrow-adbc 23+).
+
+A profile is referenced by a `profile://<name>` URI or by the `profile` option, and the driver manager loads `<name>.toml` from the standard profile search paths:
+
+**macOS/Linux:**
+1. Paths passed via the `search_paths` option
+2. `ADBC_PROFILE_PATH` environment variable
+3. `$CONDA_PREFIX/etc/adbc/profiles` (Conda builds only)
+4. `~/.config/adbc/profiles` (Linux, honoring `XDG_CONFIG_HOME`) or `~/Library/Application Support/ADBC/Profiles` (macOS)
+
+**Windows:**
+1. Paths passed via the `search_paths` option
+2. `ADBC_PROFILE_PATH` environment variable (semicolon-separated)
+3. `%LOCALAPPDATA%\ADBC\Profiles`
+
+A `profile://<name>` with a `.toml` extension or absolute path is loaded directly; otherwise `<name>.toml` is searched for in the directories above.
+
+**Profile file format** (`mydb.toml`):
+```toml
+profile_version = 1
+driver = "sqlite"
+
+[Options]
+uri = ":memory:"
+# Values support environment-variable interpolation:
+# password = "{{ env_var(MYDB_PASSWORD) }}"
+```
+
+Options explicitly passed to `adbc_connect`/`ATTACH` take precedence over those from the profile. Use `adbc_profiles()` to list discoverable profiles.
+
+**Examples:**
+```sql
+-- Connect via a profile:// URI (driver and options come from the profile)
+SELECT adbc_connect({'uri': 'profile://mydb'});
+
+-- Connect via the 'profile' option
+SELECT adbc_connect({'profile': 'mydb'});
+
+-- Point at a directory of profiles explicitly
+SELECT adbc_connect({'profile': 'mydb', 'search_paths': '/opt/adbc/profiles'});
+
+-- Attach using a profile
+ATTACH 'profile://mydb' AS mydb (TYPE adbc);
+```
+
 ### Transaction Control
 - `adbc_set_autocommit(handle, enabled)` - Enable or disable autocommit mode. When disabled, changes require explicit commit.
 - `adbc_commit(handle)` - Commit the current transaction.
@@ -99,6 +146,7 @@ A manifest file is a TOML file (e.g., `sqlite.toml`) containing driver metadata 
 - `adbc_table_types(handle)` - Returns supported table types (e.g., "table", "view").
 - `adbc_columns(handle, [table_name := ...])` - Returns column metadata (name, type, ordinal position, nullability).
 - `adbc_schema(handle, table_name)` - Returns the Arrow schema for a specific table (field names, Arrow types, nullability).
+- `adbc_profiles([search_paths := ...])` - Lists discoverable ADBC connection profiles from the standard search paths (plus any directories in the optional `search_paths` parameter). Returns one row per `*.toml` profile found: `name`, `driver`, `path`, `source` ('additional' | 'env' | 'user'), and `profile_version`. Requires no driver or connection.
 
 ### Storage Extension (ATTACH)
 
@@ -239,6 +287,7 @@ Tests are written as [SQLLogicTests](https://duckdb.org/dev/sqllogictest/intro.h
 - **ADBC functions**: `src/adbc_functions.cpp` - Implements connection management (adbc_connect, adbc_disconnect, transaction functions)
 - **Scan/Execute**: `src/adbc_scan.cpp` - Implements adbc_scan, adbc_execute, and adbc_insert table functions
 - **Catalog functions**: `src/adbc_catalog.cpp` - Implements adbc_info, adbc_tables, adbc_columns, adbc_schema
+- **Connection profiles**: `src/adbc_profiles.cpp` - Implements adbc_profiles (enumerates profile TOML files; connection-time profile resolution is delegated to the driver manager)
 - **Secrets**: `src/adbc_secrets.cpp` - DuckDB secrets integration for secure credential storage
 - **Extension class**: `src/include/adbc_scanner_extension.hpp` - Defines `AdbcScannerExtension` class inheriting from `duckdb::Extension`
 - **Connection wrappers**: `src/include/adbc_connection.hpp` - RAII wrappers for ADBC database, connection, and statement objects
@@ -246,7 +295,7 @@ Tests are written as [SQLLogicTests](https://duckdb.org/dev/sqllogictest/intro.h
 - **Configuration**: `extension_config.cmake` - Tells DuckDB build system to load this extension
 - **Dependencies**: `vcpkg.json` - Depends on `arrow-adbc` via vcpkg with custom overlay ports in `vcpkg-overlay/`
 
-The ADBC driver manager is linked statically via `AdbcDriverManager::adbc_driver_manager_static`.
+The ADBC driver manager is linked statically via `AdbcDriverManager::adbc_driver_manager_static`. The overlay port pins **arrow-adbc 23** (the first release with native connection-profile support) and renames the driver manager's internal `SetError` helper to avoid a duplicate-symbol clash with DuckDB's own bundled ADBC implementation.
 
 ## DuckDB Version
 

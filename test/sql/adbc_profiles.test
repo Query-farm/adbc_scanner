@@ -1,0 +1,89 @@
+# name: test/sql/adbc_profiles.test
+# description: test ADBC connection profile discovery and profile:// connections
+# group: [adbc]
+
+require adbc_scanner
+
+# ============================================
+# adbc_profiles() enumeration (no driver required)
+# These tests parse the committed fixtures under test/profiles and do not
+# require any ADBC driver to be installed.
+# ============================================
+
+# Enumerate the fixture profiles from an explicit search path
+query TTT
+SELECT name, driver, source
+FROM adbc_profiles(search_paths := 'test/profiles')
+ORDER BY name;
+----
+pg_example	postgresql	additional
+sqlite_mem	sqlite	additional
+
+# Profile version is parsed from the TOML
+query TI
+SELECT name, profile_version
+FROM adbc_profiles(search_paths := 'test/profiles')
+ORDER BY name;
+----
+pg_example	1
+sqlite_mem	1
+
+# The path column points at the resolved .toml file
+query T
+SELECT path LIKE '%sqlite_mem.toml'
+FROM adbc_profiles(search_paths := 'test/profiles')
+WHERE name = 'sqlite_mem';
+----
+true
+
+# A non-existent search path yields no rows (and does not error)
+query I
+SELECT count(*) FROM adbc_profiles(search_paths := '/no/such/profiles/dir');
+----
+0
+
+# ============================================
+# Connecting via a profile (requires the SQLite driver)
+# ============================================
+
+require-env HAS_ADBC_SQLITE_DRIVER
+
+# Connect using a profile:// URI; the driver and uri come from the profile.
+# search_paths is used to locate the profile TOML.
+statement ok
+SET VARIABLE pconn = (SELECT adbc_connect({'uri': 'profile://sqlite_mem', 'search_paths': 'test/profiles'}));
+
+query II
+SELECT * FROM adbc_scan(getvariable('pconn')::BIGINT, 'SELECT 1 AS a, 2 AS b');
+----
+1	2
+
+statement ok
+SELECT adbc_disconnect(getvariable('pconn')::BIGINT);
+
+# Connect using the 'profile' option form instead of a profile:// URI
+statement ok
+SET VARIABLE pconn2 = (SELECT adbc_connect({'profile': 'sqlite_mem', 'search_paths': 'test/profiles'}));
+
+query I
+SELECT * FROM adbc_scan(getvariable('pconn2')::BIGINT, 'SELECT 42');
+----
+42
+
+statement ok
+SELECT adbc_disconnect(getvariable('pconn2')::BIGINT);
+
+# ATTACH via a profile:// URI. AdbcAttach connects eagerly, so a successful
+# ATTACH proves the profile was resolved and the driver loaded.
+statement ok
+ATTACH 'profile://sqlite_mem' AS pdb (TYPE adbc, search_paths 'test/profiles');
+
+# Listing tables in the (empty in-memory) attached database forces a query
+# through the resolved connection.
+query I
+SELECT count(*) FROM (SHOW ALL TABLES) WHERE database = 'pdb';
+----
+0
+
+statement ok
+DETACH pdb;

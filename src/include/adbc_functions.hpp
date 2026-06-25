@@ -23,4 +23,7 @@ void RegisterAdbcInsertFunction(DatabaseInstance &db);
 // Register adbc_clear_cache scalar function
 void RegisterAdbcClearCacheFunction(DatabaseInstance &db);
 
+// Register adbc_profiles table function (enumerate connection profiles)
+void RegisterAdbcProfilesFunction(DatabaseInstance &db);
+
 } // namespace adbc_scanner

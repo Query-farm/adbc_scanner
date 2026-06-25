@@ -20,6 +20,7 @@ shared_ptr<AdbcConnectionWrapper> CreateConnectionFromOptions(const vector<pair<
 	string entrypoint;
 	string uri;
 	string search_paths;
+	string profile;
 	bool use_manifests = true;
 	vector<pair<string, string>> db_options;
 
@@ -32,6 +33,8 @@ shared_ptr<AdbcConnectionWrapper> CreateConnectionFromOptions(const vector<pair<
 			uri = opt.second;
 		} else if (opt.first == "search_paths") {
 			search_paths = opt.second;
+		} else if (opt.first == "profile") {
+			profile = opt.second;
 		} else if (opt.first == "use_manifests") {
 			use_manifests = (opt.second == "true" || opt.second == "1");
 		} else if (opt.first == "secret") {
@@ -43,9 +46,15 @@ shared_ptr<AdbcConnectionWrapper> CreateConnectionFromOptions(const vector<pair<
 		}
 	}
 
+	// A connection profile may be supplied either via the 'profile' option or a
+	// 'profile://<name>' URI. When present, the driver manager resolves the driver
+	// and options from the profile TOML, so an explicit 'driver' is not required.
+	const bool has_profile = !profile.empty() || StringUtil::StartsWith(uri, "profile://");
+
 	// Validate required options
-	if (driver.empty()) {
-		throw InvalidInputException("ADBC connection requires a 'driver' option");
+	if (driver.empty() && !has_profile) {
+		throw InvalidInputException(
+		    "ADBC connection requires a 'driver' option (or a 'profile' option / 'profile://' URI)");
 	}
 
 	// Create database wrapper
@@ -59,14 +68,23 @@ shared_ptr<AdbcConnectionWrapper> CreateConnectionFromOptions(const vector<pair<
 		database->SetLoadFlags(ADBC_LOAD_FLAG_ALLOW_RELATIVE_PATHS);
 	}
 
-	// Set additional search paths if provided
+	// Set additional search paths if provided. These apply both to driver manifest
+	// discovery and to connection profile resolution.
 	if (!search_paths.empty()) {
 		database->SetAdditionalSearchPaths(search_paths);
+		database->SetOption("additional_profile_search_path_list", search_paths);
 	}
 
-	// Set driver (required)
-	database->SetOption("driver", driver);
-	database->SetDriverName(driver);
+	// Set the connection profile to resolve (the driver and options come from it)
+	if (!profile.empty()) {
+		database->SetOption("profile", profile);
+	}
+
+	// Set driver if provided (optional when a profile supplies it)
+	if (!driver.empty()) {
+		database->SetOption("driver", driver);
+		database->SetDriverName(driver);
+	}
 
 	// Set entrypoint if provided
 	if (!entrypoint.empty()) {

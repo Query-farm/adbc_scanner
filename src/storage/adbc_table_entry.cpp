@@ -73,16 +73,21 @@ TableFunction AdbcTableEntry::GetScanFunction(ClientContext &context, unique_ptr
 	    context,
 	    {LogicalType::BIGINT, LogicalType::VARCHAR});
 
-	// Build the inputs: temp connection handle, table_name
+	// Build the inputs: temp connection handle, table_name.
+	// NOTE: use the Value(string) VARCHAR constructor, NOT Value::CreateValue(name):
+	// the CreateValue(string) overload returns Value::BLOB(...), so a table or schema
+	// name with any non-ASCII byte (e.g. "naïve_café") throws "Invalid byte encountered
+	// in STRING -> BLOB conversion" before the scan even runs. adbc_scan_table expects a
+	// VARCHAR table_name argument.
 	vector<Value> inputs = {
 	    Value::BIGINT(temp_handle),
-	    Value::CreateValue(name)
+	    Value(name)
 	};
 
 	// Set up named parameters for schema (if not "main") and batch_size (if set)
 	named_parameter_map_t param_map;
 	if (schema.name != "main") {
-		param_map["schema"] = Value::CreateValue(schema.name);
+		param_map["schema"] = Value(schema.name);
 	}
 	if (adbc_catalog.batch_size > 0) {
 		param_map["batch_size"] = Value::BIGINT(static_cast<int64_t>(adbc_catalog.batch_size));

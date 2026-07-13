@@ -89,8 +89,17 @@ shared_ptr<AdbcConnectionWrapper> AdbcConnectionPool::GetConnectionShared() {
 	// cannot be detached while a query is still using it).
 	auto *self = this;
 	auto *raw = conn.get();
-	return shared_ptr<AdbcConnectionWrapper>(raw, [self, conn](AdbcConnectionWrapper *) mutable {
-		self->ReturnConnection(std::move(conn));
+	return shared_ptr<AdbcConnectionWrapper>(raw, [self, conn](AdbcConnectionWrapper *) mutable noexcept {
+		// A shared_ptr deleter must never throw: an escaping exception calls
+		// std::terminate(). ReturnConnection locks a mutex and pushes to a vector,
+		// either of which could throw (e.g. std::system_error, bad_alloc). Swallow
+		// anything; on failure the captured `conn` is destroyed here instead, which
+		// releases the underlying ADBC connection rather than returning it to the pool.
+		try {
+			self->ReturnConnection(std::move(conn));
+		} catch (...) {
+			// Intentionally ignored — see above.
+		}
 	});
 }
 

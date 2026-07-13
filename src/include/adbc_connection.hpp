@@ -361,8 +361,21 @@ private:
 class ConnectionRegistry {
 public:
     static ConnectionRegistry &Get() {
-        static ConnectionRegistry instance;
-        return instance;
+        // Intentionally heap-allocated and never deleted. The registry can hold
+        // pooled scan connections (added via AdbcConnectionPool::GetConnectionShared,
+        // whose custom deleter returns the connection to its pool) as well as
+        // adbc_connect() handles. At process exit, C++ static-destruction order
+        // between this singleton and the AdbcCatalog-owned pools / the ADBC driver
+        // is undefined. If the singleton were destroyed here, dropping a leftover
+        // shared_ptr would invoke the pool-return deleter against an already-torn-down
+        // pool (dangling mutex/vector) — or release an ADBC connection after its
+        // driver was unloaded — throwing out of a destructor and calling
+        // std::terminate() (observed as an abort in adbc_scanner::ConnectionRegistry::
+        // ~ConnectionRegistry during __cxa_finalize). Leaking the singleton skips its
+        // destructor entirely; the OS reclaims the memory on exit. See
+        // AdbcConnectionPool::GetConnectionShared for the matching deleter hardening.
+        static ConnectionRegistry *instance = new ConnectionRegistry();
+        return *instance;
     }
 
     // Add a connection and return its handle

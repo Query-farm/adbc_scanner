@@ -2,7 +2,7 @@ vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO apache/arrow-adbc
     REF apache-arrow-adbc-${VERSION}
-    SHA512 48f3e5663ae59d3910f0e545f0bad68778151017e7a67804143832a5812126ff5796db18e9584be75dcedae751f294f13457600964bb84c1038f65eb285c2d05
+    SHA512 2c325413c4af45642d956263f6a3e56012d7468cc3edf7a4dad325d85aab9469d066af42036983d770f2d8fc366841652455c63cb242ecc4b57b35481795c1cf
     HEAD_REF main
     PATCHES
         toml.patch
@@ -15,7 +15,7 @@ file(REMOVE_RECURSE "${SOURCE_PATH}/c/vendor")
 
 # Rename the driver manager's internal SetError() helper to avoid a duplicate
 # symbol clash with DuckDB's own bundled ADBC implementation, which also defines
-# a global SetError(AdbcError*, const std::string&). As of arrow-adbc 23 the
+# a global SetError(AdbcError*, const std::string&). Since arrow-adbc 23 the
 # driver manager promoted this helper to external linkage (shared with the new
 # connection-profile code), which collides at link time. This helper is declared
 # only in the internal (non-installed) header, so renaming it is invisible to
@@ -37,8 +37,6 @@ vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
         "sqlite" "ADBC_DRIVER_SQLITE"
         "postgresql" "ADBC_DRIVER_POSTGRESQL"
         "flightsql" "ADBC_DRIVER_FLIGHTSQL"
-        "snowflake" "ADBC_DRIVER_SNOWFLAKE"
-        "bigquery" "ADBC_DRIVER_BIGQUERY"
 )
 
 string(COMPARE EQUAL ${VCPKG_LIBRARY_LINKAGE} "dynamic" ADBC_BUILD_SHARED)

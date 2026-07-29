@@ -295,7 +295,7 @@ Tests are written as [SQLLogicTests](https://duckdb.org/dev/sqllogictest/intro.h
 - **Configuration**: `extension_config.cmake` - Tells DuckDB build system to load this extension
 - **Dependencies**: `vcpkg.json` - Depends on `arrow-adbc` via vcpkg with custom overlay ports in `vcpkg-overlay/`
 
-The ADBC driver manager is linked statically via `AdbcDriverManager::adbc_driver_manager_static`. The overlay port pins **arrow-adbc 23** (the first release with native connection-profile support) and renames the driver manager's internal `SetError` helper to avoid a duplicate-symbol clash with DuckDB's own bundled ADBC implementation.
+The ADBC driver manager is linked statically via `AdbcDriverManager::adbc_driver_manager_static`. The overlay port pins **arrow-adbc 24** (connection-profile support landed in 23) and renames the driver manager's internal `SetError` helper to avoid a duplicate-symbol clash with DuckDB's own bundled ADBC implementation.
 
 ## DuckDB Version
 

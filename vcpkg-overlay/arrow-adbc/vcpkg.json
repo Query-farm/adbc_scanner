@@ -1,6 +1,6 @@
 {
   "name": "arrow-adbc",
-  "version": "23",
+  "version": "24",
   "description": "Apache Arrow ADBC: Database Connectivity API for Arrow-based data systems",
   "homepage": "https://arrow.apache.org/adbc/",
   "license": "Apache-2.0",
@@ -18,10 +18,6 @@
     }
   ],
   "features": {
-    "bigquery": {
-      "description": "Enable bigquery support",
-      "supports": "!windows"
-    },
     "flightsql": {
       "description": "Enable flightsql support",
       "supports": "!windows"
@@ -31,10 +27,6 @@
       "dependencies": [
         "libpq"
       ]
-    },
-    "snowflake": {
-      "description": "Enable snowflake support",
-      "supports": "!windows"
     },
     "sqlite": {
       "description": "Enable SQLite support",

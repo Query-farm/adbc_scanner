@@ -118,3 +118,145 @@ SELECT adbc_execute(getvariable('c2')::BIGINT, 'DROP TABLE IF EXISTS adbc_pg_eve
 
 statement ok
 SELECT adbc_disconnect(getvariable('c2')::BIGINT);
+
+# ============================================================================
+# Regression: ANALYZE'd tables must not corrupt query results
+#
+# Statistics arrive in an ADBC dense union. Reading them with the union's child
+# *index* where its child *offset* is required returns the same element for every
+# statistic, because the PostgreSQL driver emits all of them through the float64
+# branch. That made null_count equal row_count, DuckDB concluded the columns were
+# entirely NULL, and pruned or garbled results. Only reproducible after ANALYZE,
+# since PostgreSQL reports no statistics before it.
+# ============================================================================
+
+statement ok
+SET VARIABLE c3 = (SELECT adbc_connect({'driver':'postgresql','uri':'postgresql://postgres:postgres@localhost:5432/postgres'}));
+
+statement ok
+SELECT adbc_execute(getvariable('c3')::BIGINT, 'DROP TABLE IF EXISTS adbc_pg_stats');
+
+statement ok
+SELECT adbc_execute(getvariable('c3')::BIGINT, 'CREATE TABLE adbc_pg_stats (id INTEGER, s TEXT)');
+
+statement ok
+SELECT adbc_execute(getvariable('c3')::BIGINT, 'INSERT INTO adbc_pg_stats VALUES (1, ''fifteen charact''), (2, ''fift characters'')');
+
+# Table with a genuinely all-NULL column, to check the opposite inference
+statement ok
+SELECT adbc_execute(getvariable('c3')::BIGINT, 'DROP TABLE IF EXISTS adbc_pg_stats_null');
+
+statement ok
+SELECT adbc_execute(getvariable('c3')::BIGINT, 'CREATE TABLE adbc_pg_stats_null (id INTEGER, s TEXT)');
+
+statement ok
+SELECT adbc_execute(getvariable('c3')::BIGINT, 'INSERT INTO adbc_pg_stats_null VALUES (NULL, NULL), (NULL, NULL)');
+
+statement ok
+SELECT adbc_execute(getvariable('c3')::BIGINT, 'ANALYZE adbc_pg_stats');
+
+statement ok
+SELECT adbc_execute(getvariable('c3')::BIGINT, 'ANALYZE adbc_pg_stats_null');
+
+statement ok
+SELECT adbc_disconnect(getvariable('c3')::BIGINT);
+
+statement ok
+ATTACH 'postgresql://postgres:postgres@localhost:5432/postgres' AS pgs (TYPE adbc, driver 'postgresql', READ_ONLY);
+
+query II
+SELECT id, s FROM pgs.public.adbc_pg_stats ORDER BY id;
+----
+1	fifteen charact
+2	fift characters
+
+query I
+SELECT COUNT(*) FROM pgs.public.adbc_pg_stats;
+----
+2
+
+# Assert the row-count statistic itself, not just that results survive it. The queries
+# below would also pass if statistics stopped being read at all, whereas this pins the
+# value actually decoded from the union: the mixed-up accessor reported "~4 rows" here
+# (the float64 element it kept re-reading) instead of the reltuples value of 2.
+query II
+EXPLAIN SELECT id FROM pgs.public.adbc_pg_stats;
+----
+physical_plan	<REGEX>:.*~2 rows.*
+
+# The column has no NULLs: statistics must not turn this into "everything matches"
+query I
+SELECT COUNT(*) FROM pgs.public.adbc_pg_stats WHERE id IS NULL;
+----
+0
+
+# ...nor prune every row from a range predicate
+query I
+SELECT COUNT(*) FROM pgs.public.adbc_pg_stats WHERE id > 0;
+----
+2
+
+# Strings longer than DuckDB's inline limit must survive sorting intact
+query II
+SELECT s, length(s) FROM pgs.public.adbc_pg_stats ORDER BY s;
+----
+fift characters	15
+fifteen charact	15
+
+# An actually all-NULL column still behaves correctly
+query I
+SELECT COUNT(*) FROM pgs.public.adbc_pg_stats_null WHERE id IS NULL;
+----
+2
+
+query I
+SELECT COUNT(*) FROM pgs.public.adbc_pg_stats_null WHERE id IS NOT NULL;
+----
+0
+
+# ============================================================================
+# Regression: two ADBC tables sharing a schema are distinct scans
+#
+# DuckDB identifies common subplans by an operator's serialized bytes, and a
+# LogicalGet built through ATTACH carries no function arguments. Without a
+# serialize callback the two scans below produced identical signatures, so both
+# branches read whichever table was planned first.
+# ============================================================================
+
+query II
+SELECT 'a' t, COUNT(*) c FROM pgs.public.adbc_pg_stats WHERE id IS NULL
+UNION ALL
+SELECT 'b', COUNT(*) FROM pgs.public.adbc_pg_stats_null WHERE id IS NULL;
+----
+a	0
+b	2
+
+# Same check with the branches swapped, so neither ordering can mask the other
+query II
+SELECT 'a' t, COUNT(*) c FROM pgs.public.adbc_pg_stats_null WHERE id IS NULL
+UNION ALL
+SELECT 'b', COUNT(*) FROM pgs.public.adbc_pg_stats WHERE id IS NULL;
+----
+a	2
+b	0
+
+query II
+SELECT (SELECT COUNT(*) FROM pgs.public.adbc_pg_stats_null WHERE id IS NULL),
+       (SELECT COUNT(*) FROM pgs.public.adbc_pg_stats WHERE id IS NULL);
+----
+2	0
+
+statement ok
+DETACH pgs;
+
+statement ok
+SET VARIABLE c4 = (SELECT adbc_connect({'driver':'postgresql','uri':'postgresql://postgres:postgres@localhost:5432/postgres'}));
+
+statement ok
+SELECT adbc_execute(getvariable('c4')::BIGINT, 'DROP TABLE IF EXISTS adbc_pg_stats');
+
+statement ok
+SELECT adbc_execute(getvariable('c4')::BIGINT, 'DROP TABLE IF EXISTS adbc_pg_stats_null');
+
+statement ok
+SELECT adbc_disconnect(getvariable('c4')::BIGINT);

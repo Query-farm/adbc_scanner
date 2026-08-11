@@ -35,12 +35,21 @@ struct AdbcStatValue {
     size_t TypeIndex() const { return value.has_value() ? value->index() : static_cast<size_t>(-1); }
 };
 
-// Column statistics from ADBC
+// Column statistics from ADBC.
+//
+// ADBC marks each statistic as exact or approximate. Anything DuckDB treats as a hard
+// guarantee (null-ness, min/max) may only be derived from *exact* statistics: DuckDB
+// prunes rows and folds predicates using those, so feeding it a sampled estimate
+// produces wrong query results rather than a merely worse plan. Counts used purely for
+// cardinality estimation are safe to take approximately.
 struct AdbcColumnStatistics {
     std::optional<idx_t> distinct_count;
     std::optional<idx_t> null_count;
+    bool null_count_is_exact = false;
     AdbcStatValue min_value;
+    bool min_value_is_exact = false;
     AdbcStatValue max_value;
+    bool max_value_is_exact = false;
 };
 
 // Bind data for adbc_scan - holds the connection, query, and schema information
@@ -67,6 +76,8 @@ struct AdbcScanBindData : public TableFunctionData {
     vector<string> all_column_names;  // All columns in the table (for building projected query)
     // Cached row count from ADBC statistics (for cardinality estimation)
     std::optional<idx_t> estimated_row_count;
+    // Whether the row count above is exact rather than an estimate
+    bool row_count_is_exact = false;
     // Cached column statistics from ADBC (for optimizer statistics)
     // Key is column name (case-sensitive)
     unordered_map<string, AdbcColumnStatistics> column_statistics;
@@ -218,63 +229,100 @@ static void PopulateReturnTypesFromSchema(ClientContext &context, AdbcScanBindDa
     }
 }
 
-// Helper to extract a statistic value from the ADBC statistics union
-// Returns true if value was successfully extracted (as double for count-type stats)
-static bool ExtractStatisticValue(ArrowArrayView *stat_value_view, int64_t row_idx, double &out_value) {
+// Resolve one element of the ADBC statistic_value dense union into the child array
+// that holds it plus the element's index *within that child*.
+//
+// These are two distinct nanoarrow accessors and mixing them up silently yields the
+// wrong value: ArrowArrayViewUnionChildIndex() says which child holds the value, while
+// ArrowArrayViewUnionChildOffset() says where in that child the value lives. Drivers
+// commonly emit every statistic through a single union branch (the PostgreSQL driver
+// puts all of them in float64), so using the child index as the offset reads the same
+// element for every statistic instead of failing visibly.
+//
+// Returns false if the union element is absent, null, or in a branch we cannot read.
+static bool ResolveStatUnionElement(ArrowArrayView *stat_value_view, int64_t row_idx,
+                                    ArrowArrayView *&out_child, int64_t &out_offset,
+                                    int8_t &out_child_index) {
     if (!stat_value_view || stat_value_view->n_children == 0) {
         return false;
     }
 
-    int8_t type_id = ArrowArrayViewUnionTypeId(stat_value_view, row_idx);
-    int64_t child_idx = ArrowArrayViewUnionChildIndex(stat_value_view, row_idx);
-
-    if (type_id == 0 && stat_value_view->children[0]) {
-        // int64
-        out_value = static_cast<double>(ArrowArrayViewGetIntUnsafe(stat_value_view->children[0], child_idx));
-        return true;
-    } else if (type_id == 1 && stat_value_view->children[1]) {
-        // uint64
-        out_value = static_cast<double>(static_cast<uint64_t>(ArrowArrayViewGetIntUnsafe(stat_value_view->children[1], child_idx)));
-        return true;
-    } else if (type_id == 2 && stat_value_view->children[2]) {
-        // float64
-        out_value = ArrowArrayViewGetDoubleUnsafe(stat_value_view->children[2], child_idx);
-        return true;
+    int8_t child_index = ArrowArrayViewUnionChildIndex(stat_value_view, row_idx);
+    int64_t child_offset = ArrowArrayViewUnionChildOffset(stat_value_view, row_idx);
+    if (child_index < 0 || child_index >= stat_value_view->n_children || child_offset < 0) {
+        return false;
     }
-    // type_id == 3 is binary, which we don't handle for numeric stats
 
-    return false;
+    ArrowArrayView *child = stat_value_view->children[child_index];
+    if (!child || child_offset >= child->length || ArrowArrayViewIsNull(child, child_offset)) {
+        return false;
+    }
+
+    out_child = child;
+    out_offset = child_offset;
+    out_child_index = child_index;
+    return true;
+}
+
+// Helper to extract a statistic value from the ADBC statistics union
+// Returns true if value was successfully extracted (as double for count-type stats)
+static bool ExtractStatisticValue(ArrowArrayView *stat_value_view, int64_t row_idx, double &out_value) {
+    ArrowArrayView *child = nullptr;
+    int64_t offset = 0;
+    int8_t child_index = 0;
+    if (!ResolveStatUnionElement(stat_value_view, row_idx, child, offset, child_index)) {
+        return false;
+    }
+
+    // Union branches per the ADBC spec: 0=int64, 1=uint64, 2=float64, 3=binary.
+    switch (child_index) {
+    case 0:
+        out_value = static_cast<double>(ArrowArrayViewGetIntUnsafe(child, offset));
+        return true;
+    case 1:
+        out_value = static_cast<double>(ArrowArrayViewGetUIntUnsafe(child, offset));
+        return true;
+    case 2:
+        out_value = ArrowArrayViewGetDoubleUnsafe(child, offset);
+        return true;
+    default:
+        // Branch 3 is binary, which has no numeric interpretation.
+        return false;
+    }
 }
 
 // Helper to extract min/max values into AdbcStatValue
 static bool ExtractStatValueTyped(ArrowArrayView *stat_value_view, int64_t row_idx, AdbcStatValue &out) {
-    if (!stat_value_view || stat_value_view->n_children == 0) {
+    ArrowArrayView *child = nullptr;
+    int64_t offset = 0;
+    int8_t child_index = 0;
+    if (!ResolveStatUnionElement(stat_value_view, row_idx, child, offset, child_index)) {
         return false;
     }
 
-    int8_t type_id = ArrowArrayViewUnionTypeId(stat_value_view, row_idx);
-    int64_t child_idx = ArrowArrayViewUnionChildIndex(stat_value_view, row_idx);
-
-    if (type_id == 0 && stat_value_view->children[0]) {
-        out.SetInt64(ArrowArrayViewGetIntUnsafe(stat_value_view->children[0], child_idx));
+    switch (child_index) {
+    case 0:
+        out.SetInt64(ArrowArrayViewGetIntUnsafe(child, offset));
         return true;
-    } else if (type_id == 1 && stat_value_view->children[1]) {
-        out.SetUInt64(static_cast<uint64_t>(ArrowArrayViewGetIntUnsafe(stat_value_view->children[1], child_idx)));
+    case 1:
+        out.SetUInt64(ArrowArrayViewGetUIntUnsafe(child, offset));
         return true;
-    } else if (type_id == 2 && stat_value_view->children[2]) {
-        out.SetFloat64(ArrowArrayViewGetDoubleUnsafe(stat_value_view->children[2], child_idx));
+    case 2:
+        out.SetFloat64(ArrowArrayViewGetDoubleUnsafe(child, offset));
         return true;
+    default:
+        return false;
     }
-    return false;
 }
 
-// Helper to get column name from ArrowArrayView at given index
-// Returns empty string if column_name is null (table-level statistic)
-static string GetColumnName(ArrowArrayView *column_name_view, int64_t row_idx) {
-    if (ArrowArrayViewIsNull(column_name_view, row_idx)) {
+// Helper to read a string field of the statistics struct at the given index.
+// Returns empty string when the field is null — for column_name that marks a
+// table-level statistic such as the row count.
+static string GetStatStringField(ArrowArrayView *string_view, int64_t row_idx) {
+    if (ArrowArrayViewIsNull(string_view, row_idx)) {
         return "";
     }
-    ArrowStringView sv = ArrowArrayViewGetStringUnsafe(column_name_view, row_idx);
+    ArrowStringView sv = ArrowArrayViewGetStringUnsafe(string_view, row_idx);
     return string(sv.data, sv.size_bytes);
 }
 
@@ -347,14 +395,24 @@ static void TryGetStatisticsFromADBC(AdbcConnectionWrapper &connection, const st
                         ArrowArrayView *stats_struct = stats_list->children[0];
                         // stats_struct has: table_name (0), column_name (1), statistic_key (2),
                         //                   statistic_value (3), statistic_is_approximate (4)
-                        if (stats_struct && stats_struct->n_children >= 4) {
+                        if (stats_struct && stats_struct->n_children >= 5) {
+                            ArrowArrayView *table_name_view = stats_struct->children[0];
                             ArrowArrayView *column_name_view = stats_struct->children[1];
                             ArrowArrayView *stat_key_view = stats_struct->children[2];
                             ArrowArrayView *stat_value_view = stats_struct->children[3];
+                            ArrowArrayView *is_approximate_view = stats_struct->children[4];
 
                             int64_t n_stats = stats_struct->array->length;
                             for (int64_t i = 0; i < n_stats; i++) {
-                                string col_name = GetColumnName(column_name_view, i);
+                                // Only accept statistics for the table we asked about. Drivers may
+                                // return more than they were asked for: the PostgreSQL driver matches
+                                // the table with LIKE, so a name containing '_' or '%' (e.g.
+                                // "user_data") also matches unrelated tables ("userXdata").
+                                if (GetStatStringField(table_name_view, i) != table_name) {
+                                    continue;
+                                }
+
+                                string col_name = GetStatStringField(column_name_view, i);
                                 int16_t stat_key = ArrowArrayViewGetIntUnsafe(stat_key_view, i);
                                 double value;
                                 bool got_value = ExtractStatisticValue(stat_value_view, i, value);
@@ -363,10 +421,15 @@ static void TryGetStatisticsFromADBC(AdbcConnectionWrapper &connection, const st
                                     continue;
                                 }
 
+                                // Absent flag means "unknown"; treat that as approximate.
+                                bool is_exact = !ArrowArrayViewIsNull(is_approximate_view, i) &&
+                                                ArrowArrayViewGetIntUnsafe(is_approximate_view, i) == 0;
+
                                 if (col_name.empty()) {
                                     // Table-level statistic
                                     if (stat_key == ADBC_STATISTIC_ROW_COUNT_KEY && value >= 0) {
                                         bind_data.estimated_row_count = static_cast<idx_t>(value);
+                                        bind_data.row_count_is_exact = is_exact;
                                     }
                                 } else {
                                     // Column-level statistic
@@ -374,16 +437,25 @@ static void TryGetStatisticsFromADBC(AdbcConnectionWrapper &connection, const st
 
                                     switch (stat_key) {
                                     case ADBC_STATISTIC_DISTINCT_COUNT_KEY:
-                                        col_stats.distinct_count = static_cast<idx_t>(value);
+                                        if (value >= 0) {
+                                            col_stats.distinct_count = static_cast<idx_t>(value);
+                                        }
                                         break;
                                     case ADBC_STATISTIC_NULL_COUNT_KEY:
-                                        col_stats.null_count = static_cast<idx_t>(value);
+                                        if (value >= 0) {
+                                            col_stats.null_count = static_cast<idx_t>(value);
+                                            col_stats.null_count_is_exact = is_exact;
+                                        }
                                         break;
                                     case ADBC_STATISTIC_MIN_VALUE_KEY:
-                                        ExtractStatValueTyped(stat_value_view, i, col_stats.min_value);
+                                        if (ExtractStatValueTyped(stat_value_view, i, col_stats.min_value)) {
+                                            col_stats.min_value_is_exact = is_exact;
+                                        }
                                         break;
                                     case ADBC_STATISTIC_MAX_VALUE_KEY:
-                                        ExtractStatValueTyped(stat_value_view, i, col_stats.max_value);
+                                        if (ExtractStatValueTyped(stat_value_view, i, col_stats.max_value)) {
+                                            col_stats.max_value_is_exact = is_exact;
+                                        }
                                         break;
                                     default:
                                         break;
@@ -1198,12 +1270,19 @@ static unique_ptr<BaseStatistics> AdbcScanTableStatistics(ClientContext &context
         result.SetDistinctCount(*col_stats.distinct_count);
     }
 
-    // Set null information based on null_count and row_count
-    if (col_stats.null_count.has_value() && bind_data.estimated_row_count.has_value()) {
+    // Set null information based on null_count and row_count.
+    //
+    // Only exact statistics may narrow null-ness. DuckDB treats "cannot have nulls" and
+    // "cannot have valid values" as guarantees and rewrites predicates accordingly, so an
+    // estimate here silently changes query results: PostgreSQL derives null_frac from a
+    // sample, which rounds to 0 for a column with a few nulls among many rows and would
+    // turn "WHERE c IS NULL" into a constant false.
+    if (col_stats.null_count.has_value() && col_stats.null_count_is_exact) {
         if (*col_stats.null_count == 0) {
             // No nulls in this column
             result.Set(StatsInfo::CANNOT_HAVE_NULL_VALUES);
-        } else if (*col_stats.null_count == *bind_data.estimated_row_count) {
+        } else if (bind_data.estimated_row_count.has_value() && bind_data.row_count_is_exact &&
+                   *col_stats.null_count == *bind_data.estimated_row_count) {
             // All values are null
             result.Set(StatsInfo::CANNOT_HAVE_VALID_VALUES);
         } else {
@@ -1212,8 +1291,18 @@ static unique_ptr<BaseStatistics> AdbcScanTableStatistics(ClientContext &context
         }
     }
 
-    // Set min/max for numeric types (integers, floats, timestamps, dates, times, decimals, booleans)
-    if (col_stats.min_value.HasValue() || col_stats.max_value.HasValue()) {
+    // Set min/max for numeric types (integers, floats, timestamps, dates, times, decimals, booleans).
+    // As with null-ness above, DuckDB prunes rows outside the min/max range, so an approximate
+    // bound would drop real rows. Only exact bounds are propagated.
+    //
+    // NOTE: no driver in arrow-adbc 24 reports min/max — PostgreSQL is the only one that
+    // implements GetStatistics at all, and it emits just row/null/distinct counts and average
+    // byte width, all flagged approximate. This block is therefore inert and has no test
+    // coverage. Add tests for the conversions below before relying on it, because a wrong
+    // bound here makes DuckDB silently drop rows rather than merely pick a worse plan.
+    bool has_min = col_stats.min_value.HasValue() && col_stats.min_value_is_exact;
+    bool has_max = col_stats.max_value.HasValue() && col_stats.max_value_is_exact;
+    if (has_min || has_max) {
         if (result.GetStatsType() == StatisticsType::NUMERIC_STATS) {
             try {
                 // Convert AdbcStatValue to DuckDB Value based on target column type
@@ -1266,8 +1355,12 @@ static unique_ptr<BaseStatistics> AdbcScanTableStatistics(ClientContext &context
                     }
                 };
 
-                set_stat(to_duckdb_value(col_stats.min_value), true);
-                set_stat(to_duckdb_value(col_stats.max_value), false);
+                if (has_min) {
+                    set_stat(to_duckdb_value(col_stats.min_value), true);
+                }
+                if (has_max) {
+                    set_stat(to_duckdb_value(col_stats.max_value), false);
+                }
             } catch (...) {
                 // Conversion failed - ignore min/max stats
             }
@@ -1275,6 +1368,25 @@ static unique_ptr<BaseStatistics> AdbcScanTableStatistics(ClientContext &context
     }
 
     return result.ToUnique();
+}
+
+// ADBC scans cannot be serialized: the bind data refers to a live driver connection
+// leased from this database's pool, which has no meaning outside the current session.
+//
+// Declaring that explicitly is what keeps scans of different tables apart. DuckDB
+// identifies common subplans by the serialized bytes of an operator, and for a table
+// scanned through ATTACH the LogicalGet carries no function arguments — so without a
+// serialize callback, two ADBC tables that merely share column names and types produce
+// identical signatures, and one table's rows are silently returned for the other. The
+// common-subplan optimizer wraps serialization in a try/catch precisely so a scan can
+// opt out this way.
+static void AdbcScanSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
+                              const TableFunction &function) {
+    throw NotImplementedException("ADBC scans cannot be serialized");
+}
+
+static unique_ptr<FunctionData> AdbcScanDeserialize(Deserializer &deserializer, TableFunction &function) {
+    throw NotImplementedException("ADBC scans cannot be serialized");
 }
 
 // Register the adbc_scan table function
@@ -1298,6 +1410,8 @@ void RegisterAdbcTableFunctions(DatabaseInstance &db) {
     adbc_scan_function.table_scan_progress = AdbcScanProgress;
     adbc_scan_function.cardinality = AdbcScanCardinality;
     adbc_scan_function.to_string = AdbcScanToString;
+    adbc_scan_function.serialize = AdbcScanSerialize;
+    adbc_scan_function.deserialize = AdbcScanDeserialize;
 
     CreateTableFunctionInfo info(adbc_scan_function);
     FunctionDescription desc;
@@ -1332,6 +1446,8 @@ void RegisterAdbcTableFunctions(DatabaseInstance &db) {
     adbc_scan_table_function.cardinality = AdbcScanTableCardinality;
     adbc_scan_table_function.statistics = AdbcScanTableStatistics;
     adbc_scan_table_function.to_string = AdbcScanTableToString;
+    adbc_scan_table_function.serialize = AdbcScanSerialize;
+    adbc_scan_table_function.deserialize = AdbcScanDeserialize;
 
     CreateTableFunctionInfo scan_table_info(adbc_scan_table_function);
     FunctionDescription scan_table_desc;

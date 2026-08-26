@@ -1005,9 +1005,17 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanTableInitGlobal(ClientContex
             // Use SELECT * as no projection needed
             query = bind_data.query;
         }
+    } else if (!bind_data.table_name.empty()) {
+        // No real columns requested (e.g. COUNT(*) asks only for the
+        // virtual ROW_ID column). Local init still maps Arrow column 0 onto
+        // that BIGINT output slot, so scanning "SELECT *" breaks whenever the
+        // table's first column is not numeric ("Could not convert string
+        // 'x' to INT64"). Select a constant instead: it is cheap for the
+        // remote database and yields exactly the row count.
+        string qualified_name = BuildQualifiedTableName(bind_data.catalog_name, bind_data.schema_name, bind_data.table_name);
+        query = "SELECT 1 FROM " + qualified_name;
     } else {
-        // No valid columns requested (e.g., count(*)) or empty column_ids - use SELECT *
-        // We need to select something, so fall back to original query
+        // Empty column_ids with no table name - fall back to the original query
         query = bind_data.query;
     }
 

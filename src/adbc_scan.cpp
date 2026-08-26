@@ -1012,7 +1012,7 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanTableInitGlobal(ClientContex
         // table's first column is not numeric ("Could not convert string
         // 'x' to INT64"). Select a constant instead: it is cheap for the
         // remote database and yields exactly the row count.
-        string qualified_name = BuildQualifiedTableName(bind_data.catalog_name, bind_data.schema_name, bind_data.table_name);
+        string qualified_name = BuildQualifiedTableName(bind_data.catalog_name, bind_data.schema_name, bind_data.table_name, quote_char);
         query = "SELECT 1 FROM " + qualified_name;
     } else {
         // Empty column_ids with no table name - fall back to the original query

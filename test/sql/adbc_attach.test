@@ -72,6 +72,56 @@ statement ok
 DETACH sqlite_db;
 
 # ============================================
+# Regression: COUNT(*) on a table whose first column is not numeric
+#
+# When a query needs no real columns (e.g. COUNT(*) asks the scan for only
+# the virtual row-id column), the scan used to fall back to "SELECT *" and
+# map Arrow column 0 onto the BIGINT row-id output slot. Casting a
+# non-numeric first column to BIGINT threw "Could not convert string 'x' to
+# INT64". Every Db2 SYSCAT.* table hits this because they all start with a
+# TEXT column (GH #14). Reproduces only through the ATTACH scan path, not
+# through a direct adbc_scan_table(...) call.
+# ============================================
+
+statement ok
+SET VARIABLE conn_id2 = (SELECT adbc_connect({'driver': 'sqlite', 'uri': '/tmp/test_attach_string_first.db'}));
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id2')::BIGINT, 'DROP TABLE IF EXISTS string_first_test');
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id2')::BIGINT, 'CREATE TABLE string_first_test (label TEXT, id INTEGER)');
+
+statement ok
+SELECT adbc_execute(getvariable('conn_id2')::BIGINT, 'INSERT INTO string_first_test VALUES (''alpha'', 1), (''beta'', 2), (''gamma'', 3)');
+
+statement ok
+SELECT adbc_disconnect(getvariable('conn_id2')::BIGINT);
+
+statement ok
+ATTACH '/tmp/test_attach_string_first.db' AS sqlite_db2 (TYPE adbc, driver 'sqlite');
+
+query I
+SELECT COUNT(*) FROM sqlite_db2.string_first_test;
+----
+3
+
+# Filter pushdown must still work on this no-real-columns path
+query I
+SELECT COUNT(*) FROM sqlite_db2.string_first_test WHERE id > 1;
+----
+2
+
+# EXISTS also goes through the no-real-columns path
+query I
+SELECT CASE WHEN EXISTS (SELECT 1 FROM sqlite_db2.string_first_test) THEN 1 ELSE 0 END;
+----
+1
+
+statement ok
+DETACH sqlite_db2;
+
+# ============================================
 # ATTACH with batch_size Tests
 # ============================================
 

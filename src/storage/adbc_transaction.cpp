@@ -54,8 +54,10 @@ shared_ptr<AdbcConnectionWrapper> AdbcTransaction::GetWriteConnection() {
 	}
 	if (!write_lease.HasConnection()) {
 		// Pin a dedicated connection for the lifetime of this transaction so all
-		// writes share one connection and commit/roll back together.
-		write_lease = adbc_catalog.GetPool().GetConnection();
+		// writes share one connection and commit/roll back together. It must be a
+		// WRITE-role connection: one that has served a scan would silently skip
+		// BEGIN and autocommit, making ROLLBACK a no-op (see AdbcConnectionRole).
+		write_lease = adbc_catalog.GetPool().GetConnection(AdbcConnectionRole::WRITE);
 	}
 	auto conn = write_lease.GetConnection();
 	if (!write_started) {

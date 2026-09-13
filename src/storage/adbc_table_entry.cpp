@@ -14,7 +14,7 @@ namespace adbc_scanner {
 using namespace duckdb;
 
 AdbcTableEntry::AdbcTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info)
-    : TableCatalogEntry(catalog, schema, info) {
+    : TableCatalogEntry(catalog, schema, info), columns(info.columns.Copy()) {
 	for (idx_t c = 0; c < columns.LogicalColumnCount(); c++) {
 		auto &col = columns.GetColumnMutable(LogicalIndex(c));
 		column_names.push_back(col.GetName().GetIdentifierName());
@@ -22,7 +22,12 @@ AdbcTableEntry::AdbcTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, Cre
 }
 
 AdbcTableEntry::AdbcTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, AdbcTableInfo &info)
-    : TableCatalogEntry(catalog, schema, *info.create_info), column_names(std::move(info.column_names)) {
+    : TableCatalogEntry(catalog, schema, *info.create_info), columns(info.create_info->columns.Copy()),
+      column_names(std::move(info.column_names)) {
+}
+
+const ColumnList &AdbcTableEntry::GetColumns() const {
+	return columns;
 }
 
 unique_ptr<BaseStatistics> AdbcTableEntry::GetStatistics(ClientContext &context, column_t column_id) {

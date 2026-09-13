@@ -145,34 +145,36 @@ static bool SupportsLiteral(AdbcSQLDialect dialect, const Value &value) {
 	}
 }
 
-static bool SupportsCastType(AdbcSQLDialect dialect, const LogicalType &type) {
-	if (type.id() == LogicalTypeId::UNBOUND) {
-		auto bound_type = UnboundType::TryDefaultBind(type);
-		return bound_type.id() != LogicalTypeId::INVALID && SupportsCastType(dialect, bound_type);
+static bool SupportsCastType(AdbcSQLDialect dialect, const TypeExpression &type) {
+	if (type.GetQualifiedName().Path().size() != 1) {
+		return false;
 	}
+	auto name = StringUtil::Lower(type.GetTypeName().GetIdentifierName());
+	auto child_count = type.GetChildren().size();
 	if (dialect == AdbcSQLDialect::DUCKDB) {
-		return SupportsLiteral(dialect, Value(type));
+		static const case_insensitive_set_t DUCKDB_CAST_TYPES = {
+		    "bigint", "blob",     "bool",      "boolean",  "date",    "decimal",  "double",  "float", "hugeint",
+		    "int",    "int1",     "int2",      "int4",     "int8",    "integer",  "numeric", "real",  "smallint",
+		    "text",   "time",     "timestamp", "tinyint",  "ubigint", "uhugeint", "uint1",   "uint2", "uint4",
+		    "uint8",  "uinteger", "usmallint", "utinyint", "uuid",    "varchar"};
+		return DUCKDB_CAST_TYPES.count(name) > 0 && child_count <= 2;
 	}
 	if (dialect != AdbcSQLDialect::POSTGRES) {
 		return false;
 	}
-	switch (type.id()) {
-	case LogicalTypeId::BOOLEAN:
-	case LogicalTypeId::SMALLINT:
-	case LogicalTypeId::INTEGER:
-	case LogicalTypeId::BIGINT:
-	case LogicalTypeId::DECIMAL:
-	case LogicalTypeId::VARCHAR:
-	case LogicalTypeId::DATE:
-	case LogicalTypeId::TIME:
-	case LogicalTypeId::TIME_TZ:
-	case LogicalTypeId::TIMESTAMP:
-	case LogicalTypeId::TIMESTAMP_TZ:
-	case LogicalTypeId::UUID:
-		return true;
-	default:
-		return false;
+	static const case_insensitive_set_t POSTGRES_SIMPLE_CAST_TYPES = {
+	    "bigint",  "bool",     "boolean", "date", "int",    "int2",      "int4",        "int8",
+	    "integer", "smallint", "text",    "time", "timetz", "timestamp", "timestamptz", "uuid"};
+	if (POSTGRES_SIMPLE_CAST_TYPES.count(name) > 0) {
+		return child_count == 0;
 	}
+	if (name == "decimal" || name == "numeric") {
+		return child_count <= 2;
+	}
+	if (name == "varchar") {
+		return child_count <= 1;
+	}
+	return false;
 }
 
 static bool HasUnsafeMySQLIdentifier(const Identifier &identifier) {
@@ -211,7 +213,7 @@ bool AdbcSQLDialectProfile::SupportsExpression(AdbcSQLDialect dialect, const Par
 	}
 	switch (expression.GetExpressionClass()) {
 	case ExpressionClass::CONSTANT:
-		return SupportsLiteral(dialect, expression.Cast<ConstantExpression>().GetValue());
+		return SupportsLiteral(dialect, expression.Cast<ConstantExpression>().GetLiteral().ToValue());
 	case ExpressionClass::CAST: {
 		auto &cast = expression.Cast<CastExpression>();
 		return !cast.IsTryCast() && SupportsCastType(dialect, cast.TargetType());

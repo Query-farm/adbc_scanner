@@ -118,8 +118,8 @@ unique_ptr<TableRef> AdbcCatalog::RemoteExecute(ClientContext &context, const st
 		StringUtil::RTrim(remote_sql);
 	}
 	vector<unique_ptr<ParsedExpression>> args;
-	args.push_back(make_uniq<ConstantExpression>(Value::BIGINT(connection_handle)));
-	args.push_back(make_uniq<ConstantExpression>(Value(remote_sql)));
+	args.push_back(ConstantExpression::FromValue(Value::BIGINT(connection_handle)));
+	args.push_back(ConstantExpression::FromValue(Value(remote_sql)));
 	auto result = make_uniq<TableFunctionRef>();
 	result->function = make_uniq<FunctionExpression>("adbc_remote_query", std::move(args));
 	return std::move(result);

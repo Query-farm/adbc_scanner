@@ -44,6 +44,8 @@ public:
 	AdbcTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, AdbcTableInfo &info);
 
 public:
+	const ColumnList &GetColumns() const override;
+
 	unique_ptr<BaseStatistics> GetStatistics(ClientContext &context, column_t column_id) override;
 
 	TableFunction GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data) override;
@@ -54,6 +56,7 @@ public:
 	                           ClientContext &context) override;
 
 public:
+	ColumnList columns;
 	//! Column names as they are within the remote database
 	vector<string> column_names;
 };

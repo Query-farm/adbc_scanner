@@ -9,8 +9,10 @@
 #pragma once
 
 #include "duckdb/planner/table_filter.hpp"
+#include "duckdb/planner/table_filter_set.hpp"
 #include "duckdb/planner/filter/conjunction_filter.hpp"
 #include "duckdb/planner/filter/constant_filter.hpp"
+#include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/common/string_util.hpp"
 
 namespace adbc_scanner {
@@ -77,9 +79,12 @@ private:
 	// Emit the placeholder for the next parameter (1-based index = params.size()
 	// after the value has been pushed).
 	static string MakePlaceholder(ParamPlaceholderStyle style, idx_t one_based_index);
-	static string TransformConstantFilter(string &column_name, ConstantFilter &filter,
+	static string TransformConstantFilter(string &column_name, LegacyConstantFilter &filter,
 	                                      vector<Value> &params, vector<LogicalType> &param_types,
 	                                      ParamPlaceholderStyle style);
+	static string TransformExpression(const string &column_name, const Expression &expression,
+	                                  vector<Value> &params, vector<LogicalType> &param_types,
+	                                  ParamPlaceholderStyle style);
 	static string TransformFilter(string &column_name, TableFilter &filter,
 	                              vector<Value> &params, vector<LogicalType> &param_types,
 	                              ParamPlaceholderStyle style);

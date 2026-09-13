@@ -52,7 +52,7 @@ void AdbcCatalogSet::Scan(AdbcTransaction &transaction, const std::function<void
 
 optional_ptr<CatalogEntry> AdbcCatalogSet::CreateEntry(AdbcTransaction &transaction, shared_ptr<CatalogEntry> entry) {
 	lock_guard<mutex> l(entry_lock);
-	auto name = entry->name;
+	auto name = entry->name.GetIdentifierName();
 	entries[name] = std::move(entry);
 	entry_map[name] = name;
 	return entries[name].get();

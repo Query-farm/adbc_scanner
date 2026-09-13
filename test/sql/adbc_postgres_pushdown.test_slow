@@ -1,0 +1,68 @@
+# name: test/sql/adbc_postgres_pushdown.test_slow
+# description: Demonstrate row-transfer reduction from PostgreSQL QueryNode pushdown
+# group: [adbc]
+
+require adbc_scanner
+
+require-env ADBC_POSTGRES_TEST_AVAILABLE
+
+statement ok
+SET VARIABLE c = (SELECT adbc_connect({'driver':'postgresql','uri':'postgresql://postgres:postgres@localhost:5432/postgres'}));
+
+statement ok
+SELECT adbc_execute(getvariable('c')::BIGINT, 'DROP TABLE IF EXISTS adbc_pushdown_fact');
+
+statement ok
+SELECT adbc_execute(getvariable('c')::BIGINT, 'DROP TABLE IF EXISTS adbc_pushdown_dim');
+
+statement ok
+SELECT adbc_execute(getvariable('c')::BIGINT, 'CREATE TABLE adbc_pushdown_fact AS SELECT i AS id, i % 100 AS dim_id FROM generate_series(1, 100000) i');
+
+statement ok
+SELECT adbc_execute(getvariable('c')::BIGINT, 'CREATE TABLE adbc_pushdown_dim AS SELECT i AS id, i = 42 AS keep FROM generate_series(0, 99) i');
+
+statement ok
+SELECT adbc_disconnect(getvariable('c')::BIGINT);
+
+statement ok
+ATTACH 'postgresql://postgres:postgres@localhost:5432/postgres' AS pushed (TYPE adbc, driver 'postgresql');
+
+# The join and aggregate run in PostgreSQL; the Arrow stream contains one row.
+query II
+EXPLAIN ANALYZE SELECT COUNT(*)
+FROM pushed.public.adbc_pushdown_fact fact
+JOIN pushed.public.adbc_pushdown_dim dim ON fact.dim_id = dim.id
+WHERE dim.keep;
+----
+analyzed_plan	<REGEX>:(?is).*Remote SQL:.*SELECT count\(\*\).*1 row.*
+
+statement ok
+ATTACH 'postgresql://postgres:postgres@localhost:5432/postgres' AS local_plan (TYPE adbc, driver 'postgresql', query_pushdown false);
+
+# Without QueryNode pushdown, DuckDB receives 1,000 fact rows plus the 100-row
+# dimension and performs the join and aggregate locally.
+query II
+EXPLAIN ANALYZE SELECT COUNT(*)
+FROM local_plan.public.adbc_pushdown_fact fact
+JOIN local_plan.public.adbc_pushdown_dim dim ON fact.dim_id = dim.id
+WHERE dim.keep;
+----
+analyzed_plan	<REGEX>:(?s).*adbc_pushdown_fact.*1,000 rows.*adbc_pushdown_dim.*100 rows.*
+
+statement ok
+DETACH pushed;
+
+statement ok
+DETACH local_plan;
+
+statement ok
+SET VARIABLE cleanup = (SELECT adbc_connect({'driver':'postgresql','uri':'postgresql://postgres:postgres@localhost:5432/postgres'}));
+
+statement ok
+SELECT adbc_execute(getvariable('cleanup')::BIGINT, 'DROP TABLE IF EXISTS adbc_pushdown_fact');
+
+statement ok
+SELECT adbc_execute(getvariable('cleanup')::BIGINT, 'DROP TABLE IF EXISTS adbc_pushdown_dim');
+
+statement ok
+SELECT adbc_disconnect(getvariable('cleanup')::BIGINT);

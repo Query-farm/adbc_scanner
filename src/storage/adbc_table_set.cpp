@@ -256,7 +256,7 @@ unique_ptr<AdbcTableInfo> AdbcTableSet::GetTableInfo(AdbcTransaction &transactio
 
 		table_info->column_names.push_back(col_name);
 
-		ColumnDefinition column(col_name, col_type);
+		ColumnDefinition column(Identifier(col_name), col_type);
 		table_info->create_info->columns.AddColumn(std::move(column));
 	}
 

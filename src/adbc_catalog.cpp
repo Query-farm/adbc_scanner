@@ -57,7 +57,7 @@ struct AdbcInfoGlobalState : public GlobalTableFunctionState {
 };
 
 static unique_ptr<FunctionData> AdbcInfoBind(ClientContext &context, TableFunctionBindInput &input,
-                                              vector<LogicalType> &return_types, vector<string> &names) {
+                                              vector<LogicalType> &return_types, vector<Identifier> &names) {
     auto bind_data = make_uniq<AdbcInfoBindData>();
 
     // Check for NULL connection handle
@@ -312,7 +312,7 @@ static void ExtractTables(ArrowArray *batch, vector<TableRow> &table_rows) {
 }
 
 static unique_ptr<FunctionData> AdbcTablesBind(ClientContext &context, TableFunctionBindInput &input,
-                                                vector<LogicalType> &return_types, vector<string> &names) {
+                                                vector<LogicalType> &return_types, vector<Identifier> &names) {
     auto bind_data = make_uniq<AdbcTablesBindData>();
 
     // Check for NULL connection handle
@@ -438,7 +438,7 @@ struct AdbcTableTypesGlobalState : public GlobalTableFunctionState {
 };
 
 static unique_ptr<FunctionData> AdbcTableTypesBind(ClientContext &context, TableFunctionBindInput &input,
-                                                    vector<LogicalType> &return_types, vector<string> &names) {
+                                                    vector<LogicalType> &return_types, vector<Identifier> &names) {
     auto bind_data = make_uniq<AdbcTableTypesBindData>();
 
     // Check for NULL connection handle
@@ -722,7 +722,7 @@ static void ExtractColumns(ArrowArray *batch, vector<ColumnRow> &column_rows) {
 }
 
 static unique_ptr<FunctionData> AdbcColumnsBind(ClientContext &context, TableFunctionBindInput &input,
-                                                 vector<LogicalType> &return_types, vector<string> &names) {
+                                                 vector<LogicalType> &return_types, vector<Identifier> &names) {
     auto bind_data = make_uniq<AdbcColumnsBindData>();
 
     // Check for NULL connection handle
@@ -890,7 +890,7 @@ static void ExtractSchemaFields(ClientContext &context, ArrowSchema *schema, vec
 }
 
 static unique_ptr<FunctionData> AdbcSchemaBind(ClientContext &context, TableFunctionBindInput &input,
-                                                vector<LogicalType> &return_types, vector<string> &names) {
+                                                vector<LogicalType> &return_types, vector<Identifier> &names) {
     auto bind_data = make_uniq<AdbcSchemaBindData>();
 
     // Check for NULL connection handle

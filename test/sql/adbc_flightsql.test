@@ -42,6 +42,17 @@ SELECT adbc_disconnect(getvariable('c')::BIGINT);
 statement ok
 ATTACH 'grpc://localhost:31337' AS f (TYPE adbc, driver 'flightsql', username 'sqlflite_username', password 'flight_password');
 
+statement ok
+CONNECT f;
+
+query I
+SELECT COUNT(*) FROM nation;
+----
+25
+
+statement ok
+DISCONNECT;
+
 query I
 SELECT COUNT(*) FROM f.main.nation;
 ----

@@ -1,0 +1,39 @@
+# name: test/sql/adbc_chdb.test
+# description: ADBC against embedded chDB (raw scan and CONNECT)
+# group: [adbc]
+
+require adbc_scanner
+
+require-env ADBC_CHDB_TEST_AVAILABLE
+
+statement ok
+SET VARIABLE c = (SELECT adbc_connect({'driver':'chdb'}));
+
+query IT
+SELECT number, s
+FROM adbc_scan(getvariable('c')::BIGINT,
+               'SELECT number, toString(number) AS s FROM numbers(3) ORDER BY number');
+----
+0	0
+1	1
+2	2
+
+statement ok
+SELECT adbc_disconnect(getvariable('c')::BIGINT);
+
+statement ok
+ATTACH '' AS chdb_connected (TYPE adbc, driver 'chdb');
+
+statement ok
+CONNECT chdb_connected;
+
+query I
+SELECT SUM(number) FROM numbers(4);
+----
+6
+
+statement ok
+DISCONNECT;
+
+statement ok
+DETACH chdb_connected;

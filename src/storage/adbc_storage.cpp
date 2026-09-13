@@ -25,12 +25,15 @@ static unique_ptr<Catalog> AdbcAttach(optional_ptr<StorageExtensionInfo> storage
 	// First, collect explicit options into a vector for secret merging
 	vector<pair<string, string>> explicit_options;
 	idx_t batch_size = 0;
+	bool query_pushdown = true;
 
 	for (auto &entry : attach_options.options) {
 		auto lower_name = StringUtil::Lower(entry.first);
 		if (lower_name == "batch_size") {
 			// batch_size is handled separately as it's DuckDB-specific, not passed to ADBC
 			batch_size = entry.second.GetValue<idx_t>();
+		} else if (lower_name == "query_pushdown") {
+			query_pushdown = entry.second.DefaultCastAs(LogicalType::BOOLEAN).GetValue<bool>();
 		} else {
 			explicit_options.emplace_back(lower_name, entry.second.ToString());
 		}
@@ -74,11 +77,12 @@ static unique_ptr<Catalog> AdbcAttach(optional_ptr<StorageExtensionInfo> storage
 	// Create and return the catalog
 	auto catalog = make_uniq<AdbcCatalog>(db, connection, info.path, attach_options.access_mode);
 	catalog->batch_size = batch_size;
-	return catalog;
+	catalog->query_pushdown = query_pushdown;
+	return std::move(catalog);
 }
 
 static unique_ptr<TransactionManager> AdbcCreateTransactionManager(optional_ptr<StorageExtensionInfo> storage_info,
-                                                                    AttachedDatabase &db, Catalog &catalog) {
+                                                                   AttachedDatabase &db, Catalog &catalog) {
 	auto &adbc_catalog = catalog.Cast<AdbcCatalog>();
 	return make_uniq<AdbcTransactionManager>(db, adbc_catalog);
 }

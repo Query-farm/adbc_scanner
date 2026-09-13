@@ -3,6 +3,13 @@
 #include "duckdb/planner/filter/in_filter.hpp"
 #include "duckdb/planner/filter/optional_filter.hpp"
 #include "duckdb/planner/filter/struct_filter.hpp"
+#include "duckdb/planner/filter/table_filter_functions.hpp"
+#include "duckdb/planner/expression/bound_comparison_expression.hpp"
+#include "duckdb/planner/expression/bound_conjunction_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_operator_expression.hpp"
+#include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/constants.hpp"
 
@@ -24,11 +31,19 @@ string AdbcFilterPushdown::CreateExpression(string &column_name, vector<unique_p
                                             string op, vector<Value> &params, vector<LogicalType> &param_types,
                                             ParamPlaceholderStyle style) {
 	vector<string> filter_entries;
+	auto is_and = StringUtil::CIEquals(op, "AND");
 	for (auto &filter : filters) {
+		auto parameter_count = params.size();
 		auto filter_str = TransformFilter(column_name, *filter, params, param_types, style);
-		if (!filter_str.empty()) {
-			filter_entries.push_back(std::move(filter_str));
+		if (filter_str.empty()) {
+			params.resize(parameter_count);
+			param_types.resize(parameter_count);
+			if (!is_and) {
+				return string();
+			}
+			continue;
 		}
+		filter_entries.push_back(std::move(filter_str));
 	}
 	if (filter_entries.empty()) {
 		return string();
@@ -58,7 +73,7 @@ string AdbcFilterPushdown::TransformComparison(ExpressionType type) {
 	}
 }
 
-string AdbcFilterPushdown::TransformConstantFilter(string &column_name, ConstantFilter &constant_filter,
+string AdbcFilterPushdown::TransformConstantFilter(string &column_name, LegacyConstantFilter &constant_filter,
                                                    vector<Value> &params, vector<LogicalType> &param_types,
                                                    ParamPlaceholderStyle style) {
 	// Determine the operator first; if it isn't one we can push, drop the filter
@@ -73,38 +88,139 @@ string AdbcFilterPushdown::TransformConstantFilter(string &column_name, Constant
 	return StringUtil::Format("%s %s %s", column_name, operator_string, placeholder);
 }
 
+string AdbcFilterPushdown::TransformExpression(const string &column_name, const Expression &expression,
+                                               vector<Value> &params, vector<LogicalType> &param_types,
+                                               ParamPlaceholderStyle style) {
+	switch (expression.GetExpressionClass()) {
+	case ExpressionClass::BOUND_REF:
+		return column_name;
+	case ExpressionClass::BOUND_CONSTANT: {
+		auto &constant = expression.Cast<BoundConstantExpression>().GetValue();
+		params.push_back(constant);
+		param_types.push_back(constant.type());
+		return MakePlaceholder(style, params.size());
+	}
+	case ExpressionClass::BOUND_CONJUNCTION: {
+		auto &conjunction = expression.Cast<BoundConjunctionExpression>();
+		auto is_and = expression.GetExpressionType() == ExpressionType::CONJUNCTION_AND;
+		auto op = is_and ? "AND" : "OR";
+		vector<string> children;
+		for (auto &child : conjunction.GetChildren()) {
+			auto parameter_count = params.size();
+			auto child_sql = TransformExpression(column_name, *child, params, param_types, style);
+			if (child_sql.empty()) {
+				params.resize(parameter_count);
+				param_types.resize(parameter_count);
+				if (!is_and) {
+					return string();
+				}
+				continue;
+			}
+			children.push_back(std::move(child_sql));
+		}
+		if (children.empty()) {
+			return string();
+		}
+		if (children.size() == 1) {
+			return std::move(children[0]);
+		}
+		return "(" + StringUtil::Join(children, " " + string(op) + " ") + ")";
+	}
+	case ExpressionClass::BOUND_FUNCTION: {
+		auto &function = expression.Cast<BoundFunctionExpression>();
+		if (TableFilterFunctions::IsTableFilterFunction(function.Function())) {
+			// These are optimizer-only filters. DuckDB retains the original
+			// predicate locally, so it is safe to omit them remotely.
+			return string();
+		}
+		if (!BoundComparisonExpression::IsComparison(expression)) {
+			break;
+		}
+		auto &comparison = function;
+		auto op = TransformComparison(expression.GetExpressionType());
+		if (op.empty()) {
+			break;
+		}
+		auto &left = BoundComparisonExpression::Left(comparison);
+		auto &right = BoundComparisonExpression::Right(comparison);
+		auto left_sql = TransformExpression(column_name, left, params, param_types, style);
+		auto right_sql = TransformExpression(column_name, right, params, param_types, style);
+		if (left_sql.empty() || right_sql.empty()) {
+			return string();
+		}
+		return left_sql + " " + op + " " + right_sql;
+	}
+	case ExpressionClass::BOUND_OPERATOR: {
+		auto &op = expression.Cast<BoundOperatorExpression>();
+		auto &children = op.GetChildren();
+		switch (expression.GetExpressionType()) {
+		case ExpressionType::OPERATOR_IS_NULL: {
+			auto child = TransformExpression(column_name, *children[0], params, param_types, style);
+			return child.empty() ? string() : child + " IS NULL";
+		}
+		case ExpressionType::OPERATOR_IS_NOT_NULL: {
+			auto child = TransformExpression(column_name, *children[0], params, param_types, style);
+			return child.empty() ? string() : child + " IS NOT NULL";
+		}
+		case ExpressionType::COMPARE_IN: {
+			vector<string> values;
+			for (idx_t i = 1; i < children.size(); i++) {
+				auto value = TransformExpression(column_name, *children[i], params, param_types, style);
+				if (value.empty()) {
+					return string();
+				}
+				values.push_back(std::move(value));
+			}
+			auto input = TransformExpression(column_name, *children[0], params, param_types, style);
+			return input.empty() ? string() : input + " IN (" + StringUtil::Join(values, ", ") + ")";
+		}
+		default:
+			break;
+		}
+		break;
+	}
+	default:
+		break;
+	}
+	return string();
+}
+
 string AdbcFilterPushdown::TransformFilter(string &column_name, TableFilter &filter,
                                            vector<Value> &params, vector<LogicalType> &param_types,
                                            ParamPlaceholderStyle style) {
 	switch (filter.filter_type) {
-	case TableFilterType::IS_NULL:
+	case TableFilterType::EXPRESSION_FILTER: {
+		auto &expression_filter = filter.Cast<ExpressionFilter>();
+		return TransformExpression(column_name, *expression_filter.expr, params, param_types, style);
+	}
+	case TableFilterType::LEGACY_IS_NULL:
 		return column_name + " IS NULL";
-	case TableFilterType::IS_NOT_NULL:
+	case TableFilterType::LEGACY_IS_NOT_NULL:
 		return column_name + " IS NOT NULL";
-	case TableFilterType::CONJUNCTION_AND: {
-		auto &conjunction_filter = filter.Cast<ConjunctionAndFilter>();
+	case TableFilterType::LEGACY_CONJUNCTION_AND: {
+		auto &conjunction_filter = filter.Cast<LegacyConjunctionAndFilter>();
 		return CreateExpression(column_name, conjunction_filter.child_filters, "AND", params, param_types, style);
 	}
-	case TableFilterType::CONJUNCTION_OR: {
-		auto &conjunction_filter = filter.Cast<ConjunctionOrFilter>();
+	case TableFilterType::LEGACY_CONJUNCTION_OR: {
+		auto &conjunction_filter = filter.Cast<LegacyConjunctionOrFilter>();
 		return CreateExpression(column_name, conjunction_filter.child_filters, "OR", params, param_types, style);
 	}
-	case TableFilterType::CONSTANT_COMPARISON: {
-		auto &constant_filter = filter.Cast<ConstantFilter>();
+	case TableFilterType::LEGACY_CONSTANT_COMPARISON: {
+		auto &constant_filter = filter.Cast<LegacyConstantFilter>();
 		return TransformConstantFilter(column_name, constant_filter, params, param_types, style);
 	}
-	case TableFilterType::STRUCT_EXTRACT: {
-		auto &struct_filter = filter.Cast<StructFilter>();
-		auto child_name = KeywordHelper::WriteQuoted(struct_filter.child_name, '\"');
+	case TableFilterType::LEGACY_STRUCT_EXTRACT: {
+		auto &struct_filter = filter.Cast<LegacyStructFilter>();
+		auto child_name = KeywordHelper::WriteQuotedAndEscaped(struct_filter.child_name.GetIdentifierName(), '\"');
 		auto new_name = "(" + column_name + ")." + child_name;
 		return TransformFilter(new_name, *struct_filter.child_filter, params, param_types, style);
 	}
-	case TableFilterType::OPTIONAL_FILTER: {
-		auto &optional_filter = filter.Cast<OptionalFilter>();
+	case TableFilterType::LEGACY_OPTIONAL_FILTER: {
+		auto &optional_filter = filter.Cast<LegacyOptionalFilter>();
 		return TransformFilter(column_name, *optional_filter.child_filter, params, param_types, style);
 	}
-	case TableFilterType::IN_FILTER: {
-		auto &in_filter = filter.Cast<InFilter>();
+	case TableFilterType::LEGACY_IN_FILTER: {
+		auto &in_filter = filter.Cast<LegacyInFilter>();
 		string placeholders;
 		for (auto &val : in_filter.values) {
 			if (!placeholders.empty()) {
@@ -116,7 +232,7 @@ string AdbcFilterPushdown::TransformFilter(string &column_name, TableFilter &fil
 		}
 		return column_name + " IN (" + placeholders + ")";
 	}
-	case TableFilterType::DYNAMIC_FILTER:
+	case TableFilterType::LEGACY_DYNAMIC_FILTER:
 		// Dynamic filters can't be pushed down
 		return string();
 	default:
@@ -132,14 +248,21 @@ FilterPushdownResult AdbcFilterPushdown::TransformFilters(const vector<column_t>
                                                           ParamPlaceholderStyle style, char quote_char) {
 	FilterPushdownResult result;
 
-	if (!filters || filters->filters.empty()) {
+	if (!filters || !filters->HasFilters()) {
 		// no filters
+		return result;
+	}
+	if (filters->HasMultiColumnFilters()) {
 		return result;
 	}
 
 	string where_clause;
-	for (auto &entry : filters->filters) {
-		auto column_id = column_ids[entry.first];
+	for (auto &entry : *filters) {
+		auto filter_index = entry.GetIndex().GetIndex();
+		if (filter_index >= column_ids.size()) {
+			continue;
+		}
+		auto column_id = column_ids[filter_index];
 
 		// Skip virtual columns (like row_id) - they don't exist in the remote table
 		if (IsVirtualColumn(column_id)) {
@@ -152,11 +275,14 @@ FilterPushdownResult AdbcFilterPushdown::TransformFilters(const vector<column_t>
 			continue;
 		}
 
-		string column_name = KeywordHelper::WriteQuoted(names[column_id], quote_char);
-		auto &filter = *entry.second;
+		string column_name = KeywordHelper::WriteQuotedAndEscaped(names[column_id], quote_char);
+		auto &filter = entry.Filter();
+		auto parameter_count = result.params.size();
 		auto filter_text = TransformFilter(column_name, filter, result.params, result.param_types, style);
 
 		if (filter_text.empty()) {
+			result.params.resize(parameter_count);
+			result.param_types.resize(parameter_count);
 			continue;
 		}
 		if (!where_clause.empty()) {

@@ -29,6 +29,24 @@ INSTALL adbc_scanner FROM community;
 LOAD adbc_scanner;
 ```
 
+## Remote Query Pushdown
+
+On DuckDB 2.0, `ATTACH ... (TYPE adbc)` can send a complete query plan to drivers with a compatible SQL dialect.
+PostgreSQL, MySQL, SQLite, and DuckDB currently have structured-query profiles. Filters, projections, aggregates,
+supported joins, ordering, limits, and nested queries can execute as one remote statement instead of separate table
+scans. Unsupported expressions fall back to DuckDB's regular ADBC scan path.
+
+`EXPLAIN` includes the exact generated statement under `Remote SQL`. Pushdown can be disabled per attachment when
+comparing plans or troubleshooting:
+
+```sql
+ATTACH 'postgresql://user:password@host/database' AS pg (
+    TYPE adbc,
+    driver 'postgresql',
+    query_pushdown false
+);
+```
+
 ## Development
 
 For instructions on building the extension from source and running its tests, see [docs/BUILDING.md](docs/BUILDING.md).

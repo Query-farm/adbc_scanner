@@ -36,6 +36,7 @@ set(EXTENSION_SOURCES
     src/adbc_profiles.cpp
     src/adbc_secrets.cpp
     src/adbc_filter_pushdown.cpp
+    src/adbc_sql_dialect.cpp
     src/query_farm_telemetry.cpp
     src/storage/adbc_catalog.cpp
     src/storage/adbc_connection_pool.cpp

@@ -55,3 +55,26 @@ SELECT c FROM adbc_scan(getvariable('c')::BIGINT, 'SELECT COUNT(*) AS c FROM ite
 
 statement ok
 SELECT adbc_disconnect(getvariable('c')::BIGINT);
+
+# DuckDB 2.0 CONNECT routes both commands and queries through the same ADBC
+# connection. CREATE has no IF NOT EXISTS, guarding against double execution.
+statement ok
+ATTACH '' AS datafusion_connected (TYPE adbc, driver 'datafusion');
+
+statement ok
+CONNECT datafusion_connected;
+
+statement ok
+CREATE TABLE connected_items AS SELECT 1 AS id, 'one' AS name UNION ALL SELECT 2, 'two';
+
+query IT
+SELECT id, name FROM connected_items ORDER BY id;
+----
+1	one
+2	two
+
+statement ok
+DISCONNECT;
+
+statement ok
+DETACH datafusion_connected;

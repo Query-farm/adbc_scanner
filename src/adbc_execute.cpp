@@ -44,10 +44,8 @@ struct AdbcExecuteBindData : public FunctionData {
 };
 
 // Bind function for adbc_execute
-static unique_ptr<FunctionData> AdbcExecuteBind(ClientContext &context, ScalarFunction &bound_function,
-                                                 vector<unique_ptr<Expression>> &arguments) {
-    (void)context;
-    (void)bound_function;
+static unique_ptr<FunctionData> AdbcExecuteBind(BindScalarFunctionInput &input) {
+    (void)input;
     auto bind_data = make_uniq<AdbcExecuteBindData>();
     return std::move(bind_data);
 }
@@ -114,7 +112,7 @@ static void AdbcExecuteFunction(DataChunk &args, ExpressionState &state, Vector 
 
     // Handle flat/dictionary vectors
     result.SetVectorType(VectorType::FLAT_VECTOR);
-    auto result_data = FlatVector::GetData<int64_t>(result);
+    auto result_writer = FlatVector::Writer<int64_t>(result, count);
 
     for (idx_t row_idx = 0; row_idx < count; row_idx++) {
         auto conn_value = conn_vector.GetValue(row_idx);
@@ -129,7 +127,7 @@ static void AdbcExecuteFunction(DataChunk &args, ExpressionState &state, Vector 
 
         auto connection_id = conn_value.GetValue<int64_t>();
         auto query = query_value.GetValue<string>();
-        result_data[row_idx] = ExecuteStatement(connection_id, query);
+        result_writer.WriteValue(ExecuteStatement(connection_id, query));
     }
 }
 
@@ -144,8 +142,9 @@ void RegisterAdbcExecuteFunction(DatabaseInstance &db) {
         AdbcExecuteFunction,
         AdbcExecuteBind
     );
-    // Disable automatic NULL propagation so we can throw a meaningful error
-    adbc_execute_function.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
+	// Disable automatic NULL propagation so we can throw a meaningful error
+	adbc_execute_function.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	adbc_execute_function.SetFallible();
 
     CreateScalarFunctionInfo info(adbc_execute_function);
     FunctionDescription desc;

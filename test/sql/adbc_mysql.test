@@ -24,10 +24,10 @@ statement ok
 SELECT adbc_execute(getvariable('c')::BIGINT, 'DROP TABLE IF EXISTS adbc_my_items');
 
 statement ok
-SELECT adbc_execute(getvariable('c')::BIGINT, 'CREATE TABLE adbc_my_items (id INT PRIMARY KEY, name VARCHAR(50), active BOOLEAN)');
+SELECT adbc_execute(getvariable('c')::BIGINT, 'CREATE TABLE adbc_my_items (id INT PRIMARY KEY, name VARCHAR(50), active BOOLEAN, `select` VARCHAR(20), `tick``name` VARCHAR(20))');
 
 statement ok
-SELECT adbc_execute(getvariable('c')::BIGINT, 'INSERT INTO adbc_my_items VALUES (1,''apple'',1),(2,''pear'',0),(3,''plum'',1)');
+SELECT adbc_execute(getvariable('c')::BIGINT, 'INSERT INTO adbc_my_items VALUES (1,''apple'',1,''one'',''apple tick''),(2,''pear'',0,''two'',''pear tick''),(3,''plum'',1,''three'',''plum tick'')');
 
 # Imperative scan_table builds `SELECT * FROM `adbc_my_items`` — backtick quoting,
 # a double-quote here would be a MySQL syntax error (the bug this guards against).
@@ -56,6 +56,92 @@ SELECT adbc_disconnect(getvariable('c')::BIGINT);
 # ATTACH storage path: MySQL exposes the database as the "main" schema.
 statement ok
 ATTACH 'mysql://root:root@localhost:3306/testdb' AS my (TYPE adbc, driver 'mysql');
+
+statement ok
+CONNECT my;
+
+query IT
+SELECT id, name FROM adbc_my_items WHERE id = 2;
+----
+2	pear
+
+statement ok
+DISCONNECT;
+
+# MySQL structured pushdown removes the synthetic "main" schema and rewrites
+# DuckDB's quoted identifiers to backticks.
+query II
+EXPLAIN SELECT id, "select" FROM my.main.adbc_my_items WHERE id > 1 ORDER BY id;
+----
+physical_plan	<REGEX>:(?is).*ADBC.REMOTE.QUERY.*Remote SQL:.*SELECT.*`select`.*adbc_my_items.*
+
+query IT
+SELECT id, "select" FROM my.main.adbc_my_items WHERE id > 1 ORDER BY id;
+----
+2	two
+3	three
+
+query T
+SELECT "tick`name" FROM my.main.adbc_my_items WHERE id = 2;
+----
+pear tick
+
+query II
+EXPLAIN SELECT COUNT(*), SUM(id) FROM my.main.adbc_my_items WHERE active;
+----
+physical_plan	<REGEX>:(?is).*ADBC.REMOTE.QUERY.*
+
+query II
+SELECT COUNT(*), SUM(id) FROM my.main.adbc_my_items WHERE active;
+----
+2	4
+
+query II
+SELECT lhs.id, rhs.name
+FROM my.main.adbc_my_items lhs
+JOIN my.main.adbc_my_items rhs ON lhs.id = rhs.id
+WHERE lhs.id = 2;
+----
+2	pear
+
+query II
+SELECT id, (SELECT COUNT(*) FROM my.main.adbc_my_items inner_items WHERE inner_items.id <= outer_items.id)
+FROM my.main.adbc_my_items outer_items
+WHERE id = 2;
+----
+2	2
+
+query I
+SELECT id FROM my.main.adbc_my_items WHERE id = 1
+UNION
+SELECT id FROM my.main.adbc_my_items WHERE id = 3
+ORDER BY id LIMIT 1 OFFSET 1;
+----
+3
+
+# MySQL has no NULLS FIRST/LAST syntax and its cast names differ from DuckDB's;
+# both constructs stay on the regular ADBC scan path.
+query II
+EXPLAIN SELECT id FROM my.main.adbc_my_items ORDER BY id NULLS LAST;
+----
+physical_plan	<!REGEX>:(?is).*ADBC.REMOTE.QUERY.*
+
+query II
+EXPLAIN SELECT CAST(id AS VARCHAR) FROM my.main.adbc_my_items;
+----
+physical_plan	<!REGEX>:(?is).*ADBC.REMOTE.QUERY.*
+
+query II
+EXPLAIN SELECT regexp_extract(name, 'a') FROM my.main.adbc_my_items;
+----
+physical_plan	<!REGEX>:(?is).*ADBC.REMOTE.QUERY.*
+
+# Backslashes in MySQL string literals depend on server SQL mode. Keep them
+# local so the parameterized table scanner preserves the exact value.
+query II
+EXPLAIN SELECT id FROM my.main.adbc_my_items WHERE name = 'back\slash';
+----
+physical_plan	<!REGEX>:(?is).*ADBC.REMOTE.QUERY.*
 
 query I
 SELECT COUNT(*) FROM my.main.adbc_my_items;

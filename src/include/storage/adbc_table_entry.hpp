@@ -20,16 +20,17 @@ struct AdbcTableInfo {
 		create_info->columns.SetAllowDuplicates(true);
 	}
 	AdbcTableInfo(const string &schema, const string &table) {
-		create_info = make_uniq<CreateTableInfo>(string(), schema, table);
+		create_info = make_uniq<CreateTableInfo>(
+		    QualifiedName(Identifier(), Identifier(schema), Identifier(table)));
 		create_info->columns.SetAllowDuplicates(true);
 	}
 	AdbcTableInfo(const SchemaCatalogEntry &schema, const string &table) {
-		create_info = make_uniq<CreateTableInfo>((SchemaCatalogEntry &)schema, table);
+		create_info = make_uniq<CreateTableInfo>((SchemaCatalogEntry &)schema, Identifier(table));
 		create_info->columns.SetAllowDuplicates(true);
 	}
 
 	const string &GetTableName() const {
-		return create_info->table;
+		return create_info->GetTableName().GetIdentifierName();
 	}
 
 	unique_ptr<CreateTableInfo> create_info;

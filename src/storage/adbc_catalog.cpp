@@ -1,9 +1,13 @@
 #include "storage/adbc_catalog.hpp"
 #include "storage/adbc_schema_entry.hpp"
 #include "storage/adbc_transaction.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/storage/database_size.hpp"
 #include "duckdb/parser/parsed_data/drop_info.hpp"
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
+#include "duckdb/parser/expression/constant_expression.hpp"
+#include "duckdb/parser/expression/function_expression.hpp"
+#include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/planner/operator/logical_create_table.hpp"
 #include "duckdb/planner/operator/logical_insert.hpp"
@@ -13,10 +17,10 @@
 namespace adbc_scanner {
 using namespace duckdb;
 
-AdbcCatalog::AdbcCatalog(AttachedDatabase &db_p, shared_ptr<AdbcConnectionWrapper> connection_p,
-                         const string &path, AccessMode access_mode_p)
-    : Catalog(db_p), connection(std::move(connection_p)), attach_path(path),
-      access_mode(access_mode_p), schemas(*this) {
+AdbcCatalog::AdbcCatalog(AttachedDatabase &db_p, shared_ptr<AdbcConnectionWrapper> connection_p, const string &path,
+                         AccessMode access_mode_p)
+    : Catalog(db_p), connection(std::move(connection_p)), attach_path(path), access_mode(access_mode_p), schemas(*this),
+      dialect(AdbcSQLDialectProfile::Detect(connection->GetDriverName())) {
 	// Register the connection in the ConnectionRegistry so adbc_scan_table can use it
 	auto &registry = ConnectionRegistry::Get();
 	connection_handle = registry.Add(connection);
@@ -43,7 +47,7 @@ optional_ptr<CatalogEntry> AdbcCatalog::CreateSchema(CatalogTransaction transact
 	auto &adbc_transaction = AdbcTransaction::Get(transaction.GetContext(), *this);
 
 	// Check if schema already exists
-	auto existing = schemas.GetEntry(adbc_transaction, info.schema);
+	auto existing = schemas.GetEntry(adbc_transaction, info.SchemaName().GetIdentifierName());
 	if (existing) {
 		switch (info.on_conflict) {
 		case OnCreateConflict::REPLACE_ON_CONFLICT:
@@ -53,7 +57,7 @@ optional_ptr<CatalogEntry> AdbcCatalog::CreateSchema(CatalogTransaction transact
 			return nullptr;
 		case OnCreateConflict::ERROR_ON_CONFLICT:
 		default:
-			throw BinderException("Schema with name \"%s\" already exists", info.schema);
+			throw BinderException("Schema with name \"%s\" already exists", info.SchemaName());
 		}
 	}
 
@@ -89,6 +93,50 @@ string AdbcCatalog::GetDBPath() {
 	return attach_path;
 }
 
+bool AdbcCatalog::Supports(RemoteCapability capability) const {
+	switch (capability) {
+	case RemoteCapability::IS_REMOTE:
+	case RemoteCapability::CONNECT:
+		return true;
+	case RemoteCapability::EXECUTE_QUERY_NODE:
+		return query_pushdown && AdbcSQLDialectProfile::SupportsStructuredPushdown(dialect);
+	default:
+		return false;
+	}
+}
+
+unique_ptr<TableRef> AdbcCatalog::RemoteExecute(ClientContext &context, unique_ptr<QueryNode> node) {
+	return RemoteExecute(context, AdbcSQLDialectProfile::WriteQuery(dialect, *node));
+}
+
+unique_ptr<TableRef> AdbcCatalog::RemoteExecute(ClientContext &context, const string &sql) {
+	(void)context;
+	auto remote_sql = sql;
+	StringUtil::RTrim(remote_sql);
+	while (!remote_sql.empty() && remote_sql.back() == ';') {
+		remote_sql.pop_back();
+		StringUtil::RTrim(remote_sql);
+	}
+	vector<unique_ptr<ParsedExpression>> args;
+	args.push_back(make_uniq<ConstantExpression>(Value::BIGINT(connection_handle)));
+	args.push_back(make_uniq<ConstantExpression>(Value(remote_sql)));
+	auto result = make_uniq<TableFunctionRef>();
+	result->function = make_uniq<FunctionExpression>("adbc_remote_query", std::move(args));
+	return std::move(result);
+}
+
+bool AdbcCatalog::SupportsPushdown(const ParsedExpression &expression) {
+	return AdbcSQLDialectProfile::SupportsExpression(dialect, expression);
+}
+
+bool AdbcCatalog::SupportsPushdown(const TableRef &ref) {
+	return AdbcSQLDialectProfile::SupportsTableRef(dialect, ref);
+}
+
+bool AdbcCatalog::SupportsPushdown(const QueryNode &node) {
+	return AdbcSQLDialectProfile::SupportsQueryNode(dialect, node);
+}
+
 DatabaseSize AdbcCatalog::GetDatabaseSize(ClientContext &context) {
 	DatabaseSize size;
 	size.free_blocks = 0;
@@ -107,12 +155,12 @@ void AdbcCatalog::ClearCache() {
 // PlanInsert and PlanCreateTableAs are implemented in adbc_insert.cpp
 
 PhysicalOperator &AdbcCatalog::PlanDelete(ClientContext &context, PhysicalPlanGenerator &planner, LogicalDelete &op,
-                                           PhysicalOperator &plan) {
+                                          PhysicalOperator &plan) {
 	throw NotImplementedException("ADBC databases do not yet support DELETE");
 }
 
 PhysicalOperator &AdbcCatalog::PlanUpdate(ClientContext &context, PhysicalPlanGenerator &planner, LogicalUpdate &op,
-                                           PhysicalOperator &plan) {
+                                          PhysicalOperator &plan) {
 	throw NotImplementedException("ADBC databases do not yet support UPDATE");
 }
 

@@ -17,7 +17,7 @@ AdbcTableEntry::AdbcTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, Cre
     : TableCatalogEntry(catalog, schema, info) {
 	for (idx_t c = 0; c < columns.LogicalColumnCount(); c++) {
 		auto &col = columns.GetColumnMutable(LogicalIndex(c));
-		column_names.push_back(col.GetName());
+		column_names.push_back(col.GetName().GetIdentifierName());
 	}
 }
 
@@ -40,8 +40,8 @@ void AdbcTableEntry::BindUpdateConstraints(Binder &binder, LogicalGet &, Logical
 static TableFunctionCatalogEntry &GetTableFunction(DatabaseInstance &db, const string &name) {
 	auto &system_catalog = Catalog::GetSystemCatalog(db);
 	auto data = CatalogTransaction::GetSystemTransaction(db);
-	auto &schema = system_catalog.GetSchema(data, DEFAULT_SCHEMA);
-	auto entry = schema.GetEntry(data, CatalogType::TABLE_FUNCTION_ENTRY, name);
+	auto &schema = system_catalog.GetSchema(data, Identifier::DefaultSchema());
+	auto entry = schema.GetEntry(data, CatalogType::TABLE_FUNCTION_ENTRY, Identifier(name));
 	if (!entry) {
 		throw InvalidInputException("Function with name \"%s\" not found", name);
 	}
@@ -69,9 +69,10 @@ TableFunction AdbcTableEntry::GetScanFunction(ClientContext &context, unique_ptr
 
 	// Look up adbc_scan_table from the catalog
 	auto &adbc_scan_table_function_set = GetTableFunction(db, "adbc_scan_table");
-	auto adbc_scan_table_function = adbc_scan_table_function_set.functions.GetFunctionByArguments(
+	auto adbc_scan_table_function_ptr = adbc_scan_table_function_set.functions.GetFunctionByArguments(
 	    context,
 	    {LogicalType::BIGINT, LogicalType::VARCHAR});
+	TableFunction adbc_scan_table_function = *adbc_scan_table_function_ptr;
 
 	// Build the inputs: temp connection handle, table_name.
 	// NOTE: use the Value(string) VARCHAR constructor, NOT Value::CreateValue(name):
@@ -94,7 +95,7 @@ TableFunction AdbcTableEntry::GetScanFunction(ClientContext &context, unique_ptr
 	}
 
 	vector<LogicalType> return_types;
-	vector<string> names;
+	vector<Identifier> names;
 	TableFunctionRef empty_ref;
 
 	TableFunctionBindInput bind_input(inputs,
@@ -108,7 +109,7 @@ TableFunction AdbcTableEntry::GetScanFunction(ClientContext &context, unique_ptr
 
 	unique_ptr<FunctionData> result;
 	try {
-		result = adbc_scan_table_function.bind(context, bind_input, return_types, names);
+		result = adbc_scan_table_function.GetBindCallback()(context, bind_input, return_types, names);
 	} catch (...) {
 		// Bind failed: drop the temporary registry entry so the leased connection
 		// (now only referenced by the local shared_ptr) returns to the pool.

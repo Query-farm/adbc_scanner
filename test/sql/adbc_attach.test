@@ -68,8 +68,75 @@ SELECT COUNT(*), SUM(id) FROM sqlite_db.test_table;
 ----
 3	6
 
+# The complete filter and aggregation are executed by the remote ADBC driver.
+query II
+EXPLAIN SELECT COUNT(*), SUM(id) FROM sqlite_db.test_table WHERE id > 1;
+----
+physical_plan	<REGEX>:(?is).*ADBC.REMOTE.QUERY.*
+
+query II
+SELECT COUNT(*), SUM(id) FROM sqlite_db.test_table WHERE id > 1;
+----
+2	5
+
+# Dialect normalization also reaches nested query nodes.
+query II
+SELECT id, (SELECT COUNT(*) FROM sqlite_db.test_table) FROM sqlite_db.test_table WHERE id = 1;
+----
+1	3
+
+query IT
+SELECT lhs.id, rhs.name
+FROM sqlite_db.test_table AS lhs
+JOIN sqlite_db.test_table AS rhs ON lhs.id = rhs.id
+WHERE lhs.id = 2;
+----
+2	world
+
+# DuckDB-only functions veto whole-query pushdown and execute locally.
+query II
+EXPLAIN SELECT reverse(name) FROM sqlite_db.test_table;
+----
+physical_plan	<!REGEX>:(?is).*ADBC.REMOTE.QUERY.*
+
+query T
+SELECT reverse(name) FROM sqlite_db.test_table WHERE id = 1;
+----
+olleh
+
 statement ok
 DETACH sqlite_db;
+
+# CONNECT routes raw SQL through the attached ADBC database.
+statement ok
+ATTACH ':memory:' AS sqlite_connected (TYPE adbc, driver 'sqlite');
+
+statement ok
+CONNECT sqlite_connected;
+
+query II
+SELECT 41 + 1 AS answer, 'remote' AS source;
+----
+42	remote
+
+# Commands are also routed remotely and execute exactly once.
+statement ok
+CREATE TABLE connected_table (id INTEGER, name TEXT);
+
+statement ok
+INSERT INTO connected_table VALUES (1, 'from connect'), (2, 'still remote');
+
+query IT
+SELECT id, name FROM connected_table ORDER BY id;
+----
+1	from connect
+2	still remote
+
+statement ok
+DISCONNECT;
+
+statement ok
+DETACH sqlite_connected;
 
 # ============================================
 # ATTACH with batch_size Tests
@@ -168,4 +235,3 @@ SELECT adbc_execute(getvariable('cleanup_conn')::BIGINT, 'DROP TABLE IF EXISTS t
 
 statement ok
 SELECT adbc_disconnect(getvariable('cleanup_conn')::BIGINT);
-

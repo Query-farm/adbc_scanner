@@ -18,6 +18,7 @@
 #include "duckdb/planner/operator/logical_update.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
 #include "adbc_connection.hpp"
+#include "adbc_sql_dialect.hpp"
 #include "storage/adbc_schema_set.hpp"
 #include "storage/adbc_connection_pool.hpp"
 
@@ -26,8 +27,8 @@ using namespace duckdb;
 
 class AdbcCatalog : public Catalog {
 public:
-	explicit AdbcCatalog(AttachedDatabase &db_p, shared_ptr<AdbcConnectionWrapper> connection,
-	                     const string &path, AccessMode access_mode);
+	explicit AdbcCatalog(AttachedDatabase &db_p, shared_ptr<AdbcConnectionWrapper> connection, const string &path,
+	                     AccessMode access_mode);
 	~AdbcCatalog();
 
 	//! The ADBC connection (shared ownership with the catalog). Kept as the
@@ -44,14 +45,17 @@ public:
 	AccessMode access_mode;
 	//! Optional batch size for scan operations (0 means use driver default)
 	idx_t batch_size = 0;
+	//! Whether complete queries may be pushed into the remote database
+	bool query_pushdown = true;
 
 public:
 	void Initialize(bool load_builtin) override;
 	string GetCatalogType() override {
 		return "adbc";
 	}
-	string GetDefaultSchema() const override {
-		return default_schema.empty() ? "main" : default_schema;
+	optional<Identifier> GetDefaultSchema() const override {
+		return default_schema.empty() ? optional<Identifier>(Identifier::DefaultSchema())
+		                              : optional<Identifier>(Identifier(default_schema));
 	}
 
 	optional_ptr<CatalogEntry> CreateSchema(CatalogTransaction transaction, CreateSchemaInfo &info) override;
@@ -75,6 +79,12 @@ public:
 	//! Whether or not this is an in-memory database
 	bool InMemory() override;
 	string GetDBPath() override;
+	bool Supports(RemoteCapability capability) const override;
+	unique_ptr<TableRef> RemoteExecute(ClientContext &context, unique_ptr<QueryNode> node) override;
+	unique_ptr<TableRef> RemoteExecute(ClientContext &context, const string &sql) override;
+	bool SupportsPushdown(const ParsedExpression &expression) override;
+	bool SupportsPushdown(const TableRef &ref) override;
+	bool SupportsPushdown(const QueryNode &node) override;
 
 	shared_ptr<AdbcConnectionWrapper> GetConnection() const {
 		return connection;
@@ -105,6 +115,7 @@ private:
 
 private:
 	AdbcSchemaSet schemas;
+	AdbcSQLDialect dialect;
 	string default_schema;
 };
 

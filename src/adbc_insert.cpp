@@ -3,6 +3,7 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/common/arrow/arrow_converter.hpp"
 #include "duckdb/common/arrow/arrow_appender.hpp"
+#include "duckdb/function/table/arrow/arrow_duck_schema.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 
@@ -76,7 +77,7 @@ struct AdbcInsertGlobalState : public GlobalTableFunctionState {
 };
 
 static unique_ptr<FunctionData> AdbcInsertBind(ClientContext &context, TableFunctionBindInput &input,
-                                                vector<LogicalType> &return_types, vector<string> &names) {
+                                                vector<LogicalType> &return_types, vector<Identifier> &names) {
     (void)context;
     auto bind_data = make_uniq<AdbcInsertBindData>();
 
@@ -121,7 +122,7 @@ static unique_ptr<FunctionData> AdbcInsertBind(ClientContext &context, TableFunc
 
     // Store input table types and names for Arrow conversion
     bind_data->input_types = input.input_table_types;
-    bind_data->input_names = input.input_table_names;
+	bind_data->input_names = IdentifiersToStrings(input.input_table_names);
 
     // Return schema: rows_inserted (BIGINT)
     return_types = {LogicalType::BIGINT};

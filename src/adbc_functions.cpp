@@ -86,11 +86,11 @@ static void AdbcConnectFunction(DataChunk &args, ExpressionState &state, Vector 
 
 	// Handle flat/dictionary vectors
 	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto result_data = FlatVector::GetData<int64_t>(result);
+	auto result_writer = FlatVector::Writer<int64_t>(result, count);
 
 	for (idx_t row_idx = 0; row_idx < count; row_idx++) {
 		auto options = ExtractOptions(options_vector, row_idx);
-		result_data[row_idx] = CreateConnection(options, &context);
+		result_writer.WriteValue(CreateConnection(options, &context));
 	}
 }
 
@@ -160,6 +160,7 @@ void RegisterAdbcScalarFunctions(DatabaseInstance &db) {
 	{
 		auto adbc_connect_function =
 		    ScalarFunction("adbc_connect", {LogicalType::ANY}, LogicalType::BIGINT, AdbcConnectFunction);
+		adbc_connect_function.SetFallible();
 		CreateScalarFunctionInfo info(adbc_connect_function);
 		FunctionDescription desc;
 		desc.description = "Connect to an ADBC data source and return a connection handle";
@@ -176,6 +177,7 @@ void RegisterAdbcScalarFunctions(DatabaseInstance &db) {
 	{
 		auto adbc_disconnect_function =
 		    ScalarFunction("adbc_disconnect", {LogicalType::BIGINT}, LogicalType::BOOLEAN, AdbcDisconnectFunction);
+		adbc_disconnect_function.SetFallible();
 		CreateScalarFunctionInfo info(adbc_disconnect_function);
 		FunctionDescription desc;
 		desc.description = "Disconnect and close an ADBC connection";
@@ -191,6 +193,7 @@ void RegisterAdbcScalarFunctions(DatabaseInstance &db) {
 	{
 		auto adbc_commit_function =
 		    ScalarFunction("adbc_commit", {LogicalType::BIGINT}, LogicalType::BOOLEAN, AdbcCommitFunction);
+		adbc_commit_function.SetFallible();
 		CreateScalarFunctionInfo info(adbc_commit_function);
 		FunctionDescription desc;
 		desc.description = "Commit the current transaction on an ADBC connection";
@@ -206,6 +209,7 @@ void RegisterAdbcScalarFunctions(DatabaseInstance &db) {
 	{
 		auto adbc_rollback_function =
 		    ScalarFunction("adbc_rollback", {LogicalType::BIGINT}, LogicalType::BOOLEAN, AdbcRollbackFunction);
+		adbc_rollback_function.SetFallible();
 		CreateScalarFunctionInfo info(adbc_rollback_function);
 		FunctionDescription desc;
 		desc.description = "Rollback the current transaction on an ADBC connection";
@@ -222,6 +226,7 @@ void RegisterAdbcScalarFunctions(DatabaseInstance &db) {
 		auto adbc_set_autocommit_function =
 		    ScalarFunction("adbc_set_autocommit", {LogicalType::BIGINT, LogicalType::BOOLEAN}, LogicalType::BOOLEAN,
 		                   AdbcSetAutocommitFunction);
+		adbc_set_autocommit_function.SetFallible();
 		CreateScalarFunctionInfo info(adbc_set_autocommit_function);
 		FunctionDescription desc;
 		desc.description = "Enable or disable autocommit mode on an ADBC connection";

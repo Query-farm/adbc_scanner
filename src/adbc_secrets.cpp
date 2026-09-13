@@ -59,7 +59,7 @@ vector<pair<string, string>> MergeSecretOptions(ClientContext &context,
 		// Add all secret options first
 		for (const auto &entry : kv_secret.secret_map) {
 			if (!entry.second.IsNull()) {
-				merged_options.emplace_back(entry.first, entry.second.ToString());
+				merged_options.emplace_back(entry.first.GetIdentifierName(), entry.second.ToString());
 			}
 		}
 		found_secret = true;
@@ -73,7 +73,7 @@ vector<pair<string, string>> MergeSecretOptions(ClientContext &context,
 			// Add all secret options first
 			for (const auto &entry : kv_secret.secret_map) {
 				if (!entry.second.IsNull()) {
-					merged_options.emplace_back(entry.first, entry.second.ToString());
+					merged_options.emplace_back(entry.first.GetIdentifierName(), entry.second.ToString());
 				}
 			}
 			found_secret = true;
@@ -142,17 +142,17 @@ static unique_ptr<BaseSecret> CreateAdbcSecretFunction(ClientContext &context, C
 		auto lower_name = StringUtil::Lower(named_param.first);
 
 		if (lower_name == "driver") {
-			result->secret_map["driver"] = named_param.second.ToString();
+			result->secret_map[Identifier("driver")] = named_param.second.ToString();
 		} else if (lower_name == "uri") {
-			result->secret_map["uri"] = named_param.second.ToString();
+			result->secret_map[Identifier("uri")] = named_param.second.ToString();
 		} else if (lower_name == "username") {
-			result->secret_map["username"] = named_param.second.ToString();
+			result->secret_map[Identifier("username")] = named_param.second.ToString();
 		} else if (lower_name == "password") {
-			result->secret_map["password"] = named_param.second.ToString();
+			result->secret_map[Identifier("password")] = named_param.second.ToString();
 		} else if (lower_name == "database") {
-			result->secret_map["database"] = named_param.second.ToString();
+			result->secret_map[Identifier("database")] = named_param.second.ToString();
 		} else if (lower_name == "entrypoint") {
-			result->secret_map["entrypoint"] = named_param.second.ToString();
+			result->secret_map[Identifier("entrypoint")] = named_param.second.ToString();
 		} else if (lower_name == "extra_options") {
 			// extra_options is a MAP of string -> string for driver-specific options
 			auto &map_value = named_param.second;
@@ -163,7 +163,7 @@ static unique_ptr<BaseSecret> CreateAdbcSecretFunction(ClientContext &context, C
 					if (entry_children.size() == 2 && !entry_children[0].IsNull()) {
 						auto key = entry_children[0].ToString();
 						auto val = entry_children[1].IsNull() ? "" : entry_children[1].ToString();
-						result->secret_map[key] = val;
+						result->secret_map[Identifier(key)] = val;
 					}
 				}
 			}
@@ -173,7 +173,7 @@ static unique_ptr<BaseSecret> CreateAdbcSecretFunction(ClientContext &context, C
 	// Redact sensitive keys by default
 	result->redact_keys = {"password", "auth_token", "token", "secret", "api_key", "apikey", "credential"};
 
-	return result;
+	return std::move(result);
 }
 
 void RegisterAdbcSecrets(ExtensionLoader &loader) {

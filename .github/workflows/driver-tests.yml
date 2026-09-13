@@ -117,6 +117,7 @@ jobs:
           "$HOME/.local/bin/dbc" install mysql
           "$HOME/.local/bin/dbc" install flightsql
           "$HOME/.local/bin/dbc" install datafusion
+          "$HOME/.local/bin/dbc" install chdb
           "$HOME/.local/bin/dbc" install trino
           "$HOME/.local/bin/dbc" install mssql
 
@@ -150,6 +151,7 @@ jobs:
           ADBC_FLIGHTSQL_TEST_AVAILABLE: 1
           # DataFusion is an in-process engine — no service container needed.
           ADBC_DATAFUSION_TEST_AVAILABLE: 1
+          ADBC_CHDB_TEST_AVAILABLE: 1
           ADBC_TRINO_TEST_AVAILABLE: 1
           ADBC_MSSQL_TEST_AVAILABLE: 1
         run: |
@@ -162,4 +164,10 @@ jobs:
             fi
             echo "::endgroup::"
           done
+          echo "::group::PostgreSQL pushdown transfer benchmark"
+          if ! ./build/release/test/unittest test/sql/adbc_postgres_pushdown.test_slow; then
+            fail=1
+            echo "::error::Test failed: test/sql/adbc_postgres_pushdown.test_slow"
+          fi
+          echo "::endgroup::"
           exit $fail

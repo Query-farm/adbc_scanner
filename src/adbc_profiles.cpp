@@ -128,7 +128,7 @@ struct AdbcProfilesGlobalState : public GlobalTableFunctionState {
 };
 
 unique_ptr<FunctionData> AdbcProfilesBind(ClientContext &, TableFunctionBindInput &input,
-                                          vector<LogicalType> &return_types, vector<string> &names) {
+                                          vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto bind_data = make_uniq<AdbcProfilesBindData>();
 
 	string extra_search_paths;

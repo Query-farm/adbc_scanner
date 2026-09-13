@@ -280,6 +280,16 @@ SELECT id, name, value FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'fil
 3	Charlie	30.5
 4	Diana	40.5
 
+# Multi-column OR filters cannot be represented by a single-column ADBC table
+# filter. They remain local instead of being partially pushed and losing rows.
+query I
+SELECT id FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'filter_test')
+WHERE id > 4 OR value < 20
+ORDER BY id;
+----
+1
+5
+
 # Filter with projection
 query IT
 SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'filter_test') WHERE value > 35.0 ORDER BY id;

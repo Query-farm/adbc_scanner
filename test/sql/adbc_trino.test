@@ -51,3 +51,22 @@ SELECT COUNT(*) AS n FROM adbc_scan_table(getvariable('c')::BIGINT, 'nation', ca
 
 statement ok
 SELECT adbc_disconnect(getvariable('c')::BIGINT);
+
+# Keep the HTTP URI in an explicit option so DuckDB does not resolve the path
+# as an httpfs attachment before TYPE adbc is considered.
+statement ok
+ATTACH '' AS trino_connected (TYPE adbc, driver 'trino', uri 'http://localhost:18080', username 'trino');
+
+statement ok
+CONNECT trino_connected;
+
+query I
+SELECT COUNT(*) FROM tpch.tiny.nation;
+----
+25
+
+statement ok
+DISCONNECT;
+
+statement ok
+DETACH trino_connected;

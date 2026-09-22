@@ -20,7 +20,39 @@ struct AdbcInsertBindData : public TableFunctionData {
     // ADBC_INSERT_MAX_PENDING_BATCHES / the built-in default). Lets callers with
     // fat rows (e.g. raster BLOB blocks) cap memory tighter than the default.
     int64_t max_batches = 0;
+    // Extra driver-specific statement options (e.g. a driver's ingest type
+    // overrides), applied after target_table and mode.
+    vector<pair<string, string>> statement_options;
 };
+
+static vector<pair<string, string>> ExtractStatementOptions(const Value &value) {
+    vector<pair<string, string>> options;
+    auto &type = value.type();
+    if (type.id() == LogicalTypeId::STRUCT) {
+        auto &children = StructValue::GetChildren(value);
+        for (idx_t i = 0; i < children.size(); i++) {
+            if (!children[i].IsNull()) {
+                options.emplace_back(StructType::GetChildName(type, i), children[i].ToString());
+            }
+        }
+    } else if (type.id() == LogicalTypeId::MAP) {
+        for (auto &entry : MapValue::GetChildren(value)) {
+            auto &kv = StructValue::GetChildren(entry);
+            if (kv.size() == 2 && !kv[0].IsNull() && !kv[1].IsNull()) {
+                options.emplace_back(kv[0].ToString(), kv[1].ToString());
+            }
+        }
+    } else {
+        throw InvalidInputException("adbc_insert: options must be a STRUCT or MAP, got " + type.ToString());
+    }
+    for (auto &option : options) {
+        if (option.first == "adbc.ingest.target_table" || option.first == "adbc.ingest.mode") {
+            throw InvalidInputException("adbc_insert: option '" + option.first +
+                                        "' is set by adbc_insert itself; use the table_name argument or mode := instead");
+        }
+    }
+    return options;
+}
 
 struct AdbcInsertGlobalState : public GlobalTableFunctionState {
     mutex lock;
@@ -116,6 +148,11 @@ static unique_ptr<FunctionData> AdbcInsertBind(ClientContext &context, TableFunc
         bind_data->max_batches = mb_it->second.GetValue<int64_t>();
     }
 
+    auto opts_it = input.named_parameters.find("options");
+    if (opts_it != input.named_parameters.end() && !opts_it->second.IsNull()) {
+        bind_data->statement_options = ExtractStatementOptions(opts_it->second);
+    }
+
     // Get and validate connection
     bind_data->connection = GetValidatedConnection(bind_data->connection_id, "adbc_insert");
 
@@ -154,6 +191,10 @@ static unique_ptr<GlobalTableFunctionState> AdbcInsertInitGlobal(ClientContext &
         mode_value = "adbc.ingest.mode.create_append";
     }
     global_state->statement->SetOption("adbc.ingest.mode", mode_value);
+
+    for (auto &option : bind_data.statement_options) {
+        global_state->statement->SetOption(option.first, option.second);
+    }
 
     // Create the bounded insert stream
     global_state->insert_stream = make_uniq<AdbcInsertStream>(ResolveMaxPendingBatches(bind_data.max_batches));
@@ -251,15 +292,18 @@ void RegisterAdbcInsertFunction(DatabaseInstance &db) {
     adbc_insert_function.named_parameters["mode"] = LogicalType::VARCHAR;
     // Optional bounded-queue depth override (default 32 / ADBC_INSERT_MAX_PENDING_BATCHES).
     adbc_insert_function.named_parameters["max_batches"] = LogicalType::BIGINT;
+    // Driver-specific statement options as a STRUCT or MAP of key/value pairs.
+    adbc_insert_function.named_parameters["options"] = LogicalType::ANY;
 
     CreateTableFunctionInfo info(adbc_insert_function);
     FunctionDescription desc;
     desc.description = "Bulk insert data from a query into an ADBC table";
-    desc.parameter_names = {"connection_handle", "table_name", "data", "mode", "max_batches"};
-    desc.parameter_types = {LogicalType::BIGINT, LogicalType::VARCHAR, LogicalType::TABLE, LogicalType::VARCHAR, LogicalType::BIGINT};
+    desc.parameter_names = {"connection_handle", "table_name", "data", "mode", "max_batches", "options"};
+    desc.parameter_types = {LogicalType::BIGINT, LogicalType::VARCHAR, LogicalType::TABLE, LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::ANY};
     desc.examples = {"SELECT * FROM adbc_insert(conn, 'target_table', (SELECT * FROM source_table))",
                      "SELECT * FROM adbc_insert(conn, 'target', (SELECT * FROM source), mode := 'create')",
-                     "SELECT * FROM adbc_insert(conn, 'target', (SELECT * FROM source), mode := 'append')"};
+                     "SELECT * FROM adbc_insert(conn, 'target', (SELECT * FROM source), mode := 'append')",
+                     "SELECT * FROM adbc_insert(conn, 'target', (SELECT * FROM source), mode := 'create', options := {'adbc.ingest.temporary': 'true'})"};
     desc.categories = {"adbc"};
     info.descriptions.push_back(std::move(desc));
     loader.RegisterFunction(info);

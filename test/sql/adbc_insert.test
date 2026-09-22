@@ -69,6 +69,55 @@ SELECT * FROM adbc_insert(getvariable('conn_id')::BIGINT, 'test', (SELECT 1), mo
 ----
 Invalid Input Error: adbc_insert: Invalid mode 'invalid'. Must be one of: create, append, replace, create_append
 
+# ============================================
+# Statement options
+# ============================================
+
+# STRUCT form: options reach the driver (SQLite honors adbc.ingest.temporary)
+query I
+SELECT * FROM adbc_insert(getvariable('conn_id')::BIGINT, 'tmp_ingest', (SELECT * FROM insert_source WHERE id < 10), mode := 'create', options := {'adbc.ingest.temporary': 'true'});
+----
+10
+
+query I
+SELECT COUNT(*) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM temp.tmp_ingest');
+----
+10
+
+query I
+SELECT COUNT(*) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT name FROM main.sqlite_master WHERE name = ''tmp_ingest''');
+----
+0
+
+# MAP form
+query I
+SELECT * FROM adbc_insert(getvariable('conn_id')::BIGINT, 'tmp_ingest_map', (SELECT * FROM insert_source WHERE id < 5), mode := 'create', options := MAP {'adbc.ingest.temporary': 'true'});
+----
+5
+
+query I
+SELECT COUNT(*) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM temp.tmp_ingest_map');
+----
+5
+
+# Options owned by adbc_insert itself are rejected
+statement error
+SELECT * FROM adbc_insert(getvariable('conn_id')::BIGINT, 'x', (SELECT 1), options := {'adbc.ingest.mode': 'adbc.ingest.mode.replace'});
+----
+Invalid Input Error: adbc_insert: option 'adbc.ingest.mode' is set by adbc_insert itself
+
+# options must be a STRUCT or MAP
+statement error
+SELECT * FROM adbc_insert(getvariable('conn_id')::BIGINT, 'x', (SELECT 1), options := 'adbc.ingest.temporary=true');
+----
+Invalid Input Error: adbc_insert: options must be a STRUCT or MAP
+
+# Options the driver does not recognize surface the driver's error
+statement error
+SELECT * FROM adbc_insert(getvariable('conn_id')::BIGINT, 'x', (SELECT 1), mode := 'create', options := {'not.a.real.option': 'x'});
+----
+Failed to set statement option 'not.a.real.option'
+
 # Clean up
 statement ok
 SELECT adbc_disconnect(getvariable('conn_id')::BIGINT);

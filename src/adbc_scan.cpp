@@ -1,5 +1,6 @@
 #include "adbc_connection.hpp"
 #include "adbc_filter_pushdown.hpp"
+#include "adbc_arrow_types.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
@@ -214,7 +215,7 @@ static void GetSchemaFromStatement(AdbcStatementWrapper &statement, const string
 static void PopulateReturnTypesFromSchema(ClientContext &context, AdbcScanBindData &bind_data,
                                            vector<LogicalType> &return_types, vector<string> &names) {
     // Convert Arrow schema to DuckDB types
-    ArrowTableFunction::PopulateArrowTableSchema(context, bind_data.arrow_table,
+    AdbcPopulateArrowTableSchema(context, bind_data.arrow_table,
                                                   bind_data.schema_root.arrow_schema);
 
     // Extract column names and types
@@ -1072,7 +1073,7 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanTableInitGlobal(ClientContex
             }
             throw IOException(msg);
         }
-        ArrowTableFunction::PopulateArrowTableSchema(context, global_state->projected_arrow_table,
+        AdbcPopulateArrowTableSchema(context, global_state->projected_arrow_table,
                                                       global_state->projected_schema.arrow_schema);
         global_state->has_projected_schema = true;
     }

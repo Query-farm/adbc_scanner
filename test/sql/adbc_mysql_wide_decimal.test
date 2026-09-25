@@ -1,0 +1,96 @@
+# name: test/sql/adbc_mysql_wide_decimal.test
+# description: Decimals wider than DuckDB's DECIMAL(38) are returned as DOUBLE (issue #18)
+# group: [adbc]
+#
+# MySQL reports SUM(BIGINT) as DECIMAL(41,0), which the driver sends as an Arrow
+# Decimal256. DuckDB's DECIMAL tops out at 38 digits and its Arrow reader rejects
+# these, so the scanner maps them to DOUBLE (as the DuckDB mysql/postgres scanners do).
+#
+# Requires the mysql ADBC driver and a MySQL server at
+# mysql://root:root@localhost:3306/testdb. Gate by setting ADBC_MYSQL_TEST_AVAILABLE=1.
+
+require adbc_scanner
+
+require-env ADBC_MYSQL_TEST_AVAILABLE
+
+statement ok
+SET VARIABLE c = (SELECT adbc_connect({'driver':'mysql','uri':'mysql://root:root@localhost:3306/testdb'}));
+
+statement ok
+SELECT adbc_execute(getvariable('c')::BIGINT, 'DROP TABLE IF EXISTS adbc_my_wide');
+
+statement ok
+SELECT adbc_execute(getvariable('c')::BIGINT, 'CREATE TABLE adbc_my_wide (id INT PRIMARY KEY, v BIGINT, a DECIMAL(41,0), b DECIMAL(65,30), c DECIMAL(10,2))');
+
+statement ok
+SELECT adbc_execute(getvariable('c')::BIGINT, 'INSERT INTO adbc_my_wide VALUES
+  (1, 9223372036854775807, 12345678901234567890123456789012345678901, 1.5, 1.25),
+  (2, 5, -12345678901234567890123456789012345678901, -0.000000000000000000000000000001, -3.50),
+  (3, NULL, NULL, NULL, NULL),
+  (4, 0, 0, 0, 0),
+  (5, -1, 99999999999999999999999999999999999999999, -99999999999999999999999999999999999.999999999999999999999999999999, 0.01)');
+
+# The originally reported failure (there via a stored procedure): SUM(BIGINT)
+# is DECIMAL(41,0) / Decimal256.
+query IT
+SELECT total, typeof(total) FROM adbc_scan(getvariable('c')::BIGINT, 'SELECT SUM(v) AS total FROM adbc_my_wide');
+----
+9.223372036854776e+18	DOUBLE
+
+# Values are correctly rounded (match MySQL's own DOUBLE conversion); nulls,
+# zero and negatives survive; DECIMAL(<=38) columns keep their exact type.
+query IRRT
+SELECT id, a, b, c::VARCHAR FROM adbc_scan(getvariable('c')::BIGINT, 'SELECT id, a, b, c FROM adbc_my_wide') ORDER BY id;
+----
+1	1.2345678901234568e+40	1.5	1.25
+2	-1.2345678901234568e+40	-1e-30	-3.50
+3	NULL	NULL	NULL
+4	0.0	0.0	0.00
+5	1e+41	-1e+35	0.01
+
+query I
+SELECT count(*) FROM adbc_scan(getvariable('c')::BIGINT, 'SELECT id, a, b FROM adbc_my_wide') w
+JOIN adbc_scan(getvariable('c')::BIGINT, 'SELECT id, CAST(a AS DOUBLE) AS a, CAST(b AS DOUBLE) AS b FROM adbc_my_wide') m USING (id)
+WHERE w.a IS NOT DISTINCT FROM m.a AND w.b IS NOT DISTINCT FROM m.b;
+----
+5
+
+query TT
+SELECT field_name, field_type FROM adbc_schema(getvariable('c')::BIGINT, 'adbc_my_wide') WHERE field_name IN ('a', 'b', 'c') ORDER BY field_name;
+----
+a	DOUBLE
+b	DOUBLE
+c	DECIMAL(10,2)
+
+# adbc_scan_table, including filter pushdown on a wide decimal column.
+query IR
+SELECT id, a FROM adbc_scan_table(getvariable('c')::BIGINT, 'adbc_my_wide') WHERE a > 0 ORDER BY id;
+----
+1	1.2345678901234568e+40
+5	1e+41
+
+statement ok
+SELECT adbc_disconnect(getvariable('c')::BIGINT);
+
+# ATTACH storage path.
+statement ok
+ATTACH 'mysql://root:root@localhost:3306/testdb' AS my (TYPE adbc, driver 'mysql');
+
+query IR
+SELECT id, b FROM my.main.adbc_my_wide WHERE b < 0 ORDER BY id;
+----
+2	-1e-30
+5	-1e+35
+
+statement ok
+DETACH my;
+
+# Cleanup
+statement ok
+SET VARIABLE c2 = (SELECT adbc_connect({'driver':'mysql','uri':'mysql://root:root@localhost:3306/testdb'}));
+
+statement ok
+SELECT adbc_execute(getvariable('c2')::BIGINT, 'DROP TABLE IF EXISTS adbc_my_wide');
+
+statement ok
+SELECT adbc_disconnect(getvariable('c2')::BIGINT);

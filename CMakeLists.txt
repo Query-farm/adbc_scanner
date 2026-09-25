@@ -30,6 +30,7 @@ set(EXTENSION_SOURCES
     src/adbc_connection.cpp
     src/adbc_functions.cpp
     src/adbc_scan.cpp
+    src/adbc_arrow_types.cpp
     src/adbc_execute.cpp
     src/adbc_insert.cpp
     src/adbc_catalog.cpp

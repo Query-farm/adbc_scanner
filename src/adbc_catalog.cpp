@@ -1,4 +1,5 @@
 #include "adbc_connection.hpp"
+#include "adbc_arrow_types.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
@@ -879,7 +880,7 @@ static void ExtractSchemaFields(ClientContext &context, ArrowSchema *schema, vec
         row.field_name = child->name ? child->name : "";
 
         // Use DuckDB's built-in Arrow type conversion
-        auto arrow_type = duckdb::ArrowType::GetArrowLogicalType(context, *child);
+        auto arrow_type = AdbcGetArrowType(context, *child);
         row.field_type = arrow_type->GetDuckType().ToString();
 
         // In Arrow C Data Interface, nullable is indicated by ARROW_FLAG_NULLABLE bit (flags & 2)

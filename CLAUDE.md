@@ -286,6 +286,7 @@ Tests are written as [SQLLogicTests](https://duckdb.org/dev/sqllogictest/intro.h
 - **Extension entry point**: `src/adbc_scanner_extension.cpp` - Registers all functions with DuckDB via `LoadInternal()`
 - **ADBC functions**: `src/adbc_functions.cpp` - Implements connection management (adbc_connect, adbc_disconnect, transaction functions)
 - **Scan/Execute**: `src/adbc_scan.cpp` - Implements adbc_scan, adbc_execute, and adbc_insert table functions
+- **Arrow type mapping**: `src/adbc_arrow_types.cpp` - Wraps DuckDB's Arrow-to-DuckDB type mapping for every scan path (adbc_scan, adbc_scan_table, ATTACH, adbc_schema). Decimals wider than DuckDB's 38-digit DECIMAL (e.g. MySQL's DECIMAL(41,0) for SUM(BIGINT), sent as Decimal256) are read as fixed-size binary and converted to DOUBLE, matching the DuckDB postgres/mysql scanners
 - **Catalog functions**: `src/adbc_catalog.cpp` - Implements adbc_info, adbc_tables, adbc_columns, adbc_schema
 - **Connection profiles**: `src/adbc_profiles.cpp` - Implements adbc_profiles (enumerates profile TOML files; connection-time profile resolution is delegated to the driver manager)
 - **Secrets**: `src/adbc_secrets.cpp` - DuckDB secrets integration for secure credential storage

@@ -1,4 +1,5 @@
 #include "storage/adbc_table_set.hpp"
+#include "adbc_arrow_types.hpp"
 #include "storage/adbc_transaction.hpp"
 #include "storage/adbc_catalog.hpp"
 #include "storage/adbc_schema_entry.hpp"
@@ -248,7 +249,7 @@ unique_ptr<AdbcTableInfo> AdbcTableSet::GetTableInfo(AdbcTransaction &transactio
 		string col_name = child->name ? child->name : "column" + to_string(i);
 		LogicalType col_type;
 		try {
-			auto arrow_type = duckdb::ArrowType::GetArrowLogicalType(context, *child);
+			auto arrow_type = AdbcGetArrowType(context, *child);
 			col_type = arrow_type->GetDuckType();
 		} catch (...) {
 			col_type = ArrowFormatToLogicalType(child->format);

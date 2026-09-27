@@ -27,7 +27,7 @@ Invalid Input Error: ADBC connection requires a 'driver' option
 
 # Test disconnect with invalid handle
 statement error
-SELECT adbc_disconnect(12345);
+CALL adbc_disconnect(12345);
 ----
 Invalid Input Error: adbc_disconnect: Invalid connection handle: 12345
 
@@ -41,12 +41,12 @@ SET VARIABLE map_conn = (SELECT adbc_connect(MAP {'driver': 'sqlite', 'uri': ':m
 
 # Test disconnect
 query I
-SELECT adbc_disconnect(getvariable('conn_id')::BIGINT);
+CALL adbc_disconnect(getvariable('conn_id')::BIGINT);
 ----
 true
 
 query I
-SELECT adbc_disconnect(getvariable('map_conn')::BIGINT);
+CALL adbc_disconnect(getvariable('map_conn')::BIGINT);
 ----
 true
 

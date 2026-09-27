@@ -14,16 +14,16 @@ statement ok
 SET VARIABLE conn_id = (SELECT adbc_connect({'driver': 'sqlite', 'uri': '/tmp/test_attach.db'}));
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'DROP TABLE IF EXISTS test_table');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'DROP TABLE IF EXISTS test_table');
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE test_table (id INTEGER, name TEXT, value REAL)');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE test_table (id INTEGER, name TEXT, value REAL)');
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO test_table VALUES (1, ''hello'', 1.5), (2, ''world'', 2.5), (3, ''test'', 3.5)');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO test_table VALUES (1, ''hello'', 1.5), (2, ''world'', 2.5), (3, ''test'', 3.5)');
 
 statement ok
-SELECT adbc_disconnect(getvariable('conn_id')::BIGINT);
+CALL adbc_disconnect(getvariable('conn_id')::BIGINT);
 
 # ============================================
 # Basic ATTACH Tests
@@ -164,8 +164,7 @@ statement ok
 SET VARIABLE cleanup_conn = (SELECT adbc_connect({'driver': 'sqlite', 'uri': '/tmp/test_attach.db'}));
 
 statement ok
-SELECT adbc_execute(getvariable('cleanup_conn')::BIGINT, 'DROP TABLE IF EXISTS test_table');
+CALL adbc_execute(getvariable('cleanup_conn')::BIGINT, 'DROP TABLE IF EXISTS test_table');
 
 statement ok
-SELECT adbc_disconnect(getvariable('cleanup_conn')::BIGINT);
-
+CALL adbc_disconnect(getvariable('cleanup_conn')::BIGINT);

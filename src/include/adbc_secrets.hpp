@@ -1,6 +1,7 @@
 #pragma once
 
 #include "duckdb.hpp"
+#include "adbc_options.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
 
 namespace adbc_scanner {
@@ -14,8 +15,7 @@ SecretMatch AdbcGetSecretByUri(ClientContext &context, const string &uri);
 
 // Merge secret options with explicitly provided options
 // Returns combined options with explicit options taking precedence
-vector<pair<string, string>> MergeSecretOptions(ClientContext &context,
-                                                 const vector<pair<string, string>> &explicit_options);
+AdbcOptions MergeSecretOptions(ClientContext &context, const AdbcOptions &explicit_options);
 
 // Register the ADBC secret type and create secret function
 void RegisterAdbcSecrets(ExtensionLoader &loader);

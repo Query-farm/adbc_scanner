@@ -1,238 +1,171 @@
 #include "adbc_connection.hpp"
 #include "adbc_secrets.hpp"
 #include "duckdb/function/scalar_function.hpp"
-#include "duckdb/common/types/value.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
+#include "duckdb/parser/parsed_data/create_table_function_info.hpp"
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/client_context_state.hpp"
 
 namespace adbc_scanner {
 using namespace duckdb;
 
-// Helper to extract key-value pairs from either a STRUCT or MAP
-static vector<pair<string, string>> ExtractOptions(Vector &options_vector, idx_t row_idx) {
-	vector<pair<string, string>> options;
-	auto value = options_vector.GetValue(row_idx);
-	auto &type = value.type();
+struct AdbcClientHandles : public ClientContextState {
+    unordered_set<int64_t> handles;
+    ~AdbcClientHandles() override {
+        for (auto handle : handles) {
+            ConnectionRegistry::Get().Remove(handle);
+        }
+    }
+};
 
-	if (type.id() == LogicalTypeId::STRUCT) {
-		// Handle STRUCT - iterate over named fields
-		auto &children = StructValue::GetChildren(value);
-		for (idx_t i = 0; i < children.size(); i++) {
-			auto key = StructType::GetChildName(type, i);
-			auto &child_value = children[i];
-			if (!child_value.IsNull()) {
-				options.emplace_back(key, child_value.ToString());
-			}
-		}
-	} else if (type.id() == LogicalTypeId::MAP) {
-		// Handle MAP - iterate over key-value pairs
-		auto &map_children = MapValue::GetChildren(value);
-		for (auto &entry : map_children) {
-			auto &entry_children = StructValue::GetChildren(entry);
-			if (entry_children.size() == 2 && !entry_children[0].IsNull()) {
-				auto key = entry_children[0].ToString();
-				auto val = entry_children[1].IsNull() ? "" : entry_children[1].ToString();
-				options.emplace_back(key, val);
-			}
-		}
-	} else {
-		throw InvalidInputException("adbc_connect: options must be a STRUCT or MAP, got " + type.ToString());
-	}
-
-	return options;
+static AdbcOptions ExtractOptions(const Value &value) {
+    AdbcOptions options;
+    if (value.type().id() == LogicalTypeId::STRUCT) {
+        const auto &children = StructValue::GetChildren(value);
+        for (idx_t i = 0; i < children.size(); i++) {
+            if (!children[i].IsNull()) {
+                options.emplace_back(StructType::GetChildName(value.type(), i), children[i]);
+            }
+        }
+    } else if (value.type().id() == LogicalTypeId::MAP) {
+        for (const auto &entry : MapValue::GetChildren(value)) {
+            const auto &pair = StructValue::GetChildren(entry);
+            if (!pair[0].IsNull() && !pair[1].IsNull()) {
+                options.emplace_back(pair[0].GetValue<string>(), pair[1]);
+            }
+        }
+    } else {
+        throw InvalidInputException("adbc_connect: options must be a STRUCT or MAP");
+    }
+    for (const auto &option : options) {
+        if (option.second.type().id() == LogicalTypeId::STRUCT ||
+            option.second.type().id() == LogicalTypeId::MAP ||
+            option.second.type().id() == LogicalTypeId::LIST) {
+            throw InvalidInputException("adbc_connect: nested option values are not supported; pass driver options directly");
+        }
+    }
+    return options;
 }
 
-// Helper to create a connection from options
-// If context is provided, secrets will be looked up and merged with explicit options
-static int64_t CreateConnection(const vector<pair<string, string>> &explicit_options,
-                                ClientContext *context = nullptr) {
-	// Merge with secrets if context is available
-	vector<pair<string, string>> options;
-	if (context) {
-		options = MergeSecretOptions(*context, explicit_options);
-	} else {
-		options = explicit_options;
-	}
-
-	// Create connection using shared helper
-	auto connection = CreateConnectionFromOptions(options);
-
-	// Register connection and return handle
-	auto &registry = ConnectionRegistry::Get();
-	return registry.Add(std::move(connection));
+static void AdbcConnect(DataChunk &args, ExpressionState &state, Vector &result) {
+    auto &context = state.GetContext();
+    auto owned = context.registered_state->GetOrCreate<AdbcClientHandles>("adbc.handles");
+    // Volatile scalars have per-row semantics even when their input is constant.
+    result.SetVectorType(VectorType::FLAT_VECTOR);
+    auto values = FlatVector::GetData<int64_t>(result);
+    vector<int64_t> created;
+    created.reserve(args.size());
+    try {
+        for (idx_t row = 0; row < args.size(); row++) {
+            auto value = args.data[0].GetValue(row);
+            if (value.IsNull()) {
+                throw InvalidInputException("adbc_connect: options must not be NULL");
+            }
+            auto options = MergeSecretOptions(context, ExtractOptions(value));
+            auto connection = CreateConnectionFromOptions(options);
+            auto handle = ConnectionRegistry::Get().Add(std::move(connection), &context);
+            created.push_back(handle);
+            owned->handles.insert(handle);
+            values[row] = handle;
+        }
+    } catch (...) {
+        // No handles from this output vector can reach the caller on failure.
+        for (auto handle : created) {
+            ConnectionRegistry::Get().Remove(handle);
+            owned->handles.erase(handle);
+        }
+        throw;
+    }
 }
 
-// adbc_connect(options STRUCT or MAP) -> BIGINT
-// Returns a connection handle that can be used with other ADBC functions
-// Secrets are automatically looked up based on the 'uri' option or explicit 'secret' name
-static void AdbcConnectFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &options_vector = args.data[0];
-	auto count = args.size();
-	auto &context = state.GetContext();
+struct AdbcCommandBindData : public TableFunctionData {
+    string command;
+    int64_t handle;
+    bool enabled = false;
+};
 
-	// Handle constant input (for constant folding optimization)
-	if (options_vector.GetVectorType() == VectorType::CONSTANT_VECTOR) {
-		if (ConstantVector::IsNull(options_vector)) {
-			result.SetVectorType(VectorType::CONSTANT_VECTOR);
-			ConstantVector::SetNull(result, true);
-		} else {
-			auto options = ExtractOptions(options_vector, 0);
-			auto conn_id = CreateConnection(options, &context);
-			result.SetVectorType(VectorType::CONSTANT_VECTOR);
-			ConstantVector::GetData<int64_t>(result)[0] = conn_id;
-		}
-		return;
-	}
+struct AdbcCommandState : public GlobalTableFunctionState {
+    bool finished = false;
+};
 
-	// Handle flat/dictionary vectors
-	result.SetVectorType(VectorType::FLAT_VECTOR);
-	auto result_data = FlatVector::GetData<int64_t>(result);
-
-	for (idx_t row_idx = 0; row_idx < count; row_idx++) {
-		auto options = ExtractOptions(options_vector, row_idx);
-		result_data[row_idx] = CreateConnection(options, &context);
-	}
+static unique_ptr<FunctionData> BindCommand(ClientContext &, TableFunctionBindInput &input,
+                                            vector<LogicalType> &types, vector<string> &names) {
+    for (const auto &argument : input.inputs) {
+        if (argument.IsNull()) {
+            throw InvalidInputException("ADBC command arguments must not be NULL");
+        }
+    }
+    auto data = make_uniq<AdbcCommandBindData>();
+    data->command = input.table_function.name;
+    data->handle = input.inputs[0].GetValue<int64_t>();
+    if (input.inputs.size() == 2) {
+        data->enabled = input.inputs[1].GetValue<bool>();
+    }
+    types.emplace_back(LogicalType::BOOLEAN);
+    names.emplace_back("success");
+    return std::move(data);
 }
 
-// adbc_disconnect(connection_id BIGINT) -> BOOLEAN
-// Disconnects and removes a connection from the registry
-static void AdbcDisconnectFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	(void)state;
-	auto &connection_vector = args.data[0];
-
-	UnaryExecutor::Execute<int64_t, bool>(connection_vector, result, args.size(), [&](int64_t connection_id) {
-		auto &registry = ConnectionRegistry::Get();
-		auto connection = registry.Remove(connection_id);
-		if (!connection) {
-			throw InvalidInputException("adbc_disconnect: Invalid connection handle: " + to_string(connection_id));
-		}
-		// Connection is automatically released when shared_ptr goes out of scope
-		return true;
-	});
+static unique_ptr<GlobalTableFunctionState> InitCommand(ClientContext &, TableFunctionInitInput &) {
+    return make_uniq<AdbcCommandState>();
 }
 
-// adbc_commit(connection_id BIGINT) -> BOOLEAN
-// Commits the current transaction
-static void AdbcCommitFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	(void)state;
-	auto &connection_vector = args.data[0];
-
-	UnaryExecutor::Execute<int64_t, bool>(connection_vector, result, args.size(), [&](int64_t connection_id) {
-		auto connection = GetValidatedConnection(connection_id, "adbc_commit");
-		connection->Commit();
-		return true;
-	});
+static void RunCommand(ClientContext &context, TableFunctionInput &input, DataChunk &output) {
+    auto &state = input.global_state->Cast<AdbcCommandState>();
+    if (state.finished) {
+        return;
+    }
+    state.finished = true;
+    const auto &data = input.bind_data->Cast<AdbcCommandBindData>();
+    auto connection = GetValidatedConnection(context, data.handle, data.command);
+    if (data.command == "adbc_disconnect") {
+        connection->Close();
+        ConnectionRegistry::Get().Remove(data.handle, &context);
+        context.registered_state->GetOrCreate<AdbcClientHandles>("adbc.handles")->handles.erase(data.handle);
+    } else if (data.command == "adbc_commit") {
+        connection->Commit();
+    } else if (data.command == "adbc_rollback") {
+        connection->Rollback();
+    } else {
+        connection->SetAutocommit(data.enabled);
+    }
+    output.SetCardinality(1);
+    output.SetValue(0, 0, Value::BOOLEAN(true));
 }
 
-// adbc_rollback(connection_id BIGINT) -> BOOLEAN
-// Rolls back the current transaction
-static void AdbcRollbackFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	(void)state;
-	auto &connection_vector = args.data[0];
-
-	UnaryExecutor::Execute<int64_t, bool>(connection_vector, result, args.size(), [&](int64_t connection_id) {
-		auto connection = GetValidatedConnection(connection_id, "adbc_rollback");
-		connection->Rollback();
-		return true;
-	});
-}
-
-// adbc_set_autocommit(connection_id BIGINT, enabled BOOLEAN) -> BOOLEAN
-// Sets the autocommit mode for the connection
-static void AdbcSetAutocommitFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	(void)state;
-	auto &connection_vector = args.data[0];
-	auto &enabled_vector = args.data[1];
-
-	BinaryExecutor::Execute<int64_t, bool, bool>(
-	    connection_vector, enabled_vector, result, args.size(), [&](int64_t connection_id, bool enabled) {
-		    auto connection = GetValidatedConnection(connection_id, "adbc_set_autocommit");
-		    connection->SetAutocommit(enabled);
-		    return true;
-	    });
-}
-
-// Register the ADBC scalar functions using ExtensionLoader
 void RegisterAdbcScalarFunctions(DatabaseInstance &db) {
-	ExtensionLoader loader(db, "adbc");
-
-	// adbc_connect: Create a new ADBC connection
-	{
-		auto adbc_connect_function =
-		    ScalarFunction("adbc_connect", {LogicalType::ANY}, LogicalType::BIGINT, AdbcConnectFunction);
-		CreateScalarFunctionInfo info(adbc_connect_function);
-		FunctionDescription desc;
-		desc.description = "Connect to an ADBC data source and return a connection handle";
-		desc.parameter_names = {"options"};
-		desc.parameter_types = {LogicalType::ANY};
-		desc.examples = {"SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:'})",
-		                 "SELECT adbc_connect({'driver': '/path/to/driver.so', 'uri': 'connection_string'})"};
-		desc.categories = {"adbc"};
-		info.descriptions.push_back(std::move(desc));
-		loader.RegisterFunction(info);
-	}
-
-	// adbc_disconnect: Close an ADBC connection
-	{
-		auto adbc_disconnect_function =
-		    ScalarFunction("adbc_disconnect", {LogicalType::BIGINT}, LogicalType::BOOLEAN, AdbcDisconnectFunction);
-		CreateScalarFunctionInfo info(adbc_disconnect_function);
-		FunctionDescription desc;
-		desc.description = "Disconnect and close an ADBC connection";
-		desc.parameter_names = {"connection_handle"};
-		desc.parameter_types = {LogicalType::BIGINT};
-		desc.examples = {"SELECT adbc_disconnect(connection_handle)"};
-		desc.categories = {"adbc"};
-		info.descriptions.push_back(std::move(desc));
-		loader.RegisterFunction(info);
-	}
-
-	// adbc_commit: Commit the current transaction
-	{
-		auto adbc_commit_function =
-		    ScalarFunction("adbc_commit", {LogicalType::BIGINT}, LogicalType::BOOLEAN, AdbcCommitFunction);
-		CreateScalarFunctionInfo info(adbc_commit_function);
-		FunctionDescription desc;
-		desc.description = "Commit the current transaction on an ADBC connection";
-		desc.parameter_names = {"connection_handle"};
-		desc.parameter_types = {LogicalType::BIGINT};
-		desc.examples = {"SELECT adbc_commit(connection_handle)"};
-		desc.categories = {"adbc"};
-		info.descriptions.push_back(std::move(desc));
-		loader.RegisterFunction(info);
-	}
-
-	// adbc_rollback: Rollback the current transaction
-	{
-		auto adbc_rollback_function =
-		    ScalarFunction("adbc_rollback", {LogicalType::BIGINT}, LogicalType::BOOLEAN, AdbcRollbackFunction);
-		CreateScalarFunctionInfo info(adbc_rollback_function);
-		FunctionDescription desc;
-		desc.description = "Rollback the current transaction on an ADBC connection";
-		desc.parameter_names = {"connection_handle"};
-		desc.parameter_types = {LogicalType::BIGINT};
-		desc.examples = {"SELECT adbc_rollback(connection_handle)"};
-		desc.categories = {"adbc"};
-		info.descriptions.push_back(std::move(desc));
-		loader.RegisterFunction(info);
-	}
-
-	// adbc_set_autocommit: Set autocommit mode
-	{
-		auto adbc_set_autocommit_function =
-		    ScalarFunction("adbc_set_autocommit", {LogicalType::BIGINT, LogicalType::BOOLEAN}, LogicalType::BOOLEAN,
-		                   AdbcSetAutocommitFunction);
-		CreateScalarFunctionInfo info(adbc_set_autocommit_function);
-		FunctionDescription desc;
-		desc.description = "Enable or disable autocommit mode on an ADBC connection";
-		desc.parameter_names = {"connection_handle", "enabled"};
-		desc.parameter_types = {LogicalType::BIGINT, LogicalType::BOOLEAN};
-		desc.examples = {"SELECT adbc_set_autocommit(connection_handle, false)",
-		                 "SELECT adbc_set_autocommit(connection_handle, true)"};
-		desc.categories = {"adbc"};
-		info.descriptions.push_back(std::move(desc));
-		loader.RegisterFunction(info);
-	}
+    ExtensionLoader loader(db, "adbc");
+    ScalarFunction connect("adbc_connect", {LogicalType::ANY}, LogicalType::BIGINT, AdbcConnect);
+    connect.stability = FunctionStability::VOLATILE;
+    connect.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
+    CreateScalarFunctionInfo connect_info(connect);
+    FunctionDescription connect_description;
+    connect_description.description = "Open an ADBC connection owned by this DuckDB client; evaluated once per input row";
+    connect_description.parameter_names = {"options"};
+    connect_description.parameter_types = {LogicalType::ANY};
+    connect_description.examples = {"SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:'})"};
+    connect_description.categories = {"adbc"};
+    connect_info.descriptions.push_back(std::move(connect_description));
+    loader.RegisterFunction(connect_info);
+    for (auto name : {"adbc_disconnect", "adbc_commit", "adbc_rollback", "adbc_set_autocommit"}) {
+        vector<LogicalType> arguments = {LogicalType::BIGINT};
+        if (string(name) == "adbc_set_autocommit") {
+            arguments.push_back(LogicalType::BOOLEAN);
+        }
+        TableFunction command(name, arguments, RunCommand, BindCommand, InitCommand);
+        CreateTableFunctionInfo info(command);
+        FunctionDescription description;
+        description.description = string(name) + ": perform the connection operation at execution time";
+        description.parameter_names = {"connection_handle"};
+        if (arguments.size() == 2) {
+            description.parameter_names.push_back("enabled");
+        }
+        description.parameter_types = arguments;
+        description.examples = {"CALL " + string(name) + (arguments.size() == 2 ? "(conn, false)" : "(conn)")};
+        description.categories = {"adbc"};
+        info.descriptions.push_back(std::move(description));
+        loader.RegisterFunction(info);
+    }
 }
-
 } // namespace adbc_scanner

@@ -154,7 +154,7 @@ static unique_ptr<FunctionData> AdbcInsertBind(ClientContext &context, TableFunc
     }
 
     // Get and validate connection
-    bind_data->connection = GetValidatedConnection(bind_data->connection_id, "adbc_insert");
+    bind_data->connection = GetValidatedConnection(context, bind_data->connection_id, "adbc_insert");
 
     // Store input table types and names for Arrow conversion
     bind_data->input_types = input.input_table_types;

@@ -10,16 +10,16 @@ statement ok
 SET VARIABLE c = (SELECT adbc_connect({'driver': 'sqlite', 'uri': '/tmp/test_ro.db'}));
 
 statement ok
-SELECT adbc_execute(getvariable('c')::BIGINT, 'DROP TABLE IF EXISTS t');
+CALL adbc_execute(getvariable('c')::BIGINT, 'DROP TABLE IF EXISTS t');
 
 statement ok
-SELECT adbc_execute(getvariable('c')::BIGINT, 'CREATE TABLE t (id INTEGER)');
+CALL adbc_execute(getvariable('c')::BIGINT, 'CREATE TABLE t (id INTEGER)');
 
 statement ok
-SELECT adbc_execute(getvariable('c')::BIGINT, 'INSERT INTO t VALUES (1), (2)');
+CALL adbc_execute(getvariable('c')::BIGINT, 'INSERT INTO t VALUES (1), (2)');
 
 statement ok
-SELECT adbc_disconnect(getvariable('c')::BIGINT);
+CALL adbc_disconnect(getvariable('c')::BIGINT);
 
 statement ok
 ATTACH '/tmp/test_ro.db' AS ro (TYPE adbc, driver 'sqlite', READ_ONLY);

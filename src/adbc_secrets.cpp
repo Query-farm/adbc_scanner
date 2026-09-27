@@ -30,21 +30,21 @@ SecretMatch AdbcGetSecretByUri(ClientContext &context, const string &uri) {
 	return secret_manager.LookupSecret(transaction, uri, "adbc");
 }
 
-vector<pair<string, string>> MergeSecretOptions(ClientContext &context,
-                                                 const vector<pair<string, string>> &explicit_options) {
+AdbcOptions MergeSecretOptions(ClientContext &context,
+                                                 const AdbcOptions &explicit_options) {
 	// First, check if there's a uri option to use as scope for secret lookup
 	string uri;
 	string secret_name;
 
 	for (const auto &opt : explicit_options) {
 		if (opt.first == "uri") {
-			uri = opt.second;
+			uri = opt.second.GetValue<string>();
 		} else if (opt.first == "secret") {
-			secret_name = opt.second;
+			secret_name = opt.second.GetValue<string>();
 		}
 	}
 
-	vector<pair<string, string>> merged_options;
+	AdbcOptions merged_options;
 	bool found_secret = false;
 
 	// If a secret name is explicitly provided, use that
@@ -59,7 +59,7 @@ vector<pair<string, string>> MergeSecretOptions(ClientContext &context,
 		// Add all secret options first
 		for (const auto &entry : kv_secret.secret_map) {
 			if (!entry.second.IsNull()) {
-				merged_options.emplace_back(entry.first, entry.second.ToString());
+				merged_options.emplace_back(entry.first, entry.second);
 			}
 		}
 		found_secret = true;
@@ -73,7 +73,7 @@ vector<pair<string, string>> MergeSecretOptions(ClientContext &context,
 			// Add all secret options first
 			for (const auto &entry : kv_secret.secret_map) {
 				if (!entry.second.IsNull()) {
-					merged_options.emplace_back(entry.first, entry.second.ToString());
+					merged_options.emplace_back(entry.first, entry.second);
 				}
 			}
 			found_secret = true;
@@ -107,7 +107,7 @@ vector<pair<string, string>> MergeSecretOptions(ClientContext &context,
 	}
 
 	// Filter out secret options that are overridden by explicit options
-	vector<pair<string, string>> result;
+	AdbcOptions result;
 	for (const auto &opt : merged_options) {
 		if (explicit_keys.find(opt.first) == explicit_keys.end()) {
 			result.push_back(opt);
@@ -164,6 +164,7 @@ static unique_ptr<BaseSecret> CreateAdbcSecretFunction(ClientContext &context, C
 						auto key = entry_children[0].ToString();
 						auto val = entry_children[1].IsNull() ? "" : entry_children[1].ToString();
 						result->secret_map[key] = val;
+						result->redact_keys.insert(key);
 					}
 				}
 			}
@@ -171,7 +172,9 @@ static unique_ptr<BaseSecret> CreateAdbcSecretFunction(ClientContext &context, C
 	}
 
 	// Redact sensitive keys by default
-	result->redact_keys = {"password", "auth_token", "token", "secret", "api_key", "apikey", "credential"};
+	for (auto key : {"password", "auth_token", "token", "secret", "api_key", "apikey", "credential"}) {
+		result->redact_keys.insert(key);
+	}
 
 	return result;
 }

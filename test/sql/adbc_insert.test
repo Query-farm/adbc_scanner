@@ -41,7 +41,7 @@ SELECT * FROM adbc_insert(getvariable('conn_id')::BIGINT, 'bulk_test', (SELECT *
 
 # Verify the data was inserted
 query I
-SELECT COUNT(*) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM bulk_test');
+SELECT COUNT(*) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM bulk_test', columns := {'id': 'BIGINT', 'name': 'VARCHAR'});
 ----
 20000
 
@@ -53,7 +53,7 @@ SELECT * FROM adbc_insert(getvariable('conn_id')::BIGINT, 'bulk_test', (SELECT *
 
 # Verify append worked
 query I
-SELECT COUNT(*) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM bulk_test');
+SELECT COUNT(*) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM bulk_test', columns := {'id': 'BIGINT', 'name': 'VARCHAR'});
 ----
 21000
 
@@ -80,12 +80,12 @@ SELECT * FROM adbc_insert(getvariable('conn_id')::BIGINT, 'tmp_ingest', (SELECT 
 10
 
 query I
-SELECT COUNT(*) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM temp.tmp_ingest');
+SELECT COUNT(*) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM temp.tmp_ingest', columns := {'id': 'BIGINT', 'name': 'VARCHAR'});
 ----
 10
 
 query I
-SELECT COUNT(*) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT name FROM main.sqlite_master WHERE name = ''tmp_ingest''');
+SELECT COUNT(*) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT name FROM main.sqlite_master WHERE name = ''tmp_ingest''', columns := {'name': 'VARCHAR'});
 ----
 0
 
@@ -96,7 +96,7 @@ SELECT * FROM adbc_insert(getvariable('conn_id')::BIGINT, 'tmp_ingest_map', (SEL
 5
 
 query I
-SELECT COUNT(*) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM temp.tmp_ingest_map');
+SELECT COUNT(*) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM temp.tmp_ingest_map', columns := {'id': 'BIGINT', 'name': 'VARCHAR'});
 ----
 5
 
@@ -120,7 +120,7 @@ Failed to set statement option 'not.a.real.option'
 
 # Clean up
 statement ok
-SELECT adbc_disconnect(getvariable('conn_id')::BIGINT);
+CALL adbc_disconnect(getvariable('conn_id')::BIGINT);
 
 statement ok
 DROP TABLE insert_source;

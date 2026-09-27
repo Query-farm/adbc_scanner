@@ -89,7 +89,7 @@ SELECT COUNT(*) FROM adbc_tables(getvariable('fresh_conn')::BIGINT);
 0
 
 statement ok
-SELECT adbc_disconnect(getvariable('fresh_conn')::BIGINT);
+CALL adbc_disconnect(getvariable('fresh_conn')::BIGINT);
 
 # Test adbc_tables with invalid connection handle
 statement error
@@ -120,7 +120,7 @@ Invalid Input Error: adbc_table_types: Invalid connection handle: 12345
 
 # Create a table for column tests
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE test_cols (id INTEGER PRIMARY KEY, name TEXT NOT NULL, value REAL)');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE test_cols (id INTEGER PRIMARY KEY, name TEXT NOT NULL, value REAL)');
 
 # Test adbc_columns - basic query
 query IIII
@@ -148,7 +148,7 @@ Invalid Input Error: adbc_columns: Invalid connection handle: 12345
 
 # Create a table for schema tests
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE schema_test (id INTEGER, name TEXT, value REAL)');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE schema_test (id INTEGER, name TEXT, value REAL)');
 
 # Test adbc_schema - get Arrow schema for a table
 query I
@@ -166,4 +166,4 @@ Invalid Input Error: adbc_schema: Invalid connection handle: 12345
 
 # Clean up
 statement ok
-SELECT adbc_disconnect(getvariable('conn_id')::BIGINT);
+CALL adbc_disconnect(getvariable('conn_id')::BIGINT);

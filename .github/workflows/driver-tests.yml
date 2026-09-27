@@ -140,6 +140,13 @@ jobs:
           done
           echo "Trino did not become ready"; exit 1
 
+      - name: Run Python command lifecycle regressions
+        run: |
+          python3 -m venv .runtime-tests
+          .runtime-tests/bin/pip install duckdb==1.5.5 adbc-driver-sqlite==1.12.0 pytest
+          ADBC_SCANNER_EXTENSION="$PWD/build/release/extension/adbc_scanner/adbc_scanner.duckdb_extension" \
+            .runtime-tests/bin/python -m pytest test/python -q
+
       - name: Run driver test suite
         env:
           # SQLite tests resolve the driver from the dbc-installed manifest.

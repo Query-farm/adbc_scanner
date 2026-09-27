@@ -31,16 +31,27 @@ Invalid Input Error: adbc_scan: Invalid connection handle: 12345
 statement ok
 SET VARIABLE conn_id = (SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:'}));
 
+# SQLite cannot describe query results without executing. Keep the scan tests
+# explicit, including the columns omitted by projection pushdown.
+statement ok
+SET VARIABLE wide_columns = {'col00': 'BIGINT', 'col01': 'VARCHAR', 'col02': 'DOUBLE', 'col03': 'BIGINT', 'col04': 'VARCHAR', 'col05': 'DOUBLE', 'col06': 'BIGINT', 'col07': 'VARCHAR', 'col08': 'DOUBLE', 'col09': 'BIGINT', 'col10': 'VARCHAR', 'col11': 'DOUBLE', 'col12': 'BIGINT', 'col13': 'VARCHAR', 'col14': 'DOUBLE', 'col15': 'BIGINT', 'col16': 'VARCHAR', 'col17': 'DOUBLE', 'col18': 'BIGINT', 'col19': 'VARCHAR', 'col20': 'DOUBLE', 'col21': 'BIGINT', 'col22': 'VARCHAR', 'col23': 'DOUBLE', 'col24': 'BIGINT', 'col25': 'VARCHAR', 'col26': 'DOUBLE', 'col27': 'BIGINT', 'col28': 'VARCHAR', 'col29': 'DOUBLE'};
+
+statement ok
+SET VARIABLE large_columns = {'c0': 'BIGINT', 'c1': 'BIGINT', 'c2': 'BIGINT', 'c3': 'BIGINT', 'c4': 'BIGINT', 'c5': 'BIGINT', 'c6': 'BIGINT', 'c7': 'BIGINT', 'c8': 'BIGINT', 'c9': 'BIGINT'};
+
+statement ok
+SET VARIABLE null_columns = {'a': 'BIGINT', 'b': 'VARCHAR', 'c': 'DOUBLE', 'd': 'BIGINT', 'e': 'VARCHAR'};
+
 # Test simple SELECT
 query II
-SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT 1 AS a, 2 AS b');
+SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT 1 AS a, 2 AS b', columns := {'a': 'BIGINT', 'b': 'BIGINT'});
 ----
 1	2
 
 # Test multiple rows
 query II
 SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT,
-    'SELECT 1 AS id, ''hello'' AS name UNION ALL SELECT 2, ''world'' UNION ALL SELECT 3, ''test'''
+    'SELECT 1 AS id, ''hello'' AS name UNION ALL SELECT 2, ''world'' UNION ALL SELECT 3, ''test''', columns := {'id': 'BIGINT', 'name': 'VARCHAR'}
 ) ORDER BY id;
 ----
 1	hello
@@ -50,7 +61,7 @@ SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT,
 # Test various data types
 query IIRR
 SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT,
-    'SELECT 42 AS int_col, 9223372036854775807 AS bigint_col, 3.14 AS float_col, 2.718281828 AS double_col'
+    'SELECT 42 AS int_col, 9223372036854775807 AS bigint_col, 3.14 AS float_col, 2.718281828 AS double_col', columns := {'int_col': 'BIGINT', 'bigint_col': 'BIGINT', 'float_col': 'DOUBLE', 'double_col': 'DOUBLE'}
 );
 ----
 42	9223372036854775807	3.14	2.718281828
@@ -58,7 +69,7 @@ SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT,
 # Test NULL values
 query II
 SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT,
-    'SELECT 1 AS a, NULL AS b UNION ALL SELECT NULL, ''test'''
+    'SELECT 1 AS a, NULL AS b UNION ALL SELECT NULL, ''test''', columns := {'a': 'BIGINT', 'b': 'VARCHAR'}
 ) ORDER BY a NULLS LAST;
 ----
 1	NULL
@@ -67,7 +78,7 @@ NULL	test
 # Test empty result set
 query I
 SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT,
-    'SELECT 1 AS a WHERE 1 = 0'
+    'SELECT 1 AS a WHERE 1 = 0', columns := {'a': 'BIGINT'}
 );
 ----
 
@@ -79,32 +90,32 @@ SELECT COUNT(*), SUM(n) FROM adbc_scan(getvariable('conn_id')::BIGINT,
         UNION ALL
         SELECT n + 1 FROM cnt WHERE n < 5000
     )
-    SELECT n, n * 2 AS doubled FROM cnt'
+    SELECT n, n * 2 AS doubled FROM cnt', columns := {'n': 'BIGINT', 'doubled': 'BIGINT'}
 );
 ----
 5000	12502500
 
 # Test parameterized query with a single integer parameter
 query I
-SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT ? AS value', params := row(42));
+SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT ? AS value', params := row(42), columns := {'value': 'BIGINT'});
 ----
 42
 
 # Test parameterized query with multiple parameters of different types
 query ITR
-SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT ? AS a, ? AS b, ? AS c', params := row(123, 'hello world', 2.5::DOUBLE));
+SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT ? AS a, ? AS b, ? AS c', params := row(123, 'hello world', 2.5::DOUBLE), columns := {'a': 'BIGINT', 'b': 'VARCHAR', 'c': 'DOUBLE'});
 ----
 123	hello world	2.5
 
 # Test parameterized query with NULL parameter
 query I
-SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT ? AS value', params := row(NULL::INTEGER));
+SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT ? AS value', params := row(NULL::INTEGER), columns := {'value': 'BIGINT'});
 ----
 NULL
 
 # Test parameterized query with multiple parameters including NULL
 query II
-SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT ? AS a, ? AS b', params := row(NULL::INTEGER, 99));
+SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT ? AS a, ? AS b', params := row(NULL::INTEGER, 99), columns := {'a': 'BIGINT', 'b': 'BIGINT'});
 ----
 NULL	99
 
@@ -114,7 +125,7 @@ NULL	99
 
 # Create a table with 30 columns of various types
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, '
+CALL adbc_execute(getvariable('conn_id')::BIGINT, '
     CREATE TABLE wide_table (
         col00 INTEGER, col01 TEXT, col02 REAL, col03 INTEGER, col04 TEXT,
         col05 REAL, col06 INTEGER, col07 TEXT, col08 REAL, col09 INTEGER,
@@ -126,7 +137,7 @@ SELECT adbc_execute(getvariable('conn_id')::BIGINT, '
 ');
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, '
+CALL adbc_execute(getvariable('conn_id')::BIGINT, '
     INSERT INTO wide_table VALUES
     (0, ''a0'', 0.0, 3, ''a3'', 5.5, 6, ''a6'', 8.8, 9, ''a10'', 11.11, 12, ''a13'', 14.14, 15, ''a16'', 17.17, 18, ''a19'', 20.20, 21, ''a22'', 23.23, 24, ''a25'', 26.26, 27, ''a28'', 29.29),
     (100, ''b0'', 100.0, 103, ''b3'', 105.5, 106, ''b6'', 108.8, 109, ''b10'', 111.11, 112, ''b13'', 114.14, 115, ''b16'', 117.17, 118, ''b19'', 120.20, 121, ''b22'', 123.23, 124, ''b25'', 126.26, 127, ''b28'', 129.29),
@@ -135,7 +146,7 @@ SELECT adbc_execute(getvariable('conn_id')::BIGINT, '
 
 # Select 5 randomly spaced columns
 query RTITT
-SELECT col02, col07, col15, col22, col28 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table') ORDER BY col02;
+SELECT col02, col07, col15, col22, col28 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table', columns := getvariable('wide_columns')) ORDER BY col02;
 ----
 0.0	a6	15	a22	a28
 100.0	b6	115	b22	b28
@@ -143,7 +154,7 @@ SELECT col02, col07, col15, col22, col28 FROM adbc_scan(getvariable('conn_id')::
 
 # Select columns in non-sequential order
 query TITII
-SELECT col28, col03, col19, col10, col00 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table') ORDER BY col00;
+SELECT col28, col03, col19, col10, col00 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table', columns := getvariable('wide_columns')) ORDER BY col00;
 ----
 a28	3	a19	a10	0
 b28	103	b19	b10	100
@@ -151,7 +162,7 @@ c28	203	c19	c10	200
 
 # Select only first column
 query I
-SELECT col00 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table') ORDER BY col00;
+SELECT col00 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table', columns := getvariable('wide_columns')) ORDER BY col00;
 ----
 0
 100
@@ -159,7 +170,7 @@ SELECT col00 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_
 
 # Select only last column
 query R
-SELECT col29 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table') ORDER BY col29;
+SELECT col29 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table', columns := getvariable('wide_columns')) ORDER BY col29;
 ----
 29.29
 129.29
@@ -167,7 +178,7 @@ SELECT col29 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_
 
 # Select first and last columns
 query IR
-SELECT col00, col29 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table') ORDER BY col00;
+SELECT col00, col29 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table', columns := getvariable('wide_columns')) ORDER BY col00;
 ----
 0	29.29
 100	129.29
@@ -175,20 +186,20 @@ SELECT col00, col29 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FRO
 
 # Aggregation with projection
 query IR
-SELECT COUNT(*), SUM(col00) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table');
+SELECT COUNT(*), SUM(col00) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table', columns := getvariable('wide_columns'));
 ----
 3	300
 
 # Projection with WHERE clause
 query IT
-SELECT col00, col01 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table') WHERE col00 > 50 ORDER BY col00;
+SELECT col00, col01 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table', columns := getvariable('wide_columns')) WHERE col00 > 50 ORDER BY col00;
 ----
 100	b0
 200	c0
 
 # Projection with expressions
 query IIR
-SELECT col00, col00 * 2 AS doubled, col02 + col05 AS sum_reals FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table') ORDER BY col00;
+SELECT col00, col00 * 2 AS doubled, col02 + col05 AS sum_reals FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table', columns := getvariable('wide_columns')) ORDER BY col00;
 ----
 0	0	5.5
 100	200	205.5
@@ -196,7 +207,7 @@ SELECT col00, col00 * 2 AS doubled, col02 + col05 AS sum_reals FROM adbc_scan(ge
 
 # Select same column multiple times
 query III
-SELECT col00, col00, col00 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table') ORDER BY col00;
+SELECT col00, col00, col00 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table', columns := getvariable('wide_columns')) ORDER BY col00;
 ----
 0	0	0
 100	100	100
@@ -204,10 +215,10 @@ SELECT col00, col00, col00 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELEC
 
 # Large number of rows with projection
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE large_wide (c0 INT, c1 INT, c2 INT, c3 INT, c4 INT, c5 INT, c6 INT, c7 INT, c8 INT, c9 INT)');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE large_wide (c0 INT, c1 INT, c2 INT, c3 INT, c4 INT, c5 INT, c6 INT, c7 INT, c8 INT, c9 INT)');
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, '
+CALL adbc_execute(getvariable('conn_id')::BIGINT, '
     WITH RECURSIVE cnt(n) AS (
         SELECT 0
         UNION ALL
@@ -217,21 +228,21 @@ SELECT adbc_execute(getvariable('conn_id')::BIGINT, '
 ');
 
 query II
-SELECT SUM(c0), SUM(c9) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM large_wide');
+SELECT SUM(c0), SUM(c9) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM large_wide', columns := getvariable('large_columns'));
 ----
 49995000	50085000
 
 query III
-SELECT SUM(c1), SUM(c5), SUM(c8) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM large_wide');
+SELECT SUM(c1), SUM(c5), SUM(c8) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM large_wide', columns := getvariable('large_columns'));
 ----
 50005000	50045000	50075000
 
 # Projection with NULL values
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE null_test (a INT, b TEXT, c REAL, d INT, e TEXT)');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE null_test (a INT, b TEXT, c REAL, d INT, e TEXT)');
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, '
+CALL adbc_execute(getvariable('conn_id')::BIGINT, '
     INSERT INTO null_test VALUES
     (1, NULL, 1.1, NULL, ''e1''),
     (NULL, ''b2'', NULL, 4, NULL),
@@ -239,14 +250,14 @@ SELECT adbc_execute(getvariable('conn_id')::BIGINT, '
 ');
 
 query ITI
-SELECT a, b, d FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM null_test') ORDER BY a NULLS LAST;
+SELECT a, b, d FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM null_test', columns := getvariable('null_columns')) ORDER BY a NULLS LAST;
 ----
 1	NULL	NULL
 3	b3	6
 NULL	b2	4
 
 query TR
-SELECT b, c FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM null_test') ORDER BY c NULLS LAST;
+SELECT b, c FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM null_test', columns := getvariable('null_columns')) ORDER BY c NULLS LAST;
 ----
 NULL	1.1
 b3	3.3
@@ -254,7 +265,7 @@ b2	NULL
 
 # Count with no columns
 query I
-SELECT COUNT(*) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM null_test');
+SELECT COUNT(*) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM null_test', columns := getvariable('null_columns'));
 ----
 3
 
@@ -269,93 +280,93 @@ SELECT COUNT(*) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM nu
 
 # Filter on a column not in the output (col02 is REAL, not in SELECT)
 query IT
-SELECT col00, col01 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table') WHERE col02 >= 100.0 ORDER BY col00;
+SELECT col00, col01 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table', columns := getvariable('wide_columns')) WHERE col02 >= 100.0 ORDER BY col00;
 ----
 100	b0
 200	c0
 
 # Filter on a later column not in output, select early columns
 query IR
-SELECT col00, col02 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table') WHERE col09 > 100 ORDER BY col00;
+SELECT col00, col02 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table', columns := getvariable('wide_columns')) WHERE col09 > 100 ORDER BY col00;
 ----
 100	100.0
 200	200.0
 
 # Filter on TEXT column not in output
 query IR
-SELECT col00, col05 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table') WHERE col07 = 'b6';
+SELECT col00, col05 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table', columns := getvariable('wide_columns')) WHERE col07 = 'b6';
 ----
 100	105.5
 
 # Select only one column, filter on a completely different column
 query T
-SELECT col28 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table') WHERE col03 > 150;
+SELECT col28 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table', columns := getvariable('wide_columns')) WHERE col03 > 150;
 ----
 c28
 
 # Select last column, filter on first column
 query R
-SELECT col29 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table') WHERE col00 = 0;
+SELECT col29 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table', columns := getvariable('wide_columns')) WHERE col00 = 0;
 ----
 29.29
 
 # Select first column, filter on last column
 query I
-SELECT col00 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table') WHERE col29 > 200.0;
+SELECT col00 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table', columns := getvariable('wide_columns')) WHERE col29 > 200.0;
 ----
 200
 
 # Multiple filters on non-projected columns
 query IT
-SELECT col00, col01 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table') WHERE col05 > 100.0 AND col09 < 150 ORDER BY col00;
+SELECT col00, col01 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table', columns := getvariable('wide_columns')) WHERE col05 > 100.0 AND col09 < 150 ORDER BY col00;
 ----
 100	b0
 
 # Aggregation with filter on non-projected column
 query I
-SELECT COUNT(*) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table') WHERE col09 > 50;
+SELECT COUNT(*) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table', columns := getvariable('wide_columns')) WHERE col09 > 50;
 ----
 2
 
 query IR
-SELECT COUNT(*), SUM(col00) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table') WHERE col02 >= 100.0;
+SELECT COUNT(*), SUM(col00) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM wide_table', columns := getvariable('wide_columns')) WHERE col02 >= 100.0;
 ----
 2	300
 
 # Filter on non-projected column with large result set
 query I
-SELECT SUM(c0) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM large_wide') WHERE c5 > 5000;
+SELECT SUM(c0) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM large_wide', columns := getvariable('large_columns')) WHERE c5 > 5000;
 ----
 37517490
 
 query II
-SELECT COUNT(*), SUM(c0) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM large_wide') WHERE c9 < 100;
+SELECT COUNT(*), SUM(c0) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM large_wide', columns := getvariable('large_columns')) WHERE c9 < 100;
 ----
 91	4095
 
 # Filter on one non-projected column, select a different non-adjacent column
 query I
-SELECT c0 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM large_wide') WHERE c5 = 10 AND c9 = 14;
+SELECT c0 FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM large_wide', columns := getvariable('large_columns')) WHERE c5 = 10 AND c9 = 14;
 ----
 5
 
 # Filter on non-projected column with NULL values
 query I
-SELECT a FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM null_test') WHERE e = 'e3';
+SELECT a FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM null_test', columns := getvariable('null_columns')) WHERE e = 'e3';
 ----
 3
 
 query IT
-SELECT a, b FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM null_test') WHERE d IS NULL ORDER BY a;
+SELECT a, b FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM null_test', columns := getvariable('null_columns')) WHERE d IS NULL ORDER BY a;
 ----
 1	NULL
 
 query IT
-SELECT a, b FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM null_test') WHERE c IS NOT NULL ORDER BY a;
+SELECT a, b FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM null_test', columns := getvariable('null_columns')) WHERE c IS NOT NULL ORDER BY a;
 ----
 1	NULL
 3	b3
 
 # Clean up
 statement ok
-SELECT adbc_disconnect(getvariable('conn_id')::BIGINT);
+CALL adbc_disconnect(getvariable('conn_id')::BIGINT);

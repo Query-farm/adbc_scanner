@@ -20,13 +20,13 @@ statement ok
 SET VARIABLE c = (SELECT adbc_connect({'driver':'mssql','uri':'sqlserver://sa:Adbc_Test_Pass123@localhost:1433'}));
 
 statement ok
-SELECT adbc_execute(getvariable('c')::BIGINT, 'IF OBJECT_ID(''dbo.adbc_mssql_items'', ''U'') IS NOT NULL DROP TABLE dbo.adbc_mssql_items');
+CALL adbc_execute(getvariable('c')::BIGINT, 'IF OBJECT_ID(''dbo.adbc_mssql_items'', ''U'') IS NOT NULL DROP TABLE dbo.adbc_mssql_items');
 
 statement ok
-SELECT adbc_execute(getvariable('c')::BIGINT, 'CREATE TABLE dbo.adbc_mssql_items (id INT PRIMARY KEY, name VARCHAR(50))');
+CALL adbc_execute(getvariable('c')::BIGINT, 'CREATE TABLE dbo.adbc_mssql_items (id INT PRIMARY KEY, name VARCHAR(50))');
 
 statement ok
-SELECT adbc_execute(getvariable('c')::BIGINT, 'INSERT INTO dbo.adbc_mssql_items VALUES (1, ''apple''), (2, ''pear''), (3, ''plum'')');
+CALL adbc_execute(getvariable('c')::BIGINT, 'INSERT INTO dbo.adbc_mssql_items VALUES (1, ''apple''), (2, ''pear''), (3, ''plum'')');
 
 # Full scan ("..." quoting works)
 query IT
@@ -55,7 +55,7 @@ SELECT id FROM adbc_scan_table(getvariable('c')::BIGINT, 'adbc_mssql_items', sch
 2
 
 statement ok
-SELECT adbc_execute(getvariable('c')::BIGINT, 'DROP TABLE dbo.adbc_mssql_items');
+CALL adbc_execute(getvariable('c')::BIGINT, 'DROP TABLE dbo.adbc_mssql_items');
 
 statement ok
-SELECT adbc_disconnect(getvariable('c')::BIGINT);
+CALL adbc_disconnect(getvariable('c')::BIGINT);

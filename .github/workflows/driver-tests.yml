@@ -77,6 +77,8 @@ jobs:
           --health-start-period 30s
 
     env:
+      # Must match the pinned DuckDB submodule and the Python test package.
+      DUCKDB_VERSION: "1.5.5"
       # Pin vcpkg to the commit this DuckDB version is built against (matches
       # extension-ci-tools' _extension_distribution.yml default) and use DuckDB's
       # public read-only binary cache so dependencies don't build from source.
@@ -89,6 +91,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Verify DuckDB release metadata
+        run: |
+          # Recursive shallow checkout omits tags. Without this tag, CMake
+          # labels the extension v0.0.1 and the Python package cannot load it.
+          git -C duckdb fetch --depth=1 origin tag "v${DUCKDB_VERSION}"
+          test "$(git -C duckdb rev-parse HEAD)" = \
+            "$(git -C duckdb rev-parse "v${DUCKDB_VERSION}^{commit}")"
+          git -C duckdb describe --tags --exact-match HEAD
 
       - name: Install build dependencies
         run: |
@@ -143,7 +154,7 @@ jobs:
       - name: Run Python command lifecycle regressions
         run: |
           python3 -m venv .runtime-tests
-          .runtime-tests/bin/pip install duckdb==1.5.5 adbc-driver-sqlite==1.12.0 pytest
+          .runtime-tests/bin/pip install "duckdb==${DUCKDB_VERSION}" adbc-driver-sqlite==1.12.0 pytest
           ADBC_SCANNER_EXTENSION="$PWD/build/release/extension/adbc_scanner/adbc_scanner.duckdb_extension" \
             .runtime-tests/bin/python -m pytest test/python -q
 

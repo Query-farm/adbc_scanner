@@ -1534,6 +1534,19 @@ static unique_ptr<FunctionData> AdbcScanDeserialize(Deserializer &deserializer, 
 }
 
 // Register the adbc_scan table function
+// Remote tables have no DuckDB rowid. Advertise no virtual columns: when a query
+// needs no column (count(*)), DuckDB then reads the first real column, instead
+// of the rowid inherited from TableCatalogEntry, which the scan filled from
+// whatever the first remote column was ("Could not convert string 'AR' to
+// INT64" on a table whose first column is text, and garbage from SELECT rowid).
+static virtual_column_map_t AdbcScanGetVirtualColumns(ClientContext &, optional_ptr<FunctionData>) {
+    return {};
+}
+
+static vector<column_t> AdbcScanGetRowIdColumns(ClientContext &, optional_ptr<FunctionData>) {
+    return {};
+}
+
 void RegisterAdbcTableFunctions(DatabaseInstance &db) {
     ExtensionLoader loader(db, "adbc");
 
@@ -1556,6 +1569,8 @@ void RegisterAdbcTableFunctions(DatabaseInstance &db) {
     adbc_scan_function.to_string = AdbcScanToString;
     adbc_scan_function.serialize = AdbcScanSerialize;
     adbc_scan_function.deserialize = AdbcScanDeserialize;
+    adbc_scan_function.get_virtual_columns = AdbcScanGetVirtualColumns;
+    adbc_scan_function.get_row_id_columns = AdbcScanGetRowIdColumns;
 
     CreateTableFunctionInfo info(adbc_scan_function);
     FunctionDescription desc;
@@ -1602,6 +1617,8 @@ void RegisterAdbcTableFunctions(DatabaseInstance &db) {
     adbc_scan_table_function.to_string = AdbcScanTableToString;
     adbc_scan_table_function.serialize = AdbcScanSerialize;
     adbc_scan_table_function.deserialize = AdbcScanDeserialize;
+    adbc_scan_table_function.get_virtual_columns = AdbcScanGetVirtualColumns;
+    adbc_scan_table_function.get_row_id_columns = AdbcScanGetRowIdColumns;
 
     CreateTableFunctionInfo scan_table_info(adbc_scan_table_function);
     FunctionDescription scan_table_desc;

@@ -1,0 +1,45 @@
+# name: test/sql/adbc_count_star.test
+# description: count(*) and rowid on attached tables whose first column is not an integer
+# group: [adbc]
+
+require adbc_scanner
+
+require-env HAS_ADBC_SQLITE_DRIVER
+
+statement ok
+SET VARIABLE conn_id = (SELECT adbc_connect({'driver': 'sqlite', 'uri': '/tmp/test_count_star.db'}));
+
+statement ok
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'DROP TABLE IF EXISTS countries');
+
+statement ok
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE countries (code TEXT, name TEXT)');
+
+statement ok
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO countries VALUES (''AR'', ''Argentina''), (''AU'', ''Australia'')');
+
+statement ok
+CALL adbc_disconnect(getvariable('conn_id')::BIGINT);
+
+statement ok
+ATTACH '/tmp/test_count_star.db' AS count_db (TYPE adbc, driver 'sqlite');
+
+# Remote tables advertise no rowid, so count(*) reads a real column instead of
+# a fake rowid filled from 'code' ("Could not convert string 'AR' to INT64")
+query I
+SELECT count(*) FROM count_db.countries;
+----
+2
+
+query I
+SELECT count(*) FROM count_db.countries WHERE name = 'Australia';
+----
+1
+
+statement error
+SELECT rowid FROM count_db.countries;
+----
+rowid
+
+statement ok
+DETACH count_db;

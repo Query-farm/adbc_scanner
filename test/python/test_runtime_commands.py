@@ -9,6 +9,7 @@ import ctypes
 import os
 import sqlite3
 import subprocess
+import sys
 from pathlib import Path
 
 import adbc_driver_manager
@@ -66,6 +67,44 @@ def test_unknown_row_count_and_typed_options(database, counting_driver):
     assert counters.AdbcTestCounter(9) == 0
     db.execute(f"CALL adbc_disconnect({handle})")
     assert [counters.AdbcTestCounter(i) for i in range(4)] == [1, 1, 1, 1]
+
+
+@pytest.mark.parametrize("target", ["bulk", "fail_bind", "fail_execute", "fail_producer"])
+def test_bulk_eager_binding_does_not_deadlock(counting_driver, target):
+    """Bound startup, backpressure and failure cleanup with an eager driver."""
+    path, _ = counting_driver
+    # A subprocess watchdog also catches native deadlocks without wedging CI.
+    script = r'''
+import ctypes
+import os
+import sys
+import duckdb
+
+path, target = sys.argv[1:]
+counts = ctypes.CDLL(path)
+counts.AdbcTestCounter.argtypes = [ctypes.c_int]
+counts.AdbcTestCounter.restype = ctypes.c_int
+with duckdb.connect(config={"allow_unsigned_extensions": True}) as db:
+    db.execute("LOAD '" + os.environ["ADBC_SCANNER_EXTENSION"].replace("'", "''") + "'")
+    handle = db.execute("SELECT adbc_connect({'driver': ?, 'entrypoint': 'AdbcDriverEagerInit'})", [path]).fetchone()[0]
+    expression = "i" if target != "fail_producer" else "CASE WHEN i >= 4096 THEN error('synthetic producer failure') ELSE i END"
+    try:
+        result = db.execute(f"SELECT * FROM adbc_insert({handle}, '{target}', (SELECT {expression} AS id FROM range(20000) t(i)), mode := 'create', max_batches := 1)").fetchall()
+    except duckdb.Error:
+        assert target != "bulk"
+    else:
+        assert target == "bulk"
+        assert result == [(20000,)]
+        assert counts.AdbcTestCounter(10) == 20000
+        assert counts.AdbcTestCounter(11) > 1
+        assert counts.AdbcTestCounter(4) == 1
+    if target in {"fail_bind", "fail_producer"}:
+        assert counts.AdbcTestCounter(4) == 0
+    # The connection remains usable after failed ingestion.
+    assert db.execute(f"CALL adbc_execute({handle}, 'probe')").fetchall() == [(None,)]
+    db.execute(f"CALL adbc_disconnect({handle})")
+'''
+    subprocess.run([sys.executable, "-c", script, path, target], check=True, timeout=30)
 
 
 @pytest.mark.parametrize(

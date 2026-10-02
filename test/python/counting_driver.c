@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int counters[10];
+static int counters[12];
 struct DatabaseState { int fail_database; int fail_connection; };
 
 void AdbcTestReset(void) { memset(counters, 0, sizeof(counters)); }
@@ -74,7 +74,7 @@ static AdbcStatusCode ConnectionRelease(struct AdbcConnection *connection, struc
 }
 static AdbcStatusCode StatementNew(struct AdbcConnection *connection,
                                    struct AdbcStatement *statement, struct AdbcError *error) {
-    statement->private_data = malloc(1);
+    statement->private_data = calloc(1, 1);
     return statement->private_data ? ADBC_STATUS_OK : ADBC_STATUS_INTERNAL;
 }
 static AdbcStatusCode StatementRelease(struct AdbcStatement *statement, struct AdbcError *error) {
@@ -121,5 +121,55 @@ AdbcStatusCode AdbcDriverTestInit(int version, void *out, struct AdbcError *erro
     driver->StatementSetSqlQuery = SetSql;
     driver->StatementExecuteQuery = Execute;
     driver->StatementPrepare = Prepare;
+    return ADBC_STATUS_OK;
+}
+
+/* Deliberately consume in BindStream, as a remote driver may do when uploading
+ * bound batches. A producer that binds synchronously before feeding deadlocks. */
+static AdbcStatusCode IngestOption(struct AdbcStatement *statement, const char *key,
+                                   const char *value, struct AdbcError *error) {
+    if (!strcmp(key, "adbc.ingest.target_table")) {
+        *(char *)statement->private_data = !strcmp(value, "fail_bind") ? 1 :
+                                           !strcmp(value, "fail_execute") ? 2 : 0;
+    }
+    return ADBC_STATUS_OK;
+}
+static AdbcStatusCode EagerBind(struct AdbcStatement *statement, struct ArrowArrayStream *input,
+                               struct AdbcError *error) {
+    struct ArrowArrayStream stream = *input;
+    input->release = NULL;
+    AdbcStatusCode status = ADBC_STATUS_OK;
+    if (*(char *)statement->private_data == 1) {
+        status = ADBC_STATUS_IO;
+    } else {
+        for (;;) {
+            struct ArrowArray batch = {0};
+            int result = stream.get_next(&stream, &batch);
+            if (result) {
+                if (batch.release) batch.release(&batch);
+                status = ADBC_STATUS_IO;
+                break;
+            }
+            if (!batch.release) break;
+            counters[10] += (int)batch.length;
+            counters[11]++;
+            batch.release(&batch);
+        }
+    }
+    stream.release(&stream);
+    return status;
+}
+static AdbcStatusCode IngestExecute(struct AdbcStatement *statement, struct ArrowArrayStream *out,
+                                    int64_t *affected, struct AdbcError *error) {
+    if (*(char *)statement->private_data == 2) return ADBC_STATUS_IO;
+    return Execute(statement, out, affected, error);
+}
+AdbcStatusCode AdbcDriverEagerInit(int version, void *out, struct AdbcError *error) {
+    AdbcStatusCode status = AdbcDriverTestInit(version, out, error);
+    if (status != ADBC_STATUS_OK) return status;
+    struct AdbcDriver *driver = out;
+    driver->StatementSetOption = IngestOption;
+    driver->StatementBindStream = EagerBind;
+    driver->StatementExecuteQuery = IngestExecute;
     return ADBC_STATUS_OK;
 }

@@ -111,13 +111,9 @@ unique_ptr<GlobalSinkState> AdbcInsert::GetGlobalSinkState(ClientContext &contex
 	                               state->client_properties);
 	state->consumer.SetSchema(&arrow_schema);
 
-	// Bind the stream, then start the background ExecuteUpdate consumer so it
-	// drains batches concurrently with the producer (keeps RSS flat).
-	try {
-		state->consumer.BindStream();
-	} catch (std::exception &e) {
-		throw IOException("ADBC insert: failed to bind stream: " + string(e.what()));
-	}
+	// Bind and drain on the background consumer, concurrently with the producer:
+	// a driver may consume the stream while binding, and the overlap keeps RSS
+	// flat. Bind failures surface when the sink finishes.
 	state->consumer.StartConsumer();
 
 	return std::move(state);

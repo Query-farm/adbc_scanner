@@ -59,11 +59,10 @@ struct AdbcInsertGlobalState : public GlobalTableFunctionState {
     shared_ptr<AdbcStatementWrapper> statement;
     unique_ptr<AdbcInsertStream> insert_stream;
     int64_t rows_inserted = 0;
-    bool stream_bound = false;
     ClientProperties client_properties;
 
-    // Background consumer: runs AdbcStatement::ExecuteUpdate, which pulls from
-    // insert_stream via GetNext concurrently with the producer pushing batches.
+    // Drivers may pull input during BindStream or ExecuteUpdate. Both calls
+    // must overlap the producer so an eager binder cannot deadlock startup.
     std::thread exec_thread;
     bool exec_ok = false;
     string exec_error;
@@ -76,6 +75,7 @@ struct AdbcInsertGlobalState : public GlobalTableFunctionState {
     void StartConsumer() {
         exec_thread = std::thread([this]() {
             try {
+                statement->BindStream(&insert_stream->stream);
                 statement->ExecuteUpdate(&exec_rows_affected);
                 exec_ok = true;
                 insert_stream->MarkConsumerStopped(string());
@@ -85,7 +85,7 @@ struct AdbcInsertGlobalState : public GlobalTableFunctionState {
                 insert_stream->MarkConsumerStopped(exec_error);
             } catch (...) {
                 exec_ok = false;
-                exec_error = "unknown error during ExecuteUpdate";
+                exec_error = "unknown error during bulk ingestion";
                 insert_stream->MarkConsumerStopped(exec_error);
             }
         });
@@ -205,17 +205,8 @@ static unique_ptr<GlobalTableFunctionState> AdbcInsertInitGlobal(ClientContext &
                                    global_state->client_properties);
     global_state->insert_stream->SetSchema(&schema);
 
-    // Bind the stream to the statement (stores the stream; does not consume yet)
-    try {
-        global_state->statement->BindStream(&global_state->insert_stream->stream);
-        global_state->stream_bound = true;
-    } catch (Exception &e) {
-        throw IOException("adbc_insert: Failed to bind stream: " + string(e.what()));
-    }
-
-    // Start draining concurrently: ExecuteUpdate runs on its own thread and
-    // pulls batches from the bound stream as we push them. Without this overlap
-    // the queue would have to hold the entire source before ExecuteUpdate ran.
+    // Start binding and execution concurrently with the producer. A driver can
+    // consume the stream in either call; neither may run on the producer thread.
     global_state->StartConsumer();
 
     return std::move(global_state);
@@ -265,7 +256,7 @@ static OperatorFinalizeResultType AdbcInsertFinalize(ExecutionContext &context, 
     global_state.insert_stream->Finish();
     global_state.JoinConsumer();
 
-    if (global_state.stream_bound && !global_state.exec_ok) {
+    if (!global_state.exec_ok) {
         throw IOException("adbc_insert: Failed to execute insert: " + global_state.exec_error);
     }
 

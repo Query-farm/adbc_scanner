@@ -37,50 +37,51 @@ def client(pipe: Any, driver: str, root: str, name: str, extension: str) -> None
     address = "127.0.0.1:" + address.rsplit(":", 1)[1]
     with duckdb.connect(config={"allow_unsigned_extensions": True}) as db:
         db.execute("LOAD '" + extension.replace("'", "''") + "'")
+        uri = "grainlift+iroh://" + endpoint["endpoint_id"]
+        options = {
+            "grainlift.target": "sqlite",
+            "grainlift.iroh.secret_key_file": str(directory / f"{name}.key"),
+            "grainlift.iroh.direct_address": address,
+        }
+
+        def literal(value):
+            return "'" + value.replace("'", "''") + "'"
+
+        # Exercise URI-derived scope and file-backed credentials through both
+        # explicit command handles and the independent attached catalog.
+        extra = ", ".join(
+            literal(key) + ": " + literal(value) for key, value in options.items()
+        )
+        db.execute(
+            "CREATE SECRET grainlift_client (TYPE adbc, DRIVER "
+            + literal(driver)
+            + ", URI "
+            + literal(uri)
+            + ", EXTRA_OPTIONS MAP {"
+            + extra
+            + "})"
+        )
+        assert db.execute(
+            "SELECT scope FROM duckdb_secrets() WHERE name = 'grainlift_client'"
+        ).fetchone() == ([uri],)
         row = db.execute(
-            """SELECT adbc_connect({
-                'driver': ?, 'entrypoint': 'AdbcDriverGrainliftInit',
-                'grainlift.uri': ?, 'grainlift.target': 'sqlite',
-                'grainlift.iroh.secret_key': ?,
-                'grainlift.iroh.direct_address': ?,
-                'grainlift.request_timeout_ms': 10000
-            })""",
-            [
-                driver,
-                "grainlift+iroh://" + endpoint["endpoint_id"],
-                (directory / f"{name}.key").read_text(),
-                address,
-            ],
+            "SELECT adbc_connect({'secret': 'grainlift_client'})"
         ).fetchone()
         assert row is not None
         handle = row[0]
+        db.execute("SET VARIABLE grainlift_conn = " + str(int(handle)))
         db.execute(
             "SELECT * FROM adbc_scan(?::BIGINT, ?, columns := {'timeout': 'BIGINT'})",
             [handle, f"PRAGMA busy_timeout = {BUSY_MS}"],
         ).fetchall()
         # Each reader owns a READ_ONLY catalog and its independent pooled ADBC
         # connections. Writes continue through the explicit command handle.
-        options = {
-            "driver": driver,
-            "entrypoint": "AdbcDriverGrainliftInit",
-            "grainlift.uri": "grainlift+iroh://" + endpoint["endpoint_id"],
-            "grainlift.target": "sqlite",
-            "grainlift.iroh.secret_key": (directory / f"{name}.key").read_text(),
-            "grainlift.iroh.direct_address": address,
-        }
-        attach_options = ", ".join(
-            '"' + key + '" ' + "'" + value.replace("'", "''") + "'"
-            for key, value in options.items()
-        )
-        attach_sql = (
-            "ATTACH '' AS shared (TYPE adbc, READ_ONLY, "
-            + attach_options
-            + ', "grainlift.request_timeout_ms" 10000)'
-        )
         try:
-            db.execute(attach_sql)
+            db.execute(
+                "ATTACH '' AS shared (TYPE adbc, READ_ONLY, SECRET 'grainlift_client')"
+            )
         except duckdb.Error:
-            # ATTACH errors may reproduce options containing the private key.
+            # Do not persist raw downstream errors in test artifacts.
             raise RuntimeError("read-only Iroh catalog setup failed") from None
         pipe.send({"ready": name})
         try:
@@ -100,7 +101,7 @@ def client(pipe: Any, driver: str, root: str, name: str, extension: str) -> None
                             "SELECT * FROM adbc_scan(?::BIGINT, ?, columns := {'id': 'BIGINT', 'value': 'BIGINT'})",
                             [handle, value],
                         ).fetchall()
-                    elif method == "catalog":
+                    elif method in {"catalog", "local"}:
                         rows = db.execute(value).fetchall()
                     elif method == "explain":
                         plan = db.execute(

@@ -31,6 +31,10 @@ LOAD adbc_scanner;
 
 ## Runtime command API (breaking change)
 
+Bulk ingestion with `adbc_insert` uses a bounded producer queue. Stream binding
+and execution run together on its consumer thread, so drivers that read during
+`BindStream` (including Grainlift) can ingest without blocking producer startup.
+
 This source version removes scalar remote commands. Use `CALL` for execution,
 transactions, disconnecting, and cache clearing:
 
@@ -58,6 +62,23 @@ against the bound schema before Arrow data is read.
 
 See [the migration guide](docs/runtime-commands.md) for transactions, connection
 ownership, typed options, and driver limitations.
+
+## Secret scope defaults
+
+ADBC secrets may omit `SCOPE` when they specify a non-empty `URI`; the URI then
+becomes the default lookup scope. Explicit scopes remain unchanged and can
+match a different or broader prefix. Named secret references work either way.
+
+```sql
+CREATE SECRET example (
+    TYPE adbc,
+    DRIVER 'postgresql',
+    URI 'postgresql://host/database'
+);
+```
+
+This default requires an extension build containing the change. A secret with
+neither a URI nor an explicit scope is rejected.
 
 ## Development
 

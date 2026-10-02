@@ -19,6 +19,10 @@ BIGINT handle to every function. The functions now take the alias of an
 An unknown alias, or one naming a non-ADBC database, fails at bind with the
 alias in the message. Aliases resolve case-insensitively, like any catalog name.
 
+DuckDB treats an `http://` or `https://` ATTACH path as a remote file and asks
+for the httpfs extension, so pass such URIs (e.g. Trino's) as the `uri` option:
+`ATTACH '' AS tr (TYPE adbc, driver 'trino', uri 'http://host:8080')`.
+
 ## Runtime commands
 
 `adbc_execute` performs its work in the table-function execution callback.

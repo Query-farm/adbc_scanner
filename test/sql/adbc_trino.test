@@ -13,8 +13,9 @@ require adbc_scanner
 
 require-env ADBC_TRINO_TEST_AVAILABLE
 
+# An http(s):// ATTACH path makes DuckDB require httpfs, so pass the URI as an option
 statement ok
-ATTACH 'http://localhost:18080' AS tr (TYPE adbc, driver 'trino', username 'trino');
+ATTACH '' AS tr (TYPE adbc, driver 'trino', uri 'http://localhost:18080', username 'trino');
 
 # Server-side query
 query T

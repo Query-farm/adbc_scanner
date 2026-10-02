@@ -11,27 +11,21 @@ require adbc_scanner
 
 require-env ADBC_POSTGRES_TEST_AVAILABLE
 
-# Clean slate via the imperative API
-statement ok
-SET VARIABLE c = (SELECT adbc_connect({'driver':'postgresql','uri':'postgresql://postgres:postgres@localhost:5432/postgres'}));
-
-statement ok
-CALL adbc_execute(getvariable('c')::BIGINT, 'DROP TABLE IF EXISTS adbc_pg_events');
-
-statement ok
-CALL adbc_execute(getvariable('c')::BIGINT, 'DROP TABLE IF EXISTS adbc_pg_big');
-
-statement ok
-CALL adbc_execute(getvariable('c')::BIGINT, 'CREATE TABLE adbc_pg_events (id INTEGER PRIMARY KEY, name TEXT, ts TIMESTAMPTZ, amount NUMERIC(10,2), tags TEXT[], active BOOLEAN)');
-
-statement ok
-CALL adbc_execute(getvariable('c')::BIGINT, 'INSERT INTO adbc_pg_events VALUES (1,''alpha'',''2024-01-01 10:00:00+00'',12.50,ARRAY[''a'',''b''],true),(2,''beta'',''2024-06-15 08:30:00+00'',99.99,ARRAY[''c''],false),(3,''gamma'',''2024-12-31 23:59:59+00'',0.01,ARRAY[]::text[],true)');
-
-statement ok
-CALL adbc_disconnect(getvariable('c')::BIGINT);
-
+# Clean slate through the attached database's own SQL
 statement ok
 ATTACH 'postgresql://postgres:postgres@localhost:5432/postgres' AS pg (TYPE adbc, driver 'postgresql');
+
+statement ok
+CALL adbc_execute('pg', 'DROP TABLE IF EXISTS adbc_pg_events');
+
+statement ok
+CALL adbc_execute('pg', 'DROP TABLE IF EXISTS adbc_pg_big');
+
+statement ok
+CALL adbc_execute('pg', 'CREATE TABLE adbc_pg_events (id INTEGER PRIMARY KEY, name TEXT, ts TIMESTAMPTZ, amount NUMERIC(10,2), tags TEXT[], active BOOLEAN)');
+
+statement ok
+CALL adbc_execute('pg', 'INSERT INTO adbc_pg_events VALUES (1,''alpha'',''2024-01-01 10:00:00+00'',12.50,ARRAY[''a'',''b''],true),(2,''beta'',''2024-06-15 08:30:00+00'',99.99,ARRAY[''c''],false),(3,''gamma'',''2024-12-31 23:59:59+00'',0.01,ARRAY[]::text[],true)');
 
 # Type mapping: timestamptz and arrays map to real DuckDB types (not VARCHAR)
 query I
@@ -103,21 +97,12 @@ SELECT COUNT(*) FROM pg.public.adbc_pg_big;
 ----
 50010
 
-statement ok
-DETACH pg;
-
 # Cleanup
 statement ok
-SET VARIABLE c2 = (SELECT adbc_connect({'driver':'postgresql','uri':'postgresql://postgres:postgres@localhost:5432/postgres'}));
+CALL adbc_execute('pg', 'DROP TABLE IF EXISTS adbc_pg_big');
 
 statement ok
-CALL adbc_execute(getvariable('c2')::BIGINT, 'DROP TABLE IF EXISTS adbc_pg_big');
-
-statement ok
-CALL adbc_execute(getvariable('c2')::BIGINT, 'DROP TABLE IF EXISTS adbc_pg_events');
-
-statement ok
-CALL adbc_disconnect(getvariable('c2')::BIGINT);
+CALL adbc_execute('pg', 'DROP TABLE IF EXISTS adbc_pg_events');
 
 # ============================================================================
 # Regression: ANALYZE'd tables must not corrupt query results
@@ -131,35 +116,29 @@ CALL adbc_disconnect(getvariable('c2')::BIGINT);
 # ============================================================================
 
 statement ok
-SET VARIABLE c3 = (SELECT adbc_connect({'driver':'postgresql','uri':'postgresql://postgres:postgres@localhost:5432/postgres'}));
+CALL adbc_execute('pg', 'DROP TABLE IF EXISTS adbc_pg_stats');
 
 statement ok
-CALL adbc_execute(getvariable('c3')::BIGINT, 'DROP TABLE IF EXISTS adbc_pg_stats');
+CALL adbc_execute('pg', 'CREATE TABLE adbc_pg_stats (id INTEGER, s TEXT)');
 
 statement ok
-CALL adbc_execute(getvariable('c3')::BIGINT, 'CREATE TABLE adbc_pg_stats (id INTEGER, s TEXT)');
-
-statement ok
-CALL adbc_execute(getvariable('c3')::BIGINT, 'INSERT INTO adbc_pg_stats VALUES (1, ''fifteen charact''), (2, ''fift characters'')');
+CALL adbc_execute('pg', 'INSERT INTO adbc_pg_stats VALUES (1, ''fifteen charact''), (2, ''fift characters'')');
 
 # Table with a genuinely all-NULL column, to check the opposite inference
 statement ok
-CALL adbc_execute(getvariable('c3')::BIGINT, 'DROP TABLE IF EXISTS adbc_pg_stats_null');
+CALL adbc_execute('pg', 'DROP TABLE IF EXISTS adbc_pg_stats_null');
 
 statement ok
-CALL adbc_execute(getvariable('c3')::BIGINT, 'CREATE TABLE adbc_pg_stats_null (id INTEGER, s TEXT)');
+CALL adbc_execute('pg', 'CREATE TABLE adbc_pg_stats_null (id INTEGER, s TEXT)');
 
 statement ok
-CALL adbc_execute(getvariable('c3')::BIGINT, 'INSERT INTO adbc_pg_stats_null VALUES (NULL, NULL), (NULL, NULL)');
+CALL adbc_execute('pg', 'INSERT INTO adbc_pg_stats_null VALUES (NULL, NULL), (NULL, NULL)');
 
 statement ok
-CALL adbc_execute(getvariable('c3')::BIGINT, 'ANALYZE adbc_pg_stats');
+CALL adbc_execute('pg', 'ANALYZE adbc_pg_stats');
 
 statement ok
-CALL adbc_execute(getvariable('c3')::BIGINT, 'ANALYZE adbc_pg_stats_null');
-
-statement ok
-CALL adbc_disconnect(getvariable('c3')::BIGINT);
+CALL adbc_execute('pg', 'ANALYZE adbc_pg_stats_null');
 
 statement ok
 ATTACH 'postgresql://postgres:postgres@localhost:5432/postgres' AS pgs (TYPE adbc, driver 'postgresql', READ_ONLY);
@@ -250,13 +229,10 @@ statement ok
 DETACH pgs;
 
 statement ok
-SET VARIABLE c4 = (SELECT adbc_connect({'driver':'postgresql','uri':'postgresql://postgres:postgres@localhost:5432/postgres'}));
+CALL adbc_execute('pg', 'DROP TABLE IF EXISTS adbc_pg_stats');
 
 statement ok
-CALL adbc_execute(getvariable('c4')::BIGINT, 'DROP TABLE IF EXISTS adbc_pg_stats');
+CALL adbc_execute('pg', 'DROP TABLE IF EXISTS adbc_pg_stats_null');
 
 statement ok
-CALL adbc_execute(getvariable('c4')::BIGINT, 'DROP TABLE IF EXISTS adbc_pg_stats_null');
-
-statement ok
-CALL adbc_disconnect(getvariable('c4')::BIGINT);
+DETACH pg;

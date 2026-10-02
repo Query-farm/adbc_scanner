@@ -30,14 +30,12 @@ public:
 	                     const string &path, AccessMode access_mode);
 	~AdbcCatalog();
 
-	//! The ADBC connection (shared ownership with the catalog). Kept as the
-	//! primary connection (registered in the ConnectionRegistry); concurrent reads
-	//! lease their own from connection_pool instead.
+	//! The ADBC connection (shared ownership with the catalog). The primary
+	//! connection, used by the adbc_* functions in autocommit; concurrent
+	//! reads lease their own from connection_pool instead.
 	shared_ptr<AdbcConnectionWrapper> connection;
 	//! Pool of connections over the same shared AdbcDatabase.
 	unique_ptr<AdbcConnectionPool> connection_pool;
-	//! The connection handle registered in the ConnectionRegistry
-	int64_t connection_handle;
 	//! The attach path (driver info)
 	string attach_path;
 	//! Access mode (read-only or read-write)

@@ -3,6 +3,7 @@
 #include "storage/adbc_transaction.hpp"
 #include "storage/adbc_schema_entry.hpp"
 #include "adbc_connection.hpp"
+#include "adbc_functions.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
 #include "duckdb/storage/table_storage_info.hpp"
 #include "duckdb/function/table_function.hpp"
@@ -59,30 +60,20 @@ TableFunction AdbcTableEntry::GetScanFunction(ClientContext &context, unique_ptr
 	// Lease a connection from the pool for this scan so concurrent scans (joins
 	// across attached tables, or parallel queries) never share one ADBC connection
 	// — ADBC connections are not safe for concurrent statement execution. The
-	// connection is registered under a temporary handle so the existing
-	// adbc_scan_table bind can resolve it; the scan's bind data then holds a strong
-	// reference, keeping it alive for the whole query and returning it to the pool
-	// when the query (and its bind data) is destroyed.
+	// scan's bind data holds the lease, keeping it alive for the whole query and
+	// returning it to the pool when the query (and its bind data) is destroyed.
 	auto scan_connection = adbc_catalog.GetPool().GetConnectionShared();
-	auto &registry = ConnectionRegistry::Get();
-	auto temp_handle = registry.Add(scan_connection, &context);
 
-	// Look up adbc_scan_table from the catalog
 	auto &adbc_scan_table_function_set = GetTableFunction(db, "adbc_scan_table");
 	auto adbc_scan_table_function = adbc_scan_table_function_set.functions.GetFunctionByArguments(
-	    context,
-	    {LogicalType::BIGINT, LogicalType::VARCHAR});
+	    context, {LogicalType::VARCHAR, LogicalType::VARCHAR});
 
-	// Build the inputs: temp connection handle, table_name.
+	// Inputs: the attached database's name (informational here) and table_name.
 	// NOTE: use the Value(string) VARCHAR constructor, NOT Value::CreateValue(name):
 	// the CreateValue(string) overload returns Value::BLOB(...), so a table or schema
 	// name with any non-ASCII byte (e.g. "naïve_café") throws "Invalid byte encountered
-	// in STRING -> BLOB conversion" before the scan even runs. adbc_scan_table expects a
-	// VARCHAR table_name argument.
-	vector<Value> inputs = {
-	    Value::BIGINT(temp_handle),
-	    Value(name)
-	};
+	// in STRING -> BLOB conversion" before the scan even runs.
+	vector<Value> inputs = {Value(catalog.GetName()), Value(name)};
 
 	// Set up named parameters for schema (if not "main") and batch_size (if set)
 	named_parameter_map_t param_map;
@@ -96,32 +87,9 @@ TableFunction AdbcTableEntry::GetScanFunction(ClientContext &context, unique_ptr
 	vector<LogicalType> return_types;
 	vector<string> names;
 	TableFunctionRef empty_ref;
-
-	TableFunctionBindInput bind_input(inputs,
-	                                  param_map,
-	                                  return_types,
-	                                  names,
-	                                  nullptr,
-	                                  nullptr,
-	                                  adbc_scan_table_function,
-	                                  empty_ref);
-
-	unique_ptr<FunctionData> result;
-	try {
-		result = adbc_scan_table_function.bind(context, bind_input, return_types, names);
-	} catch (...) {
-		// Bind failed: drop the temporary registry entry so the leased connection
-		// (now only referenced by the local shared_ptr) returns to the pool.
-		registry.Remove(temp_handle);
-		throw;
-	}
-	bind_data = std::move(result);
-
-	// The scan's bind data now holds its own strong reference to the leased
-	// connection; remove the temporary registry entry. This does not free the
-	// connection — bind_data keeps it alive until the query ends, at which point
-	// the pool reclaims it.
-	registry.Remove(temp_handle);
+	TableFunctionBindInput bind_input(inputs, param_map, return_types, names, nullptr, nullptr,
+	                                  adbc_scan_table_function, empty_ref);
+	bind_data = AdbcScanTableBindWithConnection(context, bind_input, std::move(scan_connection), return_types, names);
 
 	return adbc_scan_table_function;
 }

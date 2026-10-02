@@ -15,9 +15,6 @@ static void LoadInternal(duckdb::ExtensionLoader &loader) {
 	// Register ADBC secret type and create secret function
 	RegisterAdbcSecrets(loader);
 
-	// Register volatile adbc_connect and runtime connection commands
-	RegisterAdbcScalarFunctions(loader.GetDatabaseInstance());
-
 	// Register ADBC table functions (adbc_scan)
 	RegisterAdbcTableFunctions(loader.GetDatabaseInstance());
 

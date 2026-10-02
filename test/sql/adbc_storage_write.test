@@ -11,19 +11,13 @@ require-env HAS_ADBC_SQLITE_DRIVER
 # ============================================
 
 statement ok
-SET VARIABLE setup_conn = (SELECT adbc_connect({'driver': 'sqlite', 'uri': '/tmp/test_storage_write.db'}));
+ATTACH '__TEST_DIR__/test_storage_write.db' AS w (TYPE adbc, driver 'sqlite');
 
 statement ok
-CALL adbc_execute(getvariable('setup_conn')::BIGINT, 'DROP TABLE IF EXISTS big');
+CALL adbc_execute('w', 'DROP TABLE IF EXISTS big');
 
 statement ok
-CALL adbc_execute(getvariable('setup_conn')::BIGINT, 'DROP TABLE IF EXISTS small');
-
-statement ok
-CALL adbc_disconnect(getvariable('setup_conn')::BIGINT);
-
-statement ok
-ATTACH '/tmp/test_storage_write.db' AS w (TYPE adbc, driver 'sqlite');
+CALL adbc_execute('w', 'DROP TABLE IF EXISTS small');
 
 # ============================================
 # CREATE TABLE AS - large source exercises the bounded-queue streaming insert

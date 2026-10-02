@@ -55,12 +55,16 @@ struct AdbcColumnStatistics {
 
 // Bind data for adbc_scan - holds the connection, query, and schema information
 struct AdbcScanBindData : public TableFunctionData {
-    // Connection handle
-    int64_t connection_id;
+    // Attached ADBC database (its ATTACH alias)
+    string database;
     // SQL query to execute
     string query;
     // Connection wrapper (kept alive during scan)
     shared_ptr<AdbcConnectionWrapper> connection;
+    // Whether `database` names the connection, resolved again at execution
+    // (adbc_scan / adbc_scan_table). False for ATTACH scans, whose bind data
+    // owns a pooled connection lease.
+    bool resolve_at_runtime = false;
     // Arrow schema from the result
     ArrowSchemaWrapper schema_root;
     // Arrow table schema for type conversion
@@ -522,11 +526,11 @@ static unique_ptr<FunctionData> AdbcScanBind(ClientContext &context, TableFuncti
                                               vector<LogicalType> &return_types, vector<string> &names) {
     auto bind_data = make_uniq<AdbcScanBindData>();
 
-    // Check for NULL connection handle first
+    // Check for NULL database name first
     if (input.inputs[0].IsNull()) {
-        throw InvalidInputException("adbc_scan: Connection handle cannot be NULL");
+        throw InvalidInputException("adbc_scan: database name cannot be NULL");
     }
-    bind_data->connection_id = input.inputs[0].GetValue<int64_t>();
+    bind_data->database = input.inputs[0].IsNull() ? string() : input.inputs[0].GetValue<string>();
 
     // Check for NULL query before connection validation
     if (input.inputs[1].IsNull()) {
@@ -538,7 +542,8 @@ static unique_ptr<FunctionData> AdbcScanBind(ClientContext &context, TableFuncti
     bind_data->batch_size = ExtractBatchSize(input, "adbc_scan");
 
     // Now validate and get connection wrapper
-    bind_data->connection = GetValidatedConnection(context, bind_data->connection_id, "adbc_scan");
+    bind_data->connection = GetAttachedConnection(context, Value(bind_data->database), "adbc_scan", false);
+    bind_data->resolve_at_runtime = true;
 
     // Check for params named parameter
     auto params_it = input.named_parameters.find("params");
@@ -599,18 +604,29 @@ static unique_ptr<FunctionData> AdbcScanBind(ClientContext &context, TableFuncti
     return std::move(bind_data);
 }
 
+// The connection a scan executes on. A prepared statement can run after DETACH
+// or inside a transaction it was not bound in, so a scan that names its
+// database resolves it again; an ATTACH scan keeps the lease it was bound with.
+static shared_ptr<AdbcConnectionWrapper> ScanConnection(ClientContext &context, const AdbcScanBindData &bind_data,
+                                                        const string &function_name) {
+    if (bind_data.resolve_at_runtime) {
+        return GetAttachedConnection(context, Value(bind_data.database), function_name, false);
+    }
+    if (!bind_data.connection->IsInitialized()) {
+        throw InvalidInputException("%s: Connection has been closed", function_name);
+    }
+    return bind_data.connection;
+}
+
 // Global init - create and execute the prepared statement
 static unique_ptr<GlobalTableFunctionState> AdbcScanInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
     auto &bind_data = input.bind_data->Cast<AdbcScanBindData>();
     auto global_state = make_uniq<AdbcScanGlobalState>();
 
-    // Validate connection is still active
-    if (!bind_data.connection->IsInitialized()) {
-        throw InvalidInputException("adbc_scan: Connection has been closed");
-    }
+    auto connection = ScanConnection(context, bind_data, "adbc_scan");
 
     // Create fresh statement for this scan (allows multiple scans of same bind_data)
-    global_state->statement = make_shared_ptr<AdbcStatementWrapper>(bind_data.connection);
+    global_state->statement = make_shared_ptr<AdbcStatementWrapper>(connection);
     global_state->statement->Init();
 
     // Set batch size hint if provided (best-effort, driver-specific)
@@ -848,8 +864,7 @@ static InsertionOrderPreservingMap<string> AdbcScanToString(TableFunctionToStrin
         result["BatchSize"] = to_string(bind_data.batch_size);
     }
 
-    // Show connection ID for debugging
-    result["Connection"] = to_string(bind_data.connection_id);
+    result["Database"] = bind_data.database;
 
     return result;
 }
@@ -876,15 +891,19 @@ static string BuildQualifiedTableName(const string &catalog, const string &schem
     return result;
 }
 
-static unique_ptr<FunctionData> AdbcScanTableBind(ClientContext &context, TableFunctionBindInput &input,
-                                                   vector<LogicalType> &return_types, vector<string> &names) {
+// Bind adbc_scan_table over an already-resolved connection. ATTACH scans
+// (AdbcTableEntry::GetScanFunction) lease their own pooled connection and bind
+// through this directly; inputs[0] is then just the attached database's name.
+unique_ptr<FunctionData> AdbcScanTableBindWithConnection(ClientContext &context, TableFunctionBindInput &input,
+                                                         shared_ptr<AdbcConnectionWrapper> connection,
+                                                         vector<LogicalType> &return_types, vector<string> &names) {
     auto bind_data = make_uniq<AdbcScanBindData>();
 
-    // Check for NULL connection handle first
+    // Check for NULL database name first
     if (input.inputs[0].IsNull()) {
-        throw InvalidInputException("adbc_scan_table: Connection handle cannot be NULL");
+        throw InvalidInputException("adbc_scan_table: database name cannot be NULL");
     }
-    bind_data->connection_id = input.inputs[0].GetValue<int64_t>();
+    bind_data->database = input.inputs[0].IsNull() ? string() : input.inputs[0].GetValue<string>();
 
     // Check for NULL table name before connection validation
     if (input.inputs[1].IsNull()) {
@@ -907,8 +926,8 @@ static unique_ptr<FunctionData> AdbcScanTableBind(ClientContext &context, TableF
     // Extract batch_size parameter
     bind_data->batch_size = ExtractBatchSize(input, "adbc_scan_table");
 
-    // Validate and get connection wrapper (needed to pick the SQL dialect below)
-    bind_data->connection = GetValidatedConnection(context, bind_data->connection_id, "adbc_scan_table");
+    // The connection picks the SQL dialect below
+    bind_data->connection = std::move(connection);
 
     // Construct a SELECT * FROM [catalog.][schema.]table_name query for schema
     // discovery, quoting identifiers with the driver's quote char.
@@ -940,20 +959,31 @@ static unique_ptr<FunctionData> AdbcScanTableBind(ClientContext &context, TableF
     return std::move(bind_data);
 }
 
+static unique_ptr<FunctionData> AdbcScanTableBind(ClientContext &context, TableFunctionBindInput &input,
+                                                   vector<LogicalType> &return_types, vector<string> &names) {
+    if (input.inputs[0].IsNull()) {
+        throw InvalidInputException("adbc_scan_table: database name cannot be NULL");
+    }
+    if (input.inputs[1].IsNull()) {
+        throw InvalidInputException("adbc_scan_table: Table name cannot be NULL");
+    }
+    auto connection = GetAttachedConnection(context, input.inputs[0], "adbc_scan_table", false);
+    auto result = AdbcScanTableBindWithConnection(context, input, std::move(connection), return_types, names);
+    result->Cast<AdbcScanBindData>().resolve_at_runtime = true;
+    return result;
+}
+
 // Global init for adbc_scan_table - builds projected query based on column_ids and filters
 static unique_ptr<GlobalTableFunctionState> AdbcScanTableInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
     auto &bind_data = input.bind_data->Cast<AdbcScanBindData>();
     auto global_state = make_uniq<AdbcScanGlobalState>();
 
-    // Validate connection is still active
-    if (!bind_data.connection->IsInitialized()) {
-        throw InvalidInputException("adbc_scan_table: Connection has been closed");
-    }
+    auto connection = ScanConnection(context, bind_data, "adbc_scan_table");
 
     // Build the query with projection pushdown
     // SQL dialect for the target driver (identifier quote char + placeholder style).
-    char quote_char = IdentifierQuoteForDriver(bind_data.connection->GetDriverName());
-    auto placeholder_style = PlaceholderStyleForDriver(bind_data.connection->GetDriverName());
+    char quote_char = IdentifierQuoteForDriver(connection->GetDriverName());
+    auto placeholder_style = PlaceholderStyleForDriver(connection->GetDriverName());
 
     // If we have column_ids and they're a subset of all columns, build a projected query
     string query;
@@ -1026,7 +1056,7 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanTableInitGlobal(ClientContex
     }
 
     // Create fresh statement for this scan (allows multiple scans of same bind_data)
-    global_state->statement = make_shared_ptr<AdbcStatementWrapper>(bind_data.connection);
+    global_state->statement = make_shared_ptr<AdbcStatementWrapper>(connection);
     global_state->statement->Init();
 
     // Set batch size hint if provided (best-effort, driver-specific)
@@ -1202,8 +1232,7 @@ static InsertionOrderPreservingMap<string> AdbcScanTableToString(TableFunctionTo
         result["BatchSize"] = to_string(bind_data.batch_size);
     }
 
-    // Show connection ID for debugging
-    result["Connection"] = to_string(bind_data.connection_id);
+    result["Database"] = bind_data.database;
 
     return result;
 }
@@ -1421,7 +1450,7 @@ static vector<column_t> AdbcScanGetRowIdColumns(ClientContext &, optional_ptr<Fu
 void RegisterAdbcTableFunctions(DatabaseInstance &db) {
     ExtensionLoader loader(db, "adbc");
 
-    TableFunction adbc_scan_function("adbc_scan", {LogicalType::BIGINT, LogicalType::VARCHAR}, AdbcScanFunction,
+    TableFunction adbc_scan_function("adbc_scan", {LogicalType::VARCHAR, LogicalType::VARCHAR}, AdbcScanFunction,
                                       AdbcScanBind, AdbcScanInitGlobal, AdbcScanInitLocal);
 
     // Add named parameter for bind parameters (accepts a STRUCT from row(...))
@@ -1446,21 +1475,21 @@ void RegisterAdbcTableFunctions(DatabaseInstance &db) {
 
     CreateTableFunctionInfo info(adbc_scan_function);
     FunctionDescription desc;
-    desc.description = "Execute a SELECT query on an ADBC connection and return the results as a table";
-    desc.parameter_names = {"connection_handle", "query", "params", "batch_size"};
-    desc.parameter_types = {LogicalType::BIGINT, LogicalType::VARCHAR, LogicalType::ANY, LogicalType::BIGINT};
-    desc.examples = {"SELECT * FROM adbc_scan(conn, 'SELECT * FROM users')",
-                     "SELECT * FROM adbc_scan(conn, 'SELECT * FROM users WHERE id = ?', params := row(42))",
-                     "SELECT * FROM adbc_scan(conn, 'SELECT * FROM large_table', batch_size := 65536)"};
+    desc.description = "Execute a SELECT query on an attached ADBC database and return the results as a table";
+    desc.parameter_names = {"database", "query", "params", "batch_size"};
+    desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::ANY, LogicalType::BIGINT};
+    desc.examples = {"SELECT * FROM adbc_scan('pg', 'SELECT * FROM users')",
+                     "SELECT * FROM adbc_scan('pg', 'SELECT * FROM users WHERE id = ?', params := row(42))",
+                     "SELECT * FROM adbc_scan('pg', 'SELECT * FROM large_table', batch_size := 65536)"};
     desc.categories = {"adbc"};
     info.descriptions.push_back(std::move(desc));
     loader.RegisterFunction(info);
 
     // ========================================================================
-    // adbc_scan_table - Scan an entire table from an ADBC connection
+    // adbc_scan_table - Scan an entire table from an attached ADBC database
     // ========================================================================
 
-    TableFunction adbc_scan_table_function("adbc_scan_table", {LogicalType::BIGINT, LogicalType::VARCHAR},
+    TableFunction adbc_scan_table_function("adbc_scan_table", {LogicalType::VARCHAR, LogicalType::VARCHAR},
                                             AdbcScanTableFunction, AdbcScanTableBind, AdbcScanTableInitGlobal, AdbcScanTableInitLocal);
 
     // Add named parameters for catalog, schema, and batch size
@@ -1485,12 +1514,12 @@ void RegisterAdbcTableFunctions(DatabaseInstance &db) {
 
     CreateTableFunctionInfo scan_table_info(adbc_scan_table_function);
     FunctionDescription scan_table_desc;
-    scan_table_desc.description = "Scan an entire table from an ADBC connection";
-    scan_table_desc.parameter_names = {"connection_handle", "table_name", "catalog", "schema", "batch_size"};
-    scan_table_desc.parameter_types = {LogicalType::BIGINT, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT};
-    scan_table_desc.examples = {"SELECT * FROM adbc_scan_table(conn, 'users')",
-                                "SELECT * FROM adbc_scan_table(conn, 'users', schema := 'public')",
-                                "SELECT * FROM adbc_scan_table(conn, 'large_table', batch_size := 65536)"};
+    scan_table_desc.description = "Scan an entire table from an attached ADBC database";
+    scan_table_desc.parameter_names = {"database", "table_name", "catalog", "schema", "batch_size"};
+    scan_table_desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT};
+    scan_table_desc.examples = {"SELECT * FROM adbc_scan_table('pg', 'users')",
+                                "SELECT * FROM adbc_scan_table('pg', 'users', schema := 'public')",
+                                "SELECT * FROM adbc_scan_table('pg', 'large_table', batch_size := 65536)"};
     scan_table_desc.categories = {"adbc"};
     scan_table_info.descriptions.push_back(std::move(scan_table_desc));
     loader.RegisterFunction(scan_table_info);

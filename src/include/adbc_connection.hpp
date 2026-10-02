@@ -22,7 +22,7 @@ class AdbcOperationLease {
 public:
     explicit AdbcOperationLease(std::atomic<bool> &active) : active(active) {
         if (active.exchange(true)) {
-            throw InvalidInputException("ADBC connection already has an active operation; use an independent connection");
+            throw InvalidInputException("ADBC connection already has an active operation; to run two adbc_* calls on one database at once, ATTACH it a second time");
         }
     }
     ~AdbcOperationLease() { active.store(false); }
@@ -467,104 +467,20 @@ private:
     unique_ptr<AdbcOperationLease> operation;
 };
 
-// Thread-safe connection registry
-class ConnectionRegistry {
-public:
-    static ConnectionRegistry &Get() {
-        // Intentionally heap-allocated and never deleted. The registry can hold
-        // pooled scan connections (added via AdbcConnectionPool::GetConnectionShared,
-        // whose custom deleter returns the connection to its pool) as well as
-        // adbc_connect() handles. At process exit, C++ static-destruction order
-        // between this singleton and the AdbcCatalog-owned pools / the ADBC driver
-        // is undefined. If the singleton were destroyed here, dropping a leftover
-        // shared_ptr would invoke the pool-return deleter against an already-torn-down
-        // pool (dangling mutex/vector) — or release an ADBC connection after its
-        // driver was unloaded — throwing out of a destructor and calling
-        // std::terminate() (observed as an abort in adbc_scanner::ConnectionRegistry::
-        // ~ConnectionRegistry during __cxa_finalize). Leaking the singleton skips its
-        // destructor entirely; the OS reclaims the memory on exit. See
-        // AdbcConnectionPool::GetConnectionShared for the matching deleter hardening.
-        static ConnectionRegistry *instance = new ConnectionRegistry();
-        return *instance;
-    }
-
-    // Add a connection and return its handle
-    int64_t Add(shared_ptr<AdbcConnectionWrapper> connection, ClientContext *owner = nullptr) {
-        lock_guard<mutex> lock(mutex_);
-        if (next_handle == NumericLimits<int64_t>::Maximum()) {
-            throw InvalidInputException("ADBC connection handle space exhausted");
-        }
-        int64_t handle = ++next_handle;
-        owners_[handle] = owner;
-        connections_[handle] = std::move(connection);
-        return handle;
-    }
-
-    // Get a connection by handle (returns nullptr if not found)
-    shared_ptr<AdbcConnectionWrapper> Get(int64_t handle, ClientContext *owner = nullptr) {
-        lock_guard<mutex> lock(mutex_);
-        auto it = connections_.find(handle);
-        if (it == connections_.end()) {
-            return nullptr;
-        }
-        if (owners_[handle] != owner) {
-            return nullptr;
-        }
-        return it->second;
-    }
-
-    // Remove and return a connection (for cleanup)
-    shared_ptr<AdbcConnectionWrapper> Remove(int64_t handle, ClientContext *owner = nullptr) {
-        unique_lock<mutex> lock(mutex_);
-        auto it = connections_.find(handle);
-        if (it == connections_.end()) {
-            return nullptr;
-        }
-        if (owner && owners_[handle] != owner) {
-            return nullptr;
-        }
-        auto conn = std::move(it->second);
-        connections_.erase(it);
-        owners_.erase(handle);
-        lock.unlock();
-        return conn;
-    }
-
-    // Check if a handle exists
-    bool Contains(int64_t handle) {
-        lock_guard<mutex> lock(mutex_);
-        return connections_.find(handle) != connections_.end();
-    }
-
-    // Get count of active connections
-    size_t Count() {
-        lock_guard<mutex> lock(mutex_);
-        return connections_.size();
-    }
-
-private:
-    ConnectionRegistry() = default;
-    ~ConnectionRegistry() = default;
-
-    // Non-copyable
-    ConnectionRegistry(const ConnectionRegistry &) = delete;
-    ConnectionRegistry &operator=(const ConnectionRegistry &) = delete;
-
-    mutex mutex_;
-    unordered_map<int64_t, shared_ptr<AdbcConnectionWrapper>> connections_;
-    unordered_map<int64_t, ClientContext *> owners_;
-    int64_t next_handle = 0;
-};
-
 // Helper to create a connection from a vector of options
 // Extracts driver, entrypoint, uri, search_paths, use_manifests and configures the connection
 // Returns the initialized connection wrapper
 shared_ptr<AdbcConnectionWrapper> CreateConnectionFromOptions(const AdbcOptions &options);
 
-// Helper to get a validated connection from the registry
-// Throws InvalidInputException if connection not found or closed
-// function_name is used in error messages (e.g., "adbc_scan", "adbc_tables")
-shared_ptr<AdbcConnectionWrapper> GetValidatedConnection(ClientContext &context, int64_t connection_id, const string &function_name);
+// The connection behind an attached ADBC database, named by its ATTACH alias
+// (`ATTACH '…' AS pg (TYPE adbc, …)` → "pg"). Inside an explicit transaction,
+// writes (and reads after the transaction has written) use the transaction's
+// write connection, so they commit or roll back together with writes made
+// through the catalog; otherwise the attachment's own connection, in
+// autocommit. Writes to a read-only attachment are rejected. function_name
+// prefixes error messages.
+shared_ptr<AdbcConnectionWrapper> GetAttachedConnection(ClientContext &context, const Value &database,
+                                                        const string &function_name, bool write);
 
 // Helper to iterate over batches in an ArrowArrayStream
 // Calls the callback for each batch, automatically handles errors and cleanup

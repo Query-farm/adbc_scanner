@@ -21,16 +21,16 @@ require-env HAS_ADBC_SQLITE_DRIVER
 # ============================================
 
 statement ok
-SET VARIABLE conn_id = (SELECT adbc_connect({'driver': 'sqlite', 'uri': '/tmp/test_numeric_types.db'}));
+ATTACH '__TEST_DIR__/test_numeric_types.db' AS db (TYPE adbc, driver 'sqlite');
 
 # Create a table with integer and real columns matching the TPC-H lineitem schema
 # from the bug report (L_ORDERKEY, L_PARTKEY, L_SUPPKEY, L_LINENUMBER are integer;
 # L_QUANTITY, L_EXTENDEDPRICE, L_DISCOUNT, L_TAX are decimal/real)
 statement ok
-CALL adbc_execute(getvariable('conn_id')::BIGINT, 'DROP TABLE IF EXISTS lineitem');
+CALL adbc_execute('db', 'DROP TABLE IF EXISTS lineitem');
 
 statement ok
-CALL adbc_execute(getvariable('conn_id')::BIGINT, '
+CALL adbc_execute('db', '
     CREATE TABLE lineitem (
         l_orderkey INTEGER,
         l_partkey INTEGER,
@@ -47,7 +47,7 @@ CALL adbc_execute(getvariable('conn_id')::BIGINT, '
 
 # Insert the exact values from the bug report (Python/correct output)
 statement ok
-CALL adbc_execute(getvariable('conn_id')::BIGINT, '
+CALL adbc_execute('db', '
     INSERT INTO lineitem VALUES
         (2400001, 132304, 4818, 1, 10.0, 13363.0, 0.03, 0.02, ''SHIP'', ''egular dolphins''),
         (2400001, 24513,  2020, 2, 14.0, 20125.14, 0.04, 0.03, ''SHIP'', ''es wake quickly bold packages''),
@@ -65,7 +65,7 @@ CALL adbc_execute(getvariable('conn_id')::BIGINT, '
 # Before the fix, integer columns showed alternating correct/zero values and
 # real columns showed denormalized doubles (e.g., 4.94e-321 instead of 10.0).
 query IIIIRRRRTT
-SELECT * FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'lineitem') ORDER BY l_linenumber;
+SELECT * FROM adbc_scan_table('db', 'lineitem') ORDER BY l_linenumber;
 ----
 2400001	132304	4818	1	10.0	13363.0	0.03	0.02	SHIP	egular dolphins
 2400001	24513	2020	2	14.0	20125.14	0.04	0.03	SHIP	es wake quickly bold packages
@@ -82,7 +82,7 @@ SELECT * FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'lineitem') ORDER 
 # due to Decimal128 bytes being split across int64-sized reads.
 query IIIIRRRR
 SELECT l_orderkey, l_partkey, l_suppkey, l_linenumber, l_quantity, l_extendedprice, l_discount, l_tax
-FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'lineitem')
+FROM adbc_scan_table('db', 'lineitem')
 WHERE l_orderkey = 2400001
 ORDER BY l_linenumber;
 ----
@@ -100,7 +100,7 @@ ORDER BY l_linenumber;
 # Select only real-valued columns - these showed as denormalized doubles before the fix
 query RR
 SELECT l_quantity, l_discount
-FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'lineitem')
+FROM adbc_scan_table('db', 'lineitem')
 ORDER BY l_linenumber;
 ----
 10.0	0.03
@@ -112,7 +112,7 @@ ORDER BY l_linenumber;
 # Select a mix of integer and real columns
 query IR
 SELECT l_linenumber, l_extendedprice
-FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'lineitem')
+FROM adbc_scan_table('db', 'lineitem')
 ORDER BY l_linenumber;
 ----
 1	13363.0
@@ -127,17 +127,17 @@ ORDER BY l_linenumber;
 # ============================================
 
 query RR
-SELECT SUM(l_quantity), SUM(l_extendedprice) FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'lineitem');
+SELECT SUM(l_quantity), SUM(l_extendedprice) FROM adbc_scan_table('db', 'lineitem');
 ----
 57.0	80153.47
 
 query R
-SELECT AVG(l_discount) FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'lineitem');
+SELECT AVG(l_discount) FROM adbc_scan_table('db', 'lineitem');
 ----
 0.048
 
 statement ok
-CALL adbc_disconnect(getvariable('conn_id')::BIGINT);
+DETACH db;
 
 # ============================================
 # Test via ATTACH (exercises the full storage scan path)
@@ -146,7 +146,7 @@ CALL adbc_disconnect(getvariable('conn_id')::BIGINT);
 # ============================================
 
 statement ok
-ATTACH '/tmp/test_numeric_types.db' AS numeric_db (TYPE adbc, driver 'sqlite');
+ATTACH '__TEST_DIR__/test_numeric_types.db' AS numeric_db (TYPE adbc, driver 'sqlite');
 
 # Full scan through ATTACH
 query IIIIRRRRTT
@@ -180,10 +180,10 @@ DETACH numeric_db;
 # ============================================
 
 statement ok
-SET VARIABLE cleanup_conn = (SELECT adbc_connect({'driver': 'sqlite', 'uri': '/tmp/test_numeric_types.db'}));
+ATTACH '__TEST_DIR__/test_numeric_types.db' AS cleanup_db (TYPE adbc, driver 'sqlite');
 
 statement ok
-CALL adbc_execute(getvariable('cleanup_conn')::BIGINT, 'DROP TABLE IF EXISTS lineitem');
+CALL adbc_execute('cleanup_db', 'DROP TABLE IF EXISTS lineitem');
 
 statement ok
-CALL adbc_disconnect(getvariable('cleanup_conn')::BIGINT);
+DETACH cleanup_db;

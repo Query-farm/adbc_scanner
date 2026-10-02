@@ -28,7 +28,6 @@ include_directories(src/include)
 set(EXTENSION_SOURCES
     src/adbc_scanner_extension.cpp
     src/adbc_connection.cpp
-    src/adbc_functions.cpp
     src/adbc_scan.cpp
     src/adbc_arrow_types.cpp
     src/adbc_execute.cpp

@@ -1,67 +1,132 @@
 # name: test/sql/adbc_transactions.test
-# description: test adbc transaction functions (commit, rollback, set_autocommit)
+# description: adbc_execute / adbc_scan follow DuckDB transactions on the attached database
 # group: [adbc]
 
 require adbc_scanner
 
 require-env HAS_ADBC_SQLITE_DRIVER
 
-# Test adbc_commit with invalid connection handle
+# A file database, so the attachment's connections share one SQLite database.
+statement ok
+ATTACH '__TEST_DIR__/adbc_transactions.db' AS db (TYPE adbc, driver 'sqlite');
+
+statement ok
+CALL adbc_execute('db', 'DROP TABLE IF EXISTS tx_test');
+
+# Outside a transaction adbc_execute autocommits
+statement ok
+CALL adbc_execute('db', 'CREATE TABLE tx_test (id INTEGER, qty INTEGER)');
+
+# ROLLBACK undoes adbc_execute writes made inside the transaction
+statement ok
+BEGIN;
+
+statement ok
+CALL adbc_execute('db', 'INSERT INTO tx_test VALUES (1, 10)');
+
+# Reads inside the transaction see its own uncommitted writes
+query I
+SELECT count(*) FROM adbc_scan('db', 'SELECT * FROM tx_test', columns := {'id': 'BIGINT', 'qty': 'BIGINT'});
+----
+1
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT count(*) FROM adbc_scan('db', 'SELECT * FROM tx_test', columns := {'id': 'BIGINT', 'qty': 'BIGINT'});
+----
+0
+
+# A scan prepared outside a transaction resolves the database when it runs, so
+# inside one it still sees the transaction's uncommitted writes
+statement ok
+PREPARE tx_count AS SELECT count(*) FROM adbc_scan('db', 'SELECT * FROM tx_test', columns := {'id': 'BIGINT', 'qty': 'BIGINT'});
+
+statement ok
+BEGIN;
+
+statement ok
+CALL adbc_execute('db', 'INSERT INTO tx_test VALUES (1, 10)');
+
+query I
+EXECUTE tx_count;
+----
+1
+
+statement ok
+ROLLBACK;
+
+query I
+EXECUTE tx_count;
+----
+0
+
+# adbc_execute and writes through the catalog commit together
+statement ok
+BEGIN;
+
+statement ok
+CALL adbc_execute('db', 'INSERT INTO tx_test VALUES (2, 20)');
+
+statement ok
+INSERT INTO db.main.tx_test VALUES (3, 30);
+
+statement ok
+COMMIT;
+
+query II
+SELECT * FROM adbc_scan('db', 'SELECT id, qty FROM tx_test ORDER BY id', columns := {'id': 'BIGINT', 'qty': 'BIGINT'});
+----
+2	20
+3	30
+
+# ...and roll back together
+statement ok
+BEGIN;
+
+statement ok
+CALL adbc_execute('db', 'INSERT INTO tx_test VALUES (4, 40)');
+
+statement ok
+INSERT INTO db.main.tx_test VALUES (5, 50);
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT count(*) FROM adbc_scan('db', 'SELECT * FROM tx_test', columns := {'id': 'BIGINT', 'qty': 'BIGINT'});
+----
+2
+
+statement ok
+DETACH db;
+
+# A read-only attachment rejects adbc_execute, outside and inside a transaction
+statement ok
+ATTACH '__TEST_DIR__/adbc_transactions.db' AS ro_db (TYPE adbc, driver 'sqlite', READ_ONLY);
+
 statement error
-CALL adbc_commit(12345);
+CALL adbc_execute('ro_db', 'INSERT INTO tx_test VALUES (6, 60)');
 ----
-Invalid Input Error: adbc_commit: Invalid connection handle: 12345
+Permission Error: adbc_execute: "ro_db" is attached read-only
 
-# Test adbc_rollback with invalid connection handle
+statement ok
+BEGIN;
+
 statement error
-CALL adbc_rollback(12345);
+CALL adbc_execute('ro_db', 'INSERT INTO tx_test VALUES (7, 70)');
 ----
-Invalid Input Error: adbc_rollback: Invalid connection handle: 12345
+Permission Error: adbc_execute: "ro_db" is attached read-only
 
-# Test adbc_set_autocommit with invalid connection handle
-statement error
-CALL adbc_set_autocommit(12345, false);
-----
-Invalid Input Error: adbc_set_autocommit: Invalid connection handle: 12345
-
-# Create a connection for transaction tests
 statement ok
-SET VARIABLE conn_id = (SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:'}));
+ROLLBACK;
 
-# Create a test table
-statement ok
-CALL adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE tx_test (id INTEGER, value TEXT)');
-
-# Test rollback - disable autocommit, insert, rollback
+# Reads still work on a read-only attachment
 query I
-CALL adbc_set_autocommit(getvariable('conn_id')::BIGINT, false);
+SELECT count(*) FROM adbc_scan('ro_db', 'SELECT * FROM tx_test', columns := {'id': 'BIGINT', 'qty': 'BIGINT'});
 ----
-true
+2
 
 statement ok
-CALL adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO tx_test VALUES (1, ''will rollback'')');
-
-# Rollback the transaction
-query I
-CALL adbc_rollback(getvariable('conn_id')::BIGINT);
-----
-true
-
-# Test commit - insert data and commit
-statement ok
-CALL adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO tx_test VALUES (2, ''committed'')');
-
-query I
-CALL adbc_commit(getvariable('conn_id')::BIGINT);
-----
-true
-
-# Re-enable autocommit
-query I
-CALL adbc_set_autocommit(getvariable('conn_id')::BIGINT, true);
-----
-true
-
-# Clean up
-statement ok
-CALL adbc_disconnect(getvariable('conn_id')::BIGINT);
+DETACH ro_db;

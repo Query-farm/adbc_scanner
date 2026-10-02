@@ -14,18 +14,18 @@ require adbc_scanner
 require-env ADBC_TRINO_TEST_AVAILABLE
 
 statement ok
-SET VARIABLE c = (SELECT adbc_connect({'driver':'trino','uri':'http://localhost:18080','username':'trino'}));
+ATTACH 'http://localhost:18080' AS tr (TYPE adbc, driver 'trino', username 'trino');
 
 # Server-side query
 query T
-SELECT name FROM adbc_scan(getvariable('c')::BIGINT, 'SELECT name FROM tpch.tiny.region ORDER BY regionkey LIMIT 2') AS t(name);
+SELECT name FROM adbc_scan('tr', 'SELECT name FROM tpch.tiny.region ORDER BY regionkey LIMIT 2') AS t(name);
 ----
 AFRICA
 AMERICA
 
 # scan_table with catalog/schema qualification
 query IT
-SELECT regionkey, name FROM adbc_scan_table(getvariable('c')::BIGINT, 'region', catalog:='tpch', schema:='tiny') ORDER BY regionkey LIMIT 3;
+SELECT regionkey, name FROM adbc_scan_table('tr', 'region', catalog:='tpch', schema:='tiny') ORDER BY regionkey LIMIT 3;
 ----
 0	AFRICA
 1	AMERICA
@@ -33,21 +33,21 @@ SELECT regionkey, name FROM adbc_scan_table(getvariable('c')::BIGINT, 'region', 
 
 # Filter pushdown (? placeholders)
 query T
-SELECT name FROM adbc_scan_table(getvariable('c')::BIGINT, 'region', catalog:='tpch', schema:='tiny') WHERE regionkey < 2 ORDER BY regionkey;
+SELECT name FROM adbc_scan_table('tr', 'region', catalog:='tpch', schema:='tiny') WHERE regionkey < 2 ORDER BY regionkey;
 ----
 AFRICA
 AMERICA
 
 query I
-SELECT regionkey FROM adbc_scan_table(getvariable('c')::BIGINT, 'nation', catalog:='tpch', schema:='tiny') WHERE name = 'BRAZIL';
+SELECT regionkey FROM adbc_scan_table('tr', 'nation', catalog:='tpch', schema:='tiny') WHERE name = 'BRAZIL';
 ----
 1
 
 # Aggregate over a full scan
 query I
-SELECT COUNT(*) AS n FROM adbc_scan_table(getvariable('c')::BIGINT, 'nation', catalog:='tpch', schema:='tiny');
+SELECT COUNT(*) AS n FROM adbc_scan_table('tr', 'nation', catalog:='tpch', schema:='tiny');
 ----
 25
 
 statement ok
-CALL adbc_disconnect(getvariable('c')::BIGINT);
+DETACH tr;

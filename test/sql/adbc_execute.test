@@ -7,18 +7,18 @@ require adbc_scanner
 require-env HAS_ADBC_SQLITE_DRIVER
 
 # ============================================
-# NULL Connection Handle Tests
+# Database Name Tests
 # ============================================
 
-# Test adbc_execute with NULL connection handle
+# Test adbc_execute with NULL database name
 statement error
 CALL adbc_execute(NULL, 'SELECT 1');
 ----
-Invalid Input Error: adbc_execute: Connection handle cannot be NULL
+Invalid Input Error: adbc_execute: database name cannot be NULL
 
 # Test adbc_execute with NULL query
 statement error
-CALL adbc_execute(12345, NULL);
+CALL adbc_execute('nope', NULL);
 ----
 Invalid Input Error: adbc_execute: Query cannot be NULL
 
@@ -27,49 +27,49 @@ Invalid Input Error: adbc_execute: Query cannot be NULL
 # ============================================
 
 statement ok
-SET VARIABLE conn_id = (SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:'}));
+ATTACH '__TEST_DIR__/adbc_execute.db' AS exec_db (TYPE adbc, driver 'sqlite');
 
 # Test CREATE TABLE
 statement ok
-CALL adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE exec_test (id INTEGER PRIMARY KEY, name TEXT)');
+CALL adbc_execute('exec_db', 'CREATE TABLE exec_test (id INTEGER PRIMARY KEY, name TEXT)');
 
 # Test INSERT
 statement ok
-CALL adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO exec_test VALUES (1, ''hello''), (2, ''world'')');
+CALL adbc_execute('exec_db', 'INSERT INTO exec_test VALUES (1, ''hello''), (2, ''world'')');
 
 # Verify data was inserted
 query II
-SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM exec_test ORDER BY id', columns := {'id': 'BIGINT', 'name': 'VARCHAR'});
+SELECT * FROM adbc_scan('exec_db', 'SELECT * FROM exec_test ORDER BY id', columns := {'id': 'BIGINT', 'name': 'VARCHAR'});
 ----
 1	hello
 2	world
 
 # Test UPDATE
 statement ok
-CALL adbc_execute(getvariable('conn_id')::BIGINT, 'UPDATE exec_test SET name = ''updated'' WHERE id = 1');
+CALL adbc_execute('exec_db', 'UPDATE exec_test SET name = ''updated'' WHERE id = 1');
 
 # Verify update worked
 query II
-SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM exec_test WHERE id = 1', columns := {'id': 'BIGINT', 'name': 'VARCHAR'});
+SELECT * FROM adbc_scan('exec_db', 'SELECT * FROM exec_test WHERE id = 1', columns := {'id': 'BIGINT', 'name': 'VARCHAR'});
 ----
 1	updated
 
 # Test DELETE
 statement ok
-CALL adbc_execute(getvariable('conn_id')::BIGINT, 'DELETE FROM exec_test WHERE id = 2');
+CALL adbc_execute('exec_db', 'DELETE FROM exec_test WHERE id = 2');
 
 # Verify delete worked
 query I
-SELECT COUNT(*) FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT * FROM exec_test', columns := {'id': 'BIGINT', 'name': 'VARCHAR'});
+SELECT COUNT(*) FROM adbc_scan('exec_db', 'SELECT * FROM exec_test', columns := {'id': 'BIGINT', 'name': 'VARCHAR'});
 ----
 1
 
-# Test adbc_execute with invalid connection handle
+# Test adbc_execute with an unknown database name
 statement error
-CALL adbc_execute(12345, 'SELECT 1');
+CALL adbc_execute('nope', 'SELECT 1');
 ----
-Invalid Input Error: adbc_execute: Invalid connection handle: 12345
+Binder Error: adbc_execute: no attached database named "nope"
 
 # Clean up
 statement ok
-CALL adbc_disconnect(getvariable('conn_id')::BIGINT);
+DETACH exec_db;

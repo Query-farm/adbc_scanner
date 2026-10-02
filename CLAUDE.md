@@ -16,18 +16,18 @@ There is also a checkout of the DuckDB postgresql extension under ./duckdb-postg
 
 The extension provides the following functions:
 
-### Connection Management
-- `adbc_connect(options)` - Connect to an ADBC data source. Returns a connection handle (BIGINT). Options can be passed as a STRUCT (preferred) or MAP.
-  - **Required options:**
-    - `driver` - Driver name, path to shared library, or path to manifest file (.toml). Not required when a connection profile is supplied (via `profile` or a `profile://` URI), since the profile provides the driver.
-  - **Optional options:**
-    - `entrypoint` - Custom entry point function name
-    - `profile` - Name of a connection profile to resolve (see Connection Profiles). Equivalent to a `profile://<name>` URI.
-    - `search_paths` - Additional paths to search for driver manifests *and* connection profiles (colon-separated on Unix, semicolon on Windows)
-    - `use_manifests` - Enable/disable manifest search (default: 'true'). Set to 'false' to only use direct library paths.
-    - `secret` - Name of a DuckDB secret to use for connection parameters
-    - Other options are passed directly to the ADBC driver
-- `adbc_disconnect(handle)` - Disconnect from an ADBC data source. Returns true on success.
+### Connecting
+
+There are no connection handles. Connect with `ATTACH '<uri>' AS <alias> (TYPE adbc, driver '...')` and pass the alias (a VARCHAR) as the first argument of every `adbc_*` function; disconnect with `DETACH`. `GetAttachedConnection` (`src/adbc_connection.cpp`) resolves the alias: an unknown or non-ADBC name fails at bind. Inside an explicit `BEGIN … COMMIT`, writes (`adbc_execute`, `adbc_insert`) use the attachment's transaction write connection, and reads use it too once the transaction has written; otherwise both use the catalog's own connection in autocommit (so session state like temp tables carries across calls; two simultaneous alias reads in one query conflict). Writes to a READ_ONLY attachment are rejected.
+
+- **ATTACH options** (see Storage Extension below for more):
+  - `driver` - Driver name, path to shared library, or path to manifest file (.toml). Not required when a connection profile is supplied (via `profile` or a `profile://` URI), since the profile provides the driver.
+  - `entrypoint` - Custom entry point function name
+  - `profile` - Name of a connection profile to resolve (see Connection Profiles). Equivalent to a `profile://<name>` path.
+  - `search_paths` - Additional paths to search for driver manifests *and* connection profiles (colon-separated on Unix, semicolon on Windows)
+  - `use_manifests` - Enable/disable manifest search (default: 'true'). Set to 'false' to only use direct library paths.
+  - `secret` - Name of a DuckDB secret to use for connection parameters
+  - Other options are passed directly to the ADBC driver
 
 #### Secrets Support
 The extension supports DuckDB secrets for storing connection credentials. Secrets are automatically looked up based on the `uri` option (scope matching) or can be explicitly referenced by name.
@@ -55,14 +55,14 @@ CREATE SECRET my_postgres (
 
 **Using secrets:**
 ```sql
--- Automatic lookup by URI scope
-SELECT adbc_connect({'uri': 'postgresql://myhost:5432/mydb'});
+-- Automatic lookup by URI scope (the ATTACH path is the URI)
+ATTACH 'postgresql://myhost:5432/mydb' AS pg (TYPE adbc);
 
 -- Explicit secret by name
-SELECT adbc_connect({'secret': 'my_postgres'});
+ATTACH '' AS pg (TYPE adbc, secret 'my_postgres');
 
 -- Override secret options with explicit values
-SELECT adbc_connect({'secret': 'my_postgres', 'uri': 'postgresql://otherhost:5432/otherdb'});
+ATTACH 'postgresql://otherhost:5432/otherdb' AS pg (TYPE adbc, secret 'my_postgres');
 ```
 
 #### Driver Manifest Support
@@ -112,27 +112,22 @@ uri = ":memory:"
 # password = "{{ env_var(MYDB_PASSWORD) }}"
 ```
 
-Options explicitly passed to `adbc_connect`/`ATTACH` take precedence over those from the profile. Use `adbc_profiles()` to list discoverable profiles.
+Options explicitly passed to `ATTACH` take precedence over those from the profile. Use `adbc_profiles()` to list discoverable profiles.
 
 **Examples:**
 ```sql
--- Connect via a profile:// URI (driver and options come from the profile)
-SELECT adbc_connect({'uri': 'profile://mydb'});
+-- Attach via a profile:// URI (driver and options come from the profile)
+ATTACH 'profile://mydb' AS mydb (TYPE adbc);
 
--- Connect via the 'profile' option
-SELECT adbc_connect({'profile': 'mydb'});
+-- Attach via the 'profile' option
+ATTACH '' AS mydb (TYPE adbc, profile 'mydb');
 
 -- Point at a directory of profiles explicitly
-SELECT adbc_connect({'profile': 'mydb', 'search_paths': '/opt/adbc/profiles'});
-
--- Attach using a profile
-ATTACH 'profile://mydb' AS mydb (TYPE adbc);
+ATTACH '' AS mydb (TYPE adbc, profile 'mydb', search_paths '/opt/adbc/profiles');
 ```
 
 ### Transaction Control
-- `CALL adbc_set_autocommit(handle, enabled)` - Enable or disable autocommit mode. When disabled, changes require explicit commit.
-- `CALL adbc_commit(handle)` - Commit the current transaction.
-- `CALL adbc_rollback(handle)` - Rollback the current transaction, discarding all uncommitted changes.
+Use DuckDB's `BEGIN` / `COMMIT` / `ROLLBACK`. Inside a transaction, `adbc_execute` and `adbc_insert` commit or roll back together with writes made through the attached catalog (`INSERT INTO db.t …`), and reads see the transaction's uncommitted writes. A driver that cannot disable autocommit fails the first write in a transaction.
 
 ### Query Execution
 Binding must not execute user SQL. `adbc_scan` uses ADBC `ExecuteSchema`, or an
@@ -140,17 +135,17 @@ explicit `columns := {'name': 'TYPE'}` declaration when metadata is unavailable
 (including SQLite). `adbc_scan_table` uses `GetTableSchema`. Runtime result types
 are checked before reading values. See [docs/runtime-commands.md](docs/runtime-commands.md).
 
-- `adbc_scan(handle, query, [params := row(...)], [batch_size := N])` - Execute a SELECT query and return results as a table. Supports parameterized queries via the optional `params` named parameter. The optional `batch_size` parameter hints to the driver how many rows to return per batch (default: driver-specific, typically 2048). This is a best-effort hint that may be ignored by drivers that don't support it.
-- `adbc_scan_table(handle, table_name, [catalog := ...], [schema := ...], [batch_size := N])` - Scan an entire table by name and return all rows. Supports optional `catalog` and `schema` parameters for fully qualified table names. Supports projection pushdown (only requested columns are fetched), filter pushdown (WHERE clauses are pushed to the remote database with parameter binding), cardinality estimation, progress reporting, and column-level statistics for query optimization (distinct count, null count, min/max when available from the driver via `AdbcConnectionGetStatistics`).
-- `CALL adbc_execute(handle, query)` - Execute DDL/DML statements (CREATE, INSERT, UPDATE, DELETE) at runtime. Returns affected row count, or NULL when unknown. No scalar form is registered.
-- `adbc_insert(handle, table_name, <table>, [mode := ...], [max_batches := ...], [options := ...])` - Bulk insert data from a subquery. Modes: 'create', 'append', 'replace', 'create_append'. `options` is a STRUCT or MAP of driver-specific statement options (e.g. `{'adbc.ingest.temporary': 'true'}`), applied after the target table and mode.
+- `adbc_scan(database, query, [params := row(...)], [batch_size := N])` - Execute a SELECT query and return results as a table. Supports parameterized queries via the optional `params` named parameter. The optional `batch_size` parameter hints to the driver how many rows to return per batch (default: driver-specific, typically 2048). This is a best-effort hint that may be ignored by drivers that don't support it.
+- `adbc_scan_table(database, table_name, [catalog := ...], [schema := ...], [batch_size := N])` - Scan an entire table by name and return all rows. Supports optional `catalog` and `schema` parameters for fully qualified table names. Supports projection pushdown (only requested columns are fetched), filter pushdown (WHERE clauses are pushed to the remote database with parameter binding), cardinality estimation, progress reporting, and column-level statistics for query optimization (distinct count, null count, min/max when available from the driver via `AdbcConnectionGetStatistics`).
+- `CALL adbc_execute(database, query)` - Execute DDL/DML statements (CREATE, INSERT, UPDATE, DELETE) at runtime. Returns affected row count, or NULL when unknown. No scalar form is registered.
+- `adbc_insert(database, table_name, <table>, [mode := ...], [max_batches := ...], [options := ...])` - Bulk insert data from a subquery. Modes: 'create', 'append', 'replace', 'create_append'. `options` is a STRUCT or MAP of driver-specific statement options (e.g. `{'adbc.ingest.temporary': 'true'}`), applied after the target table and mode.
 
 ### Catalog Functions
-- `adbc_info(handle)` - Returns driver/database information (vendor name, version, etc.).
-- `adbc_tables(handle)` - Returns list of tables in the database.
-- `adbc_table_types(handle)` - Returns supported table types (e.g., "table", "view").
-- `adbc_columns(handle, [table_name := ...])` - Returns column metadata (name, type, ordinal position, nullability).
-- `adbc_schema(handle, table_name)` - Returns the Arrow schema for a specific table (field names, Arrow types, nullability).
+- `adbc_info(database)` - Returns driver/database information (vendor name, version, etc.).
+- `adbc_tables(database)` - Returns list of tables in the database.
+- `adbc_table_types(database)` - Returns supported table types (e.g., "table", "view").
+- `adbc_columns(database, [table_name := ...])` - Returns column metadata (name, type, ordinal position, nullability).
+- `adbc_schema(database, table_name)` - Returns the Arrow schema for a specific table (field names, Arrow types, nullability).
 - `adbc_profiles([search_paths := ...])` - Lists discoverable ADBC connection profiles from the standard search paths (plus any directories in the optional `search_paths` parameter). Returns one row per `*.toml` profile found: `name`, `driver`, `path`, `source` ('additional' | 'env' | 'user'), and `profile_version`. Requires no driver or connection.
 
 ### Storage Extension (ATTACH)
@@ -189,56 +184,50 @@ SELECT COUNT(*) FROM sqlite_db.main.orders;
 ### Example Usage
 
 ```sql
--- Connect using a driver manifest (if sqlite.toml is installed in a search path)
-SET VARIABLE conn = (SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:'}));
+-- Attach using a driver manifest (if sqlite.toml is installed in a search path)
+ATTACH 'my.db' AS db (TYPE adbc, driver 'sqlite');
 
--- Connect with explicit driver path (traditional method)
-SET VARIABLE conn = (SELECT adbc_connect({'driver': '/path/to/libadbc_driver_sqlite.dylib', 'uri': ':memory:'}));
-
--- Connect with additional search paths
-SET VARIABLE conn = (SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:', 'search_paths': '/opt/adbc/drivers'}));
+-- Or with an explicit driver path, or extra manifest search paths
+-- ATTACH 'my.db' AS db (TYPE adbc, driver '/path/to/libadbc_driver_sqlite.dylib');
+-- ATTACH 'my.db' AS db (TYPE adbc, driver 'sqlite', search_paths '/opt/adbc/drivers');
 
 -- Query data
-SELECT * FROM adbc_scan(getvariable('conn')::BIGINT, 'SELECT 1 AS a, 2 AS b', columns := {'a': 'BIGINT', 'b': 'BIGINT'});
+SELECT * FROM adbc_scan('db', 'SELECT 1 AS a, 2 AS b', columns := {'a': 'BIGINT', 'b': 'BIGINT'});
 
 -- Scan an entire table by name
-SELECT * FROM adbc_scan_table(getvariable('conn')::BIGINT, 'test');
+SELECT * FROM adbc_scan_table('db', 'test');
 
--- Scan a table with schema qualification (e.g., PostgreSQL)
-SELECT * FROM adbc_scan_table(getvariable('conn')::BIGINT, 'users', schema := 'public');
-
--- Scan a table with full catalog.schema.table qualification
-SELECT * FROM adbc_scan_table(getvariable('conn')::BIGINT, 'users', catalog := 'mydb', schema := 'public');
+-- Scan a table with schema / catalog qualification (e.g., PostgreSQL)
+SELECT * FROM adbc_scan_table('pg', 'users', schema := 'public');
+SELECT * FROM adbc_scan_table('pg', 'users', catalog := 'mydb', schema := 'public');
 
 -- Parameterized query
-SELECT * FROM adbc_scan(getvariable('conn')::BIGINT, 'SELECT ? AS value', params := row(42), columns := {'value': 'BIGINT'});
+SELECT * FROM adbc_scan('db', 'SELECT ? AS value', params := row(42), columns := {'value': 'BIGINT'});
 
 -- Query with batch size hint (for network drivers, larger batches reduce round-trips)
-SELECT * FROM adbc_scan_table(getvariable('conn')::BIGINT, 'large_table', batch_size := 65536);
+SELECT * FROM adbc_scan_table('db', 'large_table', batch_size := 65536);
 
 -- Execute DDL/DML
-CALL adbc_execute(getvariable('conn')::BIGINT, 'CREATE TABLE test (id INTEGER, name TEXT)');
-CALL adbc_execute(getvariable('conn')::BIGINT, 'INSERT INTO test VALUES (1, ''hello'')');
+CALL adbc_execute('db', 'CREATE TABLE test (id INTEGER, name TEXT)');
+CALL adbc_execute('db', 'INSERT INTO test VALUES (1, ''hello'')');
 
 -- Bulk insert from DuckDB query
-SELECT * FROM adbc_insert(getvariable('conn')::BIGINT, 'target', (SELECT * FROM local_table), mode := 'create');
+SELECT * FROM adbc_insert('db', 'target', (SELECT * FROM local_table), mode := 'create');
 
 -- Catalog functions
-SELECT * FROM adbc_info(getvariable('conn')::BIGINT);
-SELECT * FROM adbc_tables(getvariable('conn')::BIGINT);
-SELECT * FROM adbc_table_types(getvariable('conn')::BIGINT);
-SELECT * FROM adbc_columns(getvariable('conn')::BIGINT, table_name := 'test');
-SELECT * FROM adbc_schema(getvariable('conn')::BIGINT, 'test');
+SELECT * FROM adbc_info('db');
+SELECT * FROM adbc_tables('db');
+SELECT * FROM adbc_table_types('db');
+SELECT * FROM adbc_columns('db', table_name := 'test');
+SELECT * FROM adbc_schema('db', 'test');
 
--- Transaction control
-CALL adbc_set_autocommit(getvariable('conn')::BIGINT, false);  -- Start transaction
-CALL adbc_execute(getvariable('conn')::BIGINT, 'INSERT INTO test VALUES (2, ''world'')');
-CALL adbc_commit(getvariable('conn')::BIGINT);  -- Commit changes
--- Or: CALL adbc_rollback(getvariable('conn')::BIGINT);  -- Discard changes
-CALL adbc_set_autocommit(getvariable('conn')::BIGINT, true);  -- Back to autocommit
+-- Transactions
+BEGIN;
+CALL adbc_execute('db', 'INSERT INTO test VALUES (2, ''world'')');
+COMMIT;  -- or ROLLBACK;
 
 -- Disconnect
-CALL adbc_disconnect(getvariable('conn')::BIGINT);
+DETACH db;
 ```
 
 ## Build Commands
@@ -289,7 +278,7 @@ Tests are written as [SQLLogicTests](https://duckdb.org/dev/sqllogictest/intro.h
 ## Architecture
 
 - **Extension entry point**: `src/adbc_scanner_extension.cpp` - Registers all functions with DuckDB via `LoadInternal()`
-- **ADBC functions**: `src/adbc_functions.cpp` - Implements connection management (adbc_connect, adbc_disconnect, transaction functions)
+- **Connections**: `src/adbc_connection.cpp` - `CreateConnectionFromOptions` (used by ATTACH) and `GetAttachedConnection` (resolves an ATTACH alias for the `adbc_*` functions)
 - **Scan/Execute**: `src/adbc_scan.cpp` - Implements adbc_scan, adbc_execute, and adbc_insert table functions
 - **Arrow type mapping**: `src/adbc_arrow_types.cpp` - Wraps DuckDB's Arrow-to-DuckDB type mapping for every scan path (adbc_scan, adbc_scan_table, ATTACH, adbc_schema). Decimals wider than DuckDB's 38-digit DECIMAL (e.g. MySQL's DECIMAL(41,0) for SUM(BIGINT), sent as Decimal256) are read as fixed-size binary and converted to DOUBLE, matching the DuckDB postgres/mysql scanners
 - **Catalog functions**: `src/adbc_catalog.cpp` - Implements adbc_info, adbc_tables, adbc_columns, adbc_schema

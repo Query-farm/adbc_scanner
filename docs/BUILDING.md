@@ -50,14 +50,14 @@ checks lock release, busy timeout, rollback/retry, shared visibility, and planni
 without writes. Both clients also use `READ_ONLY` attached catalogs: schema/table/
 column discovery, simultaneous reads, joins, committed-change visibility in both
 directions, uncommitted-change isolation, and rejection of DML/DDL writes are tested.
-Writes use separate explicit command handles. The test does not change an existing
-server or disable the optimizer.
+Writes go through a separate read-write attachment, in `BEGIN … COMMIT`
+transactions. The test does not change an existing server or disable the optimizer.
 
 The Iroh harness uses a named ADBC secret with URI-derived scope and the
 Grainlift driver's `grainlift.iroh.secret_key_file` option. Build both the
 extension and the Grainlift client with those features before running it;
 private key values are not embedded in its SQL. Each client reuses its secret
-for explicit command handles and a separate read-only attached catalog.
+for a read-write attachment and a separate read-only attached catalog.
 
 The Python tests also include an eager-binding test driver: it consumes Arrow
 batches inside `BindStream`, with a one-batch queue and a subprocess watchdog.

@@ -1,65 +1,76 @@
-# Migrating to runtime commands
+# Migrating to attached databases
 
-The previous scalar command API could execute remote SQL while DuckDB was
-optimizing an expression, including during `EXPLAIN`. This version removes those
-scalar functions. Keep the optimizer enabled and use standalone `CALL` statements.
+Earlier versions opened connections with `adbc_connect` and passed the returned
+BIGINT handle to every function. The functions now take the alias of an
+`ATTACH … (TYPE adbc)` database, and the handle commands are gone.
 
-| Previous expression | Replacement |
+| Previous | Replacement |
 | --- | --- |
-| `SELECT adbc_execute(handle, sql)` | `CALL adbc_execute(handle, sql)` |
-| `SELECT adbc_set_autocommit(handle, enabled)` | `CALL adbc_set_autocommit(handle, enabled)` |
-| `SELECT adbc_commit(handle)` | `CALL adbc_commit(handle)` |
-| `SELECT adbc_rollback(handle)` | `CALL adbc_rollback(handle)` |
-| `SELECT adbc_disconnect(handle)` | `CALL adbc_disconnect(handle)` |
+| `SET VARIABLE conn = (SELECT adbc_connect({'driver': 'sqlite', 'uri': 'x.db'}))` | `ATTACH 'x.db' AS db (TYPE adbc, driver 'sqlite')` |
+| `adbc_connect({'profile': 'mydb'})` | `ATTACH 'profile://mydb' AS db (TYPE adbc)` |
+| `adbc_connect({'secret': 's'})` / URI scope lookup | `ATTACH … (TYPE adbc, secret 's')` / the ATTACH path's URI |
+| `adbc_scan(getvariable('conn')::BIGINT, sql)` | `adbc_scan('db', sql)` (likewise every `adbc_*` function) |
+| `CALL adbc_set_autocommit(conn, false)` … `CALL adbc_commit(conn)` | `BEGIN` … `COMMIT` |
+| `CALL adbc_rollback(conn)` | `ROLLBACK` |
+| `CALL adbc_disconnect(conn)` | `DETACH db` |
+| `SELECT adbc_execute(...)` | `CALL adbc_execute('db', sql)` |
 | `SELECT adbc_clear_cache()` | `CALL adbc_clear_cache()` |
 
-Commands perform their work in the table-function execution callback. Binding
-only validates arguments and describes the output. Every execution has its own
-completion state, including repeated execution of a prepared statement:
+An unknown alias, or one naming a non-ADBC database, fails at bind with the
+alias in the message. Aliases resolve case-insensitively, like any catalog name.
+
+## Runtime commands
+
+`adbc_execute` performs its work in the table-function execution callback.
+Binding only validates arguments and describes the output. Every execution has
+its own completion state, including repeated execution of a prepared statement:
 
 ```sql
-PREPARE increment AS SELECT * FROM adbc_execute(1, 'UPDATE counters SET value = value + 1');
+PREPARE increment AS SELECT * FROM adbc_execute('db', 'UPDATE counters SET value = value + 1');
 EXECUTE increment;
 EXECUTE increment;
 ```
 
-Use an actual connection handle in place of `1`. Preparing or explaining this
-statement does not update the remote database; each execution updates it once.
-`EXPLAIN ANALYZE` executes its input. This is an execution-lifecycle guarantee,
-not a guarantee that retrying a command after a network failure is safe.
-Use standalone `CALL` rather than embedding commands in joins or filtered queries,
-where normal relational execution can skip an operator.
+Preparing or explaining this statement does not update the remote database;
+each execution updates it once. `EXPLAIN ANALYZE` executes its input. This is
+an execution-lifecycle guarantee, not a guarantee that retrying a command after
+a network failure is safe. Use standalone `CALL` rather than embedding commands
+in joins or filtered queries, where normal relational execution can skip an
+operator.
 
 `adbc_execute` uses `AdbcStatementExecuteQuery` with a null result-stream pointer,
 as specified by ADBC for updates. It returns one BIGINT `rows_affected`, with SQL
-`NULL` for an unknown count. Transaction and disconnect commands return one
-BOOLEAN `success`. Cache clearing returns BOOLEAN `cleared`, false when there
-are no attached ADBC catalogs.
+`NULL` for an unknown count. Cache clearing returns BOOLEAN `cleared`, false when
+there are no attached ADBC catalogs.
 
-## Transactions and connection ownership
+## Transactions and connections
 
 ```sql
-CALL adbc_set_autocommit(getvariable('conn')::BIGINT, false);
-CALL adbc_execute(getvariable('conn')::BIGINT, 'INSERT INTO messages VALUES (2, ''transaction'')');
-CALL adbc_commit(getvariable('conn')::BIGINT);
-CALL adbc_set_autocommit(getvariable('conn')::BIGINT, true);
+BEGIN;
+CALL adbc_execute('db', 'INSERT INTO messages VALUES (2, ''transaction'')');
+INSERT INTO db.messages VALUES (3, 'through the catalog');
+COMMIT;
 ```
 
-Use `CALL adbc_rollback(...)` to discard an open transaction. These operations
-control the remote ADBC connection; they do not make local and remote writes
-part of a distributed transaction.
+Inside an explicit transaction, `adbc_execute` and `adbc_insert` use the
+attachment's write connection (autocommit disabled), so they commit or roll
+back together with writes made through the catalog. Reads (`adbc_scan`,
+`adbc_scan_table`, the metadata functions) see the transaction's uncommitted
+writes once it has written. A driver that cannot disable autocommit fails the
+first write in the transaction rather than silently autocommitting. These
+transactions control the remote ADBC connection; local and remote writes are
+not one distributed transaction.
 
-`adbc_connect` remains a volatile scalar, producing a separate handle for every
-evaluated input row. It is not constant-folded during planning. Handles belong
-to the DuckDB client connection that created them, cannot be used by another
-client connection, and are never recycled during the process lifetime. Closing
-the owning DuckDB connection releases its remaining handles. Explicit disconnect
-invalidates the handle, including in previously prepared statements.
+Outside an explicit transaction, the `adbc_*` functions use the attachment's
+own connection in autocommit, so session state such as a temporary table
+created by `adbc_insert` or a `SET` run by `adbc_execute` is visible to later
+calls. Writes to an attachment made with `READ_ONLY` are rejected.
 
 Only one operation may use an ADBC connection at a time. Statements and metadata
-streams retain an operation lease until released. Overlap fails promptly rather
-than waiting on a lock. Use independent handles for concurrent clients and joins
-that need simultaneous remote scans, or the `ATTACH` connection pool.
+streams retain an operation lease until released; overlap fails promptly rather
+than waiting on a lock. A query that needs two simultaneous `adbc_*` scans of
+one database (a self-join) should attach it twice; scans of attached tables
+(`db.schema.table`) lease their own pooled connections and are not limited.
 
 ## Query schemas
 
@@ -68,14 +79,14 @@ back to executing a query while binding it. Where the driver cannot supply usabl
 metadata, declare the full ordered result schema:
 
 ```sql
-SELECT * FROM adbc_scan(getvariable('conn')::BIGINT,
+SELECT * FROM adbc_scan('db',
     'SELECT id, body FROM messages WHERE id = ?',
     params := row(1), columns := {'id': 'BIGINT', 'body': 'VARCHAR'});
 ```
 
 SQLite requires explicit columns for arbitrary queries because its ADBC driver
 does not implement query-schema discovery. SQLite integers are returned as BIGINT.
-`adbc_scan_table(handle, 'messages')` uses `AdbcConnectionGetTableSchema`; it also
+`adbc_scan_table('db', 'messages')` uses `AdbcConnectionGetTableSchema`; it also
 accepts an explicit `columns` declaration. Table metadata and statistics calls
 can still contact the driver during binding. Driver implementations are responsible
 for honoring the metadata-only semantics of their ADBC methods.
@@ -91,15 +102,16 @@ explicit schema for direct scans. `ATTACH` relies on accurate table metadata.
 
 ## Driver options and secrets
 
-Connection option STRUCT values preserve their types: VARCHAR and BOOLEAN use
-the ADBC string setter, integral values the int64 setter, FLOAT/DOUBLE the double
-setter, and BLOB the bytes setter. Unsupported types and nested containers are
-rejected. For example, pass `'grainlift.request_timeout_ms': 10000` as an integer.
-Do not nest direct driver options inside an `options` STRUCT.
+ATTACH option values preserve their types: VARCHAR and BOOLEAN use the ADBC
+string setter, integral values the int64 setter, FLOAT/DOUBLE the double setter,
+and BLOB the bytes setter. Unsupported types and nested containers are rejected.
+For example, pass `"grainlift.request_timeout_ms" 10000` as an integer. ATTACH
+option names are lowercased, so a driver option whose name needs uppercase
+letters has to come from a secret's `EXTRA_OPTIONS` or a connection profile.
 
 Secret `EXTRA_OPTIONS` remains a string-to-string MAP. Its values are all redacted
 from secret display, including driver-specific private keys. Supply non-string
-options directly in the connection STRUCT. Scan errors no longer append the SQL
+options directly as ATTACH options. Scan errors no longer append the SQL
 query; a downstream driver may still include SQL in its own error message.
 
 ## Validation

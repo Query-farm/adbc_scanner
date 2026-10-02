@@ -51,27 +51,27 @@ require-env HAS_ADBC_SQLITE_DRIVER
 # Connect using a profile:// URI; the driver and uri come from the profile.
 # search_paths is used to locate the profile TOML.
 statement ok
-SET VARIABLE pconn = (SELECT adbc_connect({'uri': 'profile://sqlite_mem', 'search_paths': 'test/profiles'}));
+ATTACH 'profile://sqlite_mem' AS pconn (TYPE adbc, search_paths 'test/profiles');
 
 query II
-SELECT * FROM adbc_scan(getvariable('pconn')::BIGINT, 'SELECT 1 AS a, 2 AS b', columns := {'a': 'BIGINT', 'b': 'BIGINT'});
+SELECT * FROM adbc_scan('pconn', 'SELECT 1 AS a, 2 AS b', columns := {'a': 'BIGINT', 'b': 'BIGINT'});
 ----
 1	2
 
 statement ok
-CALL adbc_disconnect(getvariable('pconn')::BIGINT);
+DETACH pconn;
 
 # Connect using the 'profile' option form instead of a profile:// URI
 statement ok
-SET VARIABLE pconn2 = (SELECT adbc_connect({'profile': 'sqlite_mem', 'search_paths': 'test/profiles'}));
+ATTACH '' AS pconn2 (TYPE adbc, profile 'sqlite_mem', search_paths 'test/profiles');
 
 query I
-SELECT * FROM adbc_scan(getvariable('pconn2')::BIGINT, 'SELECT 42', columns := {'42': 'BIGINT'});
+SELECT * FROM adbc_scan('pconn2', 'SELECT 42', columns := {'42': 'BIGINT'});
 ----
 42
 
 statement ok
-CALL adbc_disconnect(getvariable('pconn2')::BIGINT);
+DETACH pconn2;
 
 # ATTACH via a profile:// URI. AdbcAttach connects eagerly, so a successful
 # ATTACH proves the profile was resolved and the driver loaded.

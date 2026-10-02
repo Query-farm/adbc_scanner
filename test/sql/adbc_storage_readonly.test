@@ -7,22 +7,22 @@ require adbc_scanner
 require-env HAS_ADBC_SQLITE_DRIVER
 
 statement ok
-SET VARIABLE c = (SELECT adbc_connect({'driver': 'sqlite', 'uri': '/tmp/test_ro.db'}));
+ATTACH '__TEST_DIR__/test_ro.db' AS setup_db (TYPE adbc, driver 'sqlite');
 
 statement ok
-CALL adbc_execute(getvariable('c')::BIGINT, 'DROP TABLE IF EXISTS t');
+CALL adbc_execute('setup_db', 'DROP TABLE IF EXISTS t');
 
 statement ok
-CALL adbc_execute(getvariable('c')::BIGINT, 'CREATE TABLE t (id INTEGER)');
+CALL adbc_execute('setup_db', 'CREATE TABLE t (id INTEGER)');
 
 statement ok
-CALL adbc_execute(getvariable('c')::BIGINT, 'INSERT INTO t VALUES (1), (2)');
+CALL adbc_execute('setup_db', 'INSERT INTO t VALUES (1), (2)');
 
 statement ok
-CALL adbc_disconnect(getvariable('c')::BIGINT);
+DETACH setup_db;
 
 statement ok
-ATTACH '/tmp/test_ro.db' AS ro (TYPE adbc, driver 'sqlite', READ_ONLY);
+ATTACH '__TEST_DIR__/test_ro.db' AS ro (TYPE adbc, driver 'sqlite', READ_ONLY);
 
 query I
 SELECT COUNT(*) FROM ro.t;
@@ -32,6 +32,23 @@ SELECT COUNT(*) FROM ro.t;
 statement error
 INSERT INTO ro.t VALUES (3);
 ----
+
+# adbc_execute / adbc_insert write, so they are rejected on a read-only attachment
+statement error
+CALL adbc_execute('ro', 'INSERT INTO t VALUES (3)');
+----
+adbc_execute: "ro" is attached read-only
+
+statement error
+SELECT * FROM adbc_insert('ro', 't', (SELECT 3 AS id), mode := 'append');
+----
+adbc_insert: "ro" is attached read-only
+
+# Reads through adbc_scan still work
+query I
+SELECT COUNT(*) FROM adbc_scan('ro', 'SELECT id FROM t', columns := {'id': 'BIGINT'});
+----
+2
 
 statement ok
 DETACH ro;

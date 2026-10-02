@@ -6,7 +6,7 @@ namespace adbc_scanner {
 using namespace duckdb;
 
 struct AdbcExecuteBindData : public TableFunctionData {
-    int64_t connection_id;
+    string database;
     string query;
 };
 
@@ -17,13 +17,13 @@ struct AdbcExecuteState : public GlobalTableFunctionState {
 static unique_ptr<FunctionData> AdbcExecuteBind(ClientContext &, TableFunctionBindInput &input,
                                               vector<LogicalType> &types, vector<string> &names) {
     if (input.inputs[0].IsNull()) {
-        throw InvalidInputException("adbc_execute: Connection handle cannot be NULL");
+        throw InvalidInputException("adbc_execute: database name cannot be NULL");
     }
     if (input.inputs[1].IsNull()) {
         throw InvalidInputException("adbc_execute: Query cannot be NULL");
     }
     auto data = make_uniq<AdbcExecuteBindData>();
-    data->connection_id = input.inputs[0].GetValue<int64_t>();
+    data->database = input.inputs[0].IsNull() ? string() : input.inputs[0].GetValue<string>();
     data->query = input.inputs[1].GetValue<string>();
     types.emplace_back(LogicalType::BIGINT);
     names.emplace_back("rows_affected");
@@ -42,7 +42,7 @@ static void AdbcExecute(ClientContext &context, TableFunctionInput &input, DataC
     // Completion belongs to runtime state, not reusable prepared-statement bind data.
     state.finished = true;
     auto &data = input.bind_data->Cast<AdbcExecuteBindData>();
-    auto connection = GetValidatedConnection(context, data.connection_id, "adbc_execute");
+    auto connection = GetAttachedConnection(context, Value(data.database), "adbc_execute", true);
     AdbcStatementWrapper statement(connection);
     statement.Init();
     statement.SetSqlQuery(data.query);
@@ -54,14 +54,14 @@ static void AdbcExecute(ClientContext &context, TableFunctionInput &input, DataC
 
 void RegisterAdbcExecuteFunction(DatabaseInstance &db) {
     ExtensionLoader loader(db, "adbc");
-    TableFunction function("adbc_execute", {LogicalType::BIGINT, LogicalType::VARCHAR},
+    TableFunction function("adbc_execute", {LogicalType::VARCHAR, LogicalType::VARCHAR},
                            AdbcExecute, AdbcExecuteBind, AdbcExecuteInit);
     CreateTableFunctionInfo info(function);
     FunctionDescription description;
     description.description = "Execute a remote command at runtime; return NULL when the affected-row count is unknown";
-    description.parameter_names = {"connection_handle", "query"};
-    description.parameter_types = {LogicalType::BIGINT, LogicalType::VARCHAR};
-    description.examples = {"CALL adbc_execute(conn, 'INSERT INTO example VALUES (1)')"};
+    description.parameter_names = {"database", "query"};
+    description.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
+    description.examples = {"CALL adbc_execute('pg', 'INSERT INTO example VALUES (1)')"};
     description.categories = {"adbc"};
     info.descriptions.push_back(std::move(description));
     loader.RegisterFunction(info);

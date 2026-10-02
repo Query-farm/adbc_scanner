@@ -50,8 +50,24 @@ checks lock release, busy timeout, rollback/retry, shared visibility, and planni
 without writes. Both clients also use `READ_ONLY` attached catalogs: schema/table/
 column discovery, simultaneous reads, joins, committed-change visibility in both
 directions, uncommitted-change isolation, and rejection of DML/DDL writes are tested.
-Writes use separate explicit command handles. The test does not change an existing
-server or disable the optimizer.
+Writes go through a separate read-write attachment, in `BEGIN … COMMIT`
+transactions. The test does not change an existing server or disable the optimizer.
+
+The Iroh harness uses a named ADBC secret with URI-derived scope and the
+Grainlift driver's `grainlift.iroh.secret_key_file` option. Build both the
+extension and the Grainlift client with those features before running it;
+private key values are not embedded in its SQL. Each client reuses its secret
+for a read-write attachment and a separate read-only attached catalog.
+
+The Python tests also include an eager-binding test driver: it consumes Arrow
+batches inside `BindStream`, with a one-batch queue and a subprocess watchdog.
+They cover successful multi-batch ingestion and cleanup after binding, execution,
+and producer failures. For real Grainlift/Iroh bulk ingestion, run the sibling
+repository's `validation/iroh_bulk_insert.py` as documented in its validation
+README. That test uses independent Alice/Bob clients and a temporary SQLite WAL
+database to check exact values, append visibility, transactions, and overlapping
+writers. A statically empty input can be pruned by DuckDB and return no count
+row; an empty stream evaluated at runtime returns a count of zero.
 
 ```sh
 uv pip install --python .runtime-tests/bin/python cryptography

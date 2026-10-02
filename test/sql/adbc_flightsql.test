@@ -17,13 +17,14 @@ require adbc_scanner
 
 require-env ADBC_FLIGHTSQL_TEST_AVAILABLE
 
-# Imperative scan: the WHERE here is part of the query string (server-side), not a
-# pushed-down placeholder, so it exercises the Flight SQL transport end to end.
 statement ok
-SET VARIABLE c = (SELECT adbc_connect({'driver':'flightsql','uri':'grpc://localhost:31337','username':'sqlflite_username','password':'flight_password'}));
+ATTACH 'grpc://localhost:31337' AS f (TYPE adbc, driver 'flightsql', username 'sqlflite_username', password 'flight_password');
+
+# adbc_scan: the WHERE here is part of the query string (server-side), not a
+# pushed-down placeholder, so it exercises the Flight SQL transport end to end.
 
 query IT
-SELECT n_nationkey, n_name FROM adbc_scan(getvariable('c')::BIGINT, 'SELECT n_nationkey, n_name FROM nation WHERE n_nationkey < 3 ORDER BY n_nationkey');
+SELECT n_nationkey, n_name FROM adbc_scan('f', 'SELECT n_nationkey, n_name FROM nation WHERE n_nationkey < 3 ORDER BY n_nationkey');
 ----
 0	ALGERIA
 1	ARGENTINA
@@ -31,17 +32,11 @@ SELECT n_nationkey, n_name FROM adbc_scan(getvariable('c')::BIGINT, 'SELECT n_na
 
 # Unfiltered scan_table (SELECT * FROM region, no pushed filter)
 query I
-SELECT COUNT(*) AS n FROM adbc_scan_table(getvariable('c')::BIGINT, 'region');
+SELECT COUNT(*) AS n FROM adbc_scan_table('f', 'region');
 ----
 5
 
-statement ok
-CALL adbc_disconnect(getvariable('c')::BIGINT);
-
 # ATTACH storage path (read-only)
-statement ok
-ATTACH 'grpc://localhost:31337' AS f (TYPE adbc, driver 'flightsql', username 'sqlflite_username', password 'flight_password');
-
 query I
 SELECT COUNT(*) FROM f.main.nation;
 ----

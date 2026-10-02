@@ -11,19 +11,19 @@ require-env HAS_ADBC_SQLITE_DRIVER
 # ============================================
 
 statement ok
-SET VARIABLE conn_id = (SELECT adbc_connect({'driver': 'sqlite', 'uri': '/tmp/test_attach.db'}));
+ATTACH '__TEST_DIR__/test_attach.db' AS setup_db (TYPE adbc, driver 'sqlite');
 
 statement ok
-CALL adbc_execute(getvariable('conn_id')::BIGINT, 'DROP TABLE IF EXISTS test_table');
+CALL adbc_execute('setup_db', 'DROP TABLE IF EXISTS test_table');
 
 statement ok
-CALL adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE test_table (id INTEGER, name TEXT, value REAL)');
+CALL adbc_execute('setup_db', 'CREATE TABLE test_table (id INTEGER, name TEXT, value REAL)');
 
 statement ok
-CALL adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO test_table VALUES (1, ''hello'', 1.5), (2, ''world'', 2.5), (3, ''test'', 3.5)');
+CALL adbc_execute('setup_db', 'INSERT INTO test_table VALUES (1, ''hello'', 1.5), (2, ''world'', 2.5), (3, ''test'', 3.5)');
 
 statement ok
-CALL adbc_disconnect(getvariable('conn_id')::BIGINT);
+DETACH setup_db;
 
 # ============================================
 # Basic ATTACH Tests
@@ -31,7 +31,7 @@ CALL adbc_disconnect(getvariable('conn_id')::BIGINT);
 
 # Test basic ATTACH
 statement ok
-ATTACH '/tmp/test_attach.db' AS sqlite_db (TYPE adbc, driver 'sqlite');
+ATTACH '__TEST_DIR__/test_attach.db' AS sqlite_db (TYPE adbc, driver 'sqlite');
 
 # Test querying attached database
 query ITR
@@ -127,7 +127,7 @@ DETACH sqlite_db2;
 
 # Test ATTACH with batch_size option
 statement ok
-ATTACH '/tmp/test_attach.db' AS sqlite_db_batch (TYPE adbc, driver 'sqlite', batch_size 1024);
+ATTACH '__TEST_DIR__/test_attach.db' AS sqlite_db_batch (TYPE adbc, driver 'sqlite', batch_size 1024);
 
 # Verify querying still works with batch_size
 query ITR
@@ -152,7 +152,7 @@ DETACH sqlite_db_batch;
 
 # Test with very small batch size (should still work correctly)
 statement ok
-ATTACH '/tmp/test_attach.db' AS sqlite_db_small (TYPE adbc, driver 'sqlite', batch_size 1);
+ATTACH '__TEST_DIR__/test_attach.db' AS sqlite_db_small (TYPE adbc, driver 'sqlite', batch_size 1);
 
 query ITR
 SELECT * FROM sqlite_db_small.test_table ORDER BY id;
@@ -170,7 +170,7 @@ DETACH sqlite_db_small;
 
 # Test with large batch size
 statement ok
-ATTACH '/tmp/test_attach.db' AS sqlite_db_large (TYPE adbc, driver 'sqlite', batch_size 65536);
+ATTACH '__TEST_DIR__/test_attach.db' AS sqlite_db_large (TYPE adbc, driver 'sqlite', batch_size 65536);
 
 query ITR
 SELECT * FROM sqlite_db_large.test_table ORDER BY id;
@@ -188,7 +188,7 @@ DETACH sqlite_db_large;
 
 # Attach database for schema tests
 statement ok
-ATTACH '/tmp/test_attach.db' AS sqlite_schema_test (TYPE adbc, driver 'sqlite');
+ATTACH '__TEST_DIR__/test_attach.db' AS sqlite_schema_test (TYPE adbc, driver 'sqlite');
 
 # SQLite doesn't support CREATE SCHEMA, so this should fail with a driver error
 statement error
@@ -209,12 +209,12 @@ DETACH sqlite_schema_test;
 # Cleanup
 # ============================================
 
-# Clean up the test file (using a new connection)
+# Clean up the test data
 statement ok
-SET VARIABLE cleanup_conn = (SELECT adbc_connect({'driver': 'sqlite', 'uri': '/tmp/test_attach.db'}));
+ATTACH '__TEST_DIR__/test_attach.db' AS cleanup_db (TYPE adbc, driver 'sqlite');
 
 statement ok
-CALL adbc_execute(getvariable('cleanup_conn')::BIGINT, 'DROP TABLE IF EXISTS test_table');
+CALL adbc_execute('cleanup_db', 'DROP TABLE IF EXISTS test_table');
 
 statement ok
-CALL adbc_disconnect(getvariable('cleanup_conn')::BIGINT);
+DETACH cleanup_db;

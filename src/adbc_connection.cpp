@@ -1,16 +1,43 @@
 #include "adbc_connection.hpp"
+#include "duckdb/main/attached_database.hpp"
+#include "duckdb/main/database_manager.hpp"
+#include "duckdb/transaction/transaction_context.hpp"
+#include "storage/adbc_catalog.hpp"
+#include "storage/adbc_transaction.hpp"
 
 namespace adbc_scanner {
 using namespace duckdb;
 
-shared_ptr<AdbcConnectionWrapper> GetValidatedConnection(ClientContext &context, int64_t connection_id, const string &function_name) {
-	auto &registry = ConnectionRegistry::Get();
-	auto connection = registry.Get(connection_id, &context);
-	if (!connection) {
-		throw InvalidInputException(function_name + ": Invalid connection handle: " + to_string(connection_id));
+shared_ptr<AdbcConnectionWrapper> GetAttachedConnection(ClientContext &context, const Value &database,
+                                                        const string &function_name, bool write) {
+	if (database.IsNull()) {
+		throw InvalidInputException("%s: database name must not be NULL", function_name);
 	}
+	auto name = database.GetValue<string>();
+	auto attached = DatabaseManager::Get(context).GetDatabase(context, name);
+	if (!attached) {
+		throw BinderException("%s: no attached database named \"%s\"; attach one with "
+		                      "ATTACH '<uri>' AS %s (TYPE adbc, driver '...')",
+		                      function_name, name, name);
+	}
+	auto &catalog = attached->GetCatalog();
+	if (catalog.GetCatalogType() != "adbc") {
+		throw BinderException("%s: \"%s\" is a %s database, not an ADBC one", function_name, name,
+		                      catalog.GetCatalogType());
+	}
+	auto &adbc_catalog = catalog.Cast<AdbcCatalog>();
+	if (write && adbc_catalog.access_mode == AccessMode::READ_ONLY) {
+		throw PermissionException("%s: \"%s\" is attached read-only", function_name, name);
+	}
+	auto &transaction = AdbcTransaction::Get(context, catalog);
+	bool explicit_transaction = !context.transaction.IsAutoCommit();
+	// Not a pooled connection for reads: session state (temp tables, SET ...)
+	// made by adbc_execute / adbc_insert lives on the attachment's connection.
+	auto connection = (write ? explicit_transaction : transaction.HasWriteConnection())
+	                      ? transaction.GetWriteConnection()
+	                      : adbc_catalog.GetConnection();
 	if (!connection->IsInitialized()) {
-		throw InvalidInputException(function_name + ": Connection has been closed");
+		throw InvalidInputException("%s: the connection for \"%s\" has been closed", function_name, name);
 	}
 	return connection;
 }

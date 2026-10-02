@@ -1,57 +1,77 @@
 # name: test/sql/adbc_connect.test
-# description: test adbc connection functions
+# description: connecting with ATTACH and naming the attached database in adbc_* functions
 # group: [adbc]
 
 # Before we load the extension, this will fail
 statement error
-SELECT adbc_connect({'driver': 'test'});
+SELECT * FROM adbc_info('db');
 ----
-Catalog Error: Scalar Function with name adbc_connect does not exist!
+Catalog Error: Table Function with name adbc_info does not exist!
 
 # Require statement will ensure this test is run with this extension loaded
 require adbc_scanner
 
 require-env HAS_ADBC_SQLITE_DRIVER
 
-# Test that adbc_connect requires 'driver' option (STRUCT syntax)
+# ATTACH requires a 'driver' option (or a connection profile)
 statement error
-SELECT adbc_connect({'uri': 'test'});
+ATTACH '__TEST_DIR__/adbc_connect.db' AS db (TYPE adbc);
 ----
 Invalid Input Error: ADBC connection requires a 'driver' option
 
-# Test that adbc_connect requires 'driver' option (MAP syntax - backwards compatibility)
+# The functions name an attached ADBC database
 statement error
-SELECT adbc_connect(MAP {'uri': 'test'});
+SELECT * FROM adbc_info('nope');
 ----
-Invalid Input Error: ADBC connection requires a 'driver' option
+Binder Error: adbc_info: no attached database named "nope"
 
-# Test disconnect with invalid handle
+statement ok
+ATTACH ':memory:' AS plain_duckdb;
+
 statement error
-CALL adbc_disconnect(12345);
+SELECT * FROM adbc_scan('plain_duckdb', 'SELECT 1');
 ----
-Invalid Input Error: adbc_disconnect: Invalid connection handle: 12345
+Binder Error: adbc_scan: "plain_duckdb" is a duckdb database, not an ADBC one
 
-# Test basic connection with STRUCT syntax
+statement error
+SELECT * FROM adbc_scan(NULL, 'SELECT 1');
+----
+database name cannot be NULL
+
 statement ok
-SET VARIABLE conn_id = (SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:'}));
+ATTACH '__TEST_DIR__/adbc_connect.db' AS db (TYPE adbc, driver 'sqlite');
 
-# Test basic connection with MAP syntax (backwards compatibility)
-statement ok
-SET VARIABLE map_conn = (SELECT adbc_connect(MAP {'driver': 'sqlite', 'uri': ':memory:'}));
-
-# Test disconnect
+# The driver is reported through adbc_info
 query I
-CALL adbc_disconnect(getvariable('conn_id')::BIGINT);
+SELECT count(*) > 0 FROM adbc_info('db') WHERE info_value ILIKE '%sqlite%';
 ----
 true
 
+# The alias is what names it, case-insensitively like any catalog
 query I
-CALL adbc_disconnect(getvariable('map_conn')::BIGINT);
+SELECT * FROM adbc_scan('DB', 'SELECT 42 AS answer', columns := {'answer': 'BIGINT'});
 ----
-true
+42
 
-# Test that connection is invalid after disconnect
-statement error
-SELECT * FROM adbc_scan(getvariable('conn_id')::BIGINT, 'SELECT 1');
+statement ok
+ATTACH '__TEST_DIR__/adbc_connect_other.db' AS other_alias (TYPE adbc, driver 'sqlite');
+
+query I
+SELECT * FROM adbc_scan('other_alias', 'SELECT 7 AS n', columns := {'n': 'BIGINT'});
 ----
-Invalid Input Error: adbc_scan: Invalid connection handle
+7
+
+statement ok
+DETACH db;
+
+statement ok
+DETACH other_alias;
+
+statement ok
+DETACH plain_duckdb;
+
+# After DETACH the name no longer resolves
+statement error
+SELECT * FROM adbc_scan('db', 'SELECT 1');
+----
+Binder Error: adbc_scan: no attached database named "db"

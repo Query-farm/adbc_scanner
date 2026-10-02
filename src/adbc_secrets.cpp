@@ -30,8 +30,7 @@ SecretMatch AdbcGetSecretByUri(ClientContext &context, const string &uri) {
 	return secret_manager.LookupSecret(transaction, uri, "adbc");
 }
 
-AdbcOptions MergeSecretOptions(ClientContext &context,
-                                                 const AdbcOptions &explicit_options) {
+AdbcOptions MergeSecretOptions(ClientContext &context, const AdbcOptions &explicit_options) {
 	// First, check if there's a uri option to use as scope for secret lookup
 	string uri;
 	string secret_name;
@@ -129,10 +128,14 @@ static unique_ptr<BaseSecret> CreateAdbcSecretFunction(ClientContext &context, C
 	(void)context;
 	auto scope = input.scope;
 
-	// Scope is required and should be a URI pattern
+	// A concrete URI is also a useful default lookup scope. Keep an explicit
+	// scope unchanged: callers may intentionally match a broader URI prefix.
 	if (scope.empty()) {
-		throw InvalidInputException(
-		    "ADBC secret requires a SCOPE (e.g., SCOPE 'postgresql://host:5432')");
+		auto uri = input.options.find("uri");
+		if (uri == input.options.end() || uri->second.IsNull() || uri->second.GetValue<string>().empty()) {
+			throw InvalidInputException("ADBC secret requires a non-empty URI or an explicit SCOPE");
+		}
+		scope.push_back(uri->second.GetValue<string>());
 	}
 
 	auto result = make_uniq<KeyValueSecret>(scope, "adbc", "config", input.name);

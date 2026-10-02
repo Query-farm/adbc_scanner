@@ -37,51 +37,48 @@ def client(pipe: Any, driver: str, root: str, name: str, extension: str) -> None
     address = "127.0.0.1:" + address.rsplit(":", 1)[1]
     with duckdb.connect(config={"allow_unsigned_extensions": True}) as db:
         db.execute("LOAD '" + extension.replace("'", "''") + "'")
-        row = db.execute(
-            """SELECT adbc_connect({
-                'driver': ?, 'entrypoint': 'AdbcDriverGrainliftInit',
-                'grainlift.uri': ?, 'grainlift.target': 'sqlite',
-                'grainlift.iroh.secret_key': ?,
-                'grainlift.iroh.direct_address': ?,
-                'grainlift.request_timeout_ms': 10000
-            })""",
-            [
-                driver,
-                "grainlift+iroh://" + endpoint["endpoint_id"],
-                (directory / f"{name}.key").read_text(),
-                address,
-            ],
-        ).fetchone()
-        assert row is not None
-        handle = row[0]
-        db.execute(
-            "SELECT * FROM adbc_scan(?::BIGINT, ?, columns := {'timeout': 'BIGINT'})",
-            [handle, f"PRAGMA busy_timeout = {BUSY_MS}"],
-        ).fetchall()
-        # Each reader owns a READ_ONLY catalog and its independent pooled ADBC
-        # connections. Writes continue through the explicit command handle.
+        uri = "grainlift+iroh://" + endpoint["endpoint_id"]
         options = {
-            "driver": driver,
-            "entrypoint": "AdbcDriverGrainliftInit",
-            "grainlift.uri": "grainlift+iroh://" + endpoint["endpoint_id"],
             "grainlift.target": "sqlite",
-            "grainlift.iroh.secret_key": (directory / f"{name}.key").read_text(),
+            "grainlift.iroh.secret_key_file": str(directory / f"{name}.key"),
             "grainlift.iroh.direct_address": address,
         }
-        attach_options = ", ".join(
-            '"' + key + '" ' + "'" + value.replace("'", "''") + "'"
-            for key, value in options.items()
+
+        def literal(value):
+            return "'" + value.replace("'", "''") + "'"
+
+        # Exercise URI-derived scope and file-backed credentials through both a
+        # read-write attachment (named in adbc_* calls) and a READ_ONLY one.
+        extra = ", ".join(
+            literal(key) + ": " + literal(value) for key, value in options.items()
         )
-        attach_sql = (
-            "ATTACH '' AS shared (TYPE adbc, READ_ONLY, "
-            + attach_options
-            + ', "grainlift.request_timeout_ms" 10000)'
+        db.execute(
+            "CREATE SECRET grainlift_client (TYPE adbc, DRIVER "
+            + literal(driver)
+            + ", URI "
+            + literal(uri)
+            + ", EXTRA_OPTIONS MAP {"
+            + extra
+            + "})"
         )
+        assert db.execute(
+            "SELECT scope FROM duckdb_secrets() WHERE name = 'grainlift_client'"
+        ).fetchone() == ([uri],)
+        busy_timeout = f"PRAGMA busy_timeout = {BUSY_MS}"
+        # Each reader owns a READ_ONLY catalog and its independent pooled ADBC
+        # connections. Writes go through the read-write attachment "remote":
+        # outside a transaction on its own connection, inside BEGIN … COMMIT on
+        # the transaction's write connection.
         try:
-            db.execute(attach_sql)
+            db.execute("ATTACH '' AS remote (TYPE adbc, SECRET 'grainlift_client')")
+            # Autocommit writes use the attachment's own connection.
+            db.execute("CALL adbc_execute('remote', ?)", [busy_timeout]).fetchall()
+            db.execute(
+                "ATTACH '' AS shared (TYPE adbc, READ_ONLY, SECRET 'grainlift_client')"
+            )
         except duckdb.Error:
-            # ATTACH errors may reproduce options containing the private key.
-            raise RuntimeError("read-only Iroh catalog setup failed") from None
+            # Do not persist raw downstream errors in test artifacts.
+            raise RuntimeError("Iroh catalog setup failed") from None
         pipe.send({"ready": name})
         try:
             while True:
@@ -93,29 +90,30 @@ def client(pipe: Any, driver: str, root: str, name: str, extension: str) -> None
                 try:
                     if method == "sql":
                         rows = db.execute(
-                            "CALL adbc_execute(?::BIGINT, ?)", [handle, value]
+                            "CALL adbc_execute('remote', ?)", [value]
                         ).fetchall()
                     elif method == "read":
                         rows = db.execute(
-                            "SELECT * FROM adbc_scan(?::BIGINT, ?, columns := {'id': 'BIGINT', 'value': 'BIGINT'})",
-                            [handle, value],
+                            "SELECT * FROM adbc_scan('remote', ?, columns := {'id': 'BIGINT', 'value': 'BIGINT'})",
+                            [value],
                         ).fetchall()
-                    elif method == "catalog":
+                    elif method in {"catalog", "local"}:
                         rows = db.execute(value).fetchall()
                     elif method == "explain":
                         plan = db.execute(
-                            "EXPLAIN CALL adbc_execute(?::BIGINT, ?)",
-                            [handle, value],
+                            "EXPLAIN CALL adbc_execute('remote', ?)", [value]
                         ).fetchall()
                         rows = [(len(plan),)]
-                    elif method == "autocommit":
+                    elif method == "begin":
+                        db.execute("BEGIN")
+                        # The first write leases the transaction's write
+                        # connection; give it the busy timeout too.
                         rows = db.execute(
-                            "CALL adbc_set_autocommit(?::BIGINT, ?)", [handle, value]
+                            "CALL adbc_execute('remote', ?)", [busy_timeout]
                         ).fetchall()
                     elif method in {"commit", "rollback"}:
-                        rows = db.execute(
-                            f"CALL adbc_{method}(?::BIGINT)", [handle]
-                        ).fetchall()
+                        db.execute(method.upper())
+                        rows = []
                     else:
                         raise ValueError("unknown test operation")
                     response = {"ok": True, "rows": rows}
@@ -144,7 +142,7 @@ def client(pipe: Any, driver: str, root: str, name: str, extension: str) -> None
                 pipe.send(response)
         finally:
             db.execute("DETACH shared")
-            db.execute("CALL adbc_disconnect(?::BIGINT)", [handle]).fetchall()
+            db.execute("DETACH remote")
 
 
 class Client:
@@ -238,7 +236,7 @@ def probes(alice: Client, bob: Client) -> list[dict[str, Any]]:
     read = "SELECT id, value FROM counters ORDER BY id"
 
     # A blocked writer must not prevent another session from releasing its lock.
-    alice.call("autocommit", False)
+    alice.call("begin")
     alice.call("sql", update_one)
     bob.start("sql", update_two)
     assert not bob.pipe.poll(0.3), "competing writer did not wait for the lock"
@@ -247,7 +245,6 @@ def probes(alice: Client, bob: Client) -> list[dict[str, Any]]:
     assert waiting["ok"], waiting
     assert commit["seconds"] < 1.5, commit
     assert waiting["seconds"] < BUSY_MS / 1000, waiting
-    alice.call("autocommit", True)
     results.append(
         {
             "case": "commit_unblocks_waiting_writer",
@@ -257,14 +254,13 @@ def probes(alice: Client, bob: Client) -> list[dict[str, Any]]:
     )
 
     # If the owner retains its lock, SQLite must fail within the busy deadline.
-    alice.call("autocommit", False)
+    alice.call("begin")
     alice.call("sql", update_one)
     bob.start("sql", update_two)
     locked = bob.receive()
     assert not locked["ok"], locked
     assert 2.5 <= locked["seconds"] < DEADLINE_SECONDS, locked
     alice.call("rollback")
-    alice.call("autocommit", True)
     bob.call("sql", update_two)
     results.append(
         {
@@ -274,10 +270,12 @@ def probes(alice: Client, bob: Client) -> list[dict[str, Any]]:
         }
     )
 
-    # Opposite-order updates after both clients take a read snapshot. SQLite's
-    # single-writer lock must reject an upgrade rather than wait indefinitely.
-    alice.call("autocommit", False)
-    bob.call("autocommit", False)
+    # Opposite-order updates inside two open transactions (each already holding
+    # its write connection from BEGIN's busy-timeout pragma). SQLite's
+    # single-writer lock must reject the second writer rather than wait
+    # indefinitely; it then rolls back and retries.
+    alice.call("begin")
+    bob.call("begin")
     alice.call("read", read)
     bob.call("read", read)
     alice.call("sql", update_one)
@@ -286,15 +284,12 @@ def probes(alice: Client, bob: Client) -> list[dict[str, Any]]:
     assert not upgrade["ok"], upgrade
     assert upgrade["seconds"] < 6, upgrade
     bob.call("rollback")
-    bob.call("autocommit", True)
     alice.call("sql", update_two)
     alice.call("commit")
-    alice.call("autocommit", True)
-    bob.call("autocommit", False)
+    bob.call("begin")
     bob.call("sql", update_two)
     bob.call("sql", update_one)
     bob.call("commit")
-    bob.call("autocommit", True)
     results.append({"case": "opposite_order_upgrade_rollback_retry", **upgrade})
 
     # Both existing sessions must still read and write after repeated collisions.
@@ -365,17 +360,15 @@ def catalog_probes(alice: Client, bob: Client) -> list[dict[str, Any]]:
     assert bob.call("catalog", read)["rows"] == expected
     results.append({"case": "bidirectional_catalog_visibility", "rows": expected})
 
-    alice.call("autocommit", False)
+    alice.call("begin")
     alice.call("sql", "UPDATE counters SET value = 303 WHERE id = 1")
     assert bob.call("catalog", read)["rows"] == expected
     alice.call("rollback")
-    alice.call("autocommit", True)
     assert bob.call("catalog", read)["rows"] == expected
-    alice.call("autocommit", False)
+    alice.call("begin")
     alice.call("sql", "UPDATE counters SET value = 404 WHERE id = 1")
     assert bob.call("catalog", read)["rows"] == expected
     alice.call("commit")
-    alice.call("autocommit", True)
     expected = [(1, 404), (2, 202)]
     assert bob.call("catalog", read)["rows"] == expected
     results.append({"case": "catalog_commit_rollback_visibility", "rows": expected})

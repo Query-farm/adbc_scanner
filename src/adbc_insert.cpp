@@ -10,7 +10,7 @@ namespace adbc_scanner {
 using namespace duckdb;
 
 struct AdbcInsertBindData : public TableFunctionData {
-    int64_t connection_id;
+    string database;
     string target_table;
     string mode;  // "create", "append", "replace", "create_append"
     shared_ptr<AdbcConnectionWrapper> connection;
@@ -112,13 +112,13 @@ static unique_ptr<FunctionData> AdbcInsertBind(ClientContext &context, TableFunc
     (void)context;
     auto bind_data = make_uniq<AdbcInsertBindData>();
 
-    // Check for NULL connection handle
+    // Check for NULL database name
     if (input.inputs[0].IsNull()) {
-        throw InvalidInputException("adbc_insert: Connection handle cannot be NULL");
+        throw InvalidInputException("adbc_insert: database name cannot be NULL");
     }
 
-    // First argument is connection handle
-    bind_data->connection_id = input.inputs[0].GetValue<int64_t>();
+    // First argument is the attached database name
+    bind_data->database = input.inputs[0].IsNull() ? string() : input.inputs[0].GetValue<string>();
 
     // Check for NULL table name
     if (input.inputs[1].IsNull()) {
@@ -153,8 +153,8 @@ static unique_ptr<FunctionData> AdbcInsertBind(ClientContext &context, TableFunc
         bind_data->statement_options = ExtractStatementOptions(opts_it->second);
     }
 
-    // Get and validate connection
-    bind_data->connection = GetValidatedConnection(context, bind_data->connection_id, "adbc_insert");
+    // Validate the database name; execution resolves it again (see AdbcInsertInitGlobal)
+    bind_data->connection = GetAttachedConnection(context, Value(bind_data->database), "adbc_insert", true);
 
     // Store input table types and names for Arrow conversion
     bind_data->input_types = input.input_table_types;
@@ -175,7 +175,10 @@ static unique_ptr<GlobalTableFunctionState> AdbcInsertInitGlobal(ClientContext &
     global_state->client_properties = context.GetClientProperties();
 
     // Create the statement and set up for bulk ingestion
-    global_state->statement = make_shared_ptr<AdbcStatementWrapper>(bind_data.connection);
+    // Resolve the database again: a prepared insert may run after DETACH, or
+    // inside a transaction it was not bound in.
+    auto connection = GetAttachedConnection(context, Value(bind_data.database), "adbc_insert", true);
+    global_state->statement = make_shared_ptr<AdbcStatementWrapper>(connection);
     global_state->statement->Init();
     global_state->statement->SetOption("adbc.ingest.target_table", bind_data.target_table);
 
@@ -272,9 +275,9 @@ static OperatorFinalizeResultType AdbcInsertFinalize(ExecutionContext &context, 
 void RegisterAdbcInsertFunction(DatabaseInstance &db) {
     ExtensionLoader loader(db, "adbc");
 
-    // adbc_insert(connection_id, table_name, <table>) - Bulk insert data
+    // adbc_insert(database, table_name, <table>) - Bulk insert data
     TableFunction adbc_insert_function("adbc_insert",
-                                        {LogicalType::BIGINT, LogicalType::VARCHAR, LogicalType::TABLE},
+                                        {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::TABLE},
                                         nullptr,  // No regular function - use in_out
                                         AdbcInsertBind,
                                         AdbcInsertInitGlobal);
@@ -289,12 +292,12 @@ void RegisterAdbcInsertFunction(DatabaseInstance &db) {
     CreateTableFunctionInfo info(adbc_insert_function);
     FunctionDescription desc;
     desc.description = "Bulk insert data from a query into an ADBC table";
-    desc.parameter_names = {"connection_handle", "table_name", "data", "mode", "max_batches", "options"};
-    desc.parameter_types = {LogicalType::BIGINT, LogicalType::VARCHAR, LogicalType::TABLE, LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::ANY};
-    desc.examples = {"SELECT * FROM adbc_insert(conn, 'target_table', (SELECT * FROM source_table))",
-                     "SELECT * FROM adbc_insert(conn, 'target', (SELECT * FROM source), mode := 'create')",
-                     "SELECT * FROM adbc_insert(conn, 'target', (SELECT * FROM source), mode := 'append')",
-                     "SELECT * FROM adbc_insert(conn, 'target', (SELECT * FROM source), mode := 'create', options := {'adbc.ingest.temporary': 'true'})"};
+    desc.parameter_names = {"database", "table_name", "data", "mode", "max_batches", "options"};
+    desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::TABLE, LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::ANY};
+    desc.examples = {"SELECT * FROM adbc_insert('pg', 'target_table', (SELECT * FROM source_table))",
+                     "SELECT * FROM adbc_insert('pg', 'target', (SELECT * FROM source), mode := 'create')",
+                     "SELECT * FROM adbc_insert('pg', 'target', (SELECT * FROM source), mode := 'append')",
+                     "SELECT * FROM adbc_insert('pg', 'target', (SELECT * FROM source), mode := 'create', options := {'adbc.ingest.temporary': 'true'})"};
     desc.categories = {"adbc"};
     info.descriptions.push_back(std::move(desc));
     loader.RegisterFunction(info);

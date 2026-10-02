@@ -32,7 +32,7 @@ static string GetInfoName(uint32_t info_code) {
 //===--------------------------------------------------------------------===//
 
 struct AdbcInfoBindData : public TableFunctionData {
-    int64_t connection_id;
+    string database;
     shared_ptr<AdbcConnectionWrapper> connection;
 };
 
@@ -61,13 +61,13 @@ static unique_ptr<FunctionData> AdbcInfoBind(ClientContext &context, TableFuncti
                                               vector<LogicalType> &return_types, vector<string> &names) {
     auto bind_data = make_uniq<AdbcInfoBindData>();
 
-    // Check for NULL connection handle
+    // Check for NULL database name
     if (input.inputs[0].IsNull()) {
-        throw InvalidInputException("adbc_info: Connection handle cannot be NULL");
+        throw InvalidInputException("adbc_info: database name cannot be NULL");
     }
 
-    bind_data->connection_id = input.inputs[0].GetValue<int64_t>();
-    bind_data->connection = GetValidatedConnection(context, bind_data->connection_id, "adbc_info");
+    bind_data->database = input.inputs[0].IsNull() ? string() : input.inputs[0].GetValue<string>();
+    bind_data->connection = GetAttachedConnection(context, Value(bind_data->database), "adbc_info", false);
 
     // Return simple key-value schema
     names = {"info_name", "info_value"};
@@ -126,7 +126,7 @@ static unique_ptr<GlobalTableFunctionState> AdbcInfoInitGlobal(ClientContext &co
 
     memset(&global_state->stream, 0, sizeof(global_state->stream));
     try {
-        bind_data.connection->GetInfo(nullptr, 0, &global_state->stream);
+        GetAttachedConnection(context, Value(bind_data.database), "adbc_info", false)->GetInfo(nullptr, 0, &global_state->stream);
     } catch (Exception &e) {
         throw IOException("adbc_info: Failed to get info: " + string(e.what()));
     }
@@ -195,7 +195,7 @@ struct TableRow {
 };
 
 struct AdbcTablesBindData : public TableFunctionData {
-    int64_t connection_id;
+    string database;
     shared_ptr<AdbcConnectionWrapper> connection;
     // Filter parameters
     string catalog_filter;
@@ -316,12 +316,12 @@ static unique_ptr<FunctionData> AdbcTablesBind(ClientContext &context, TableFunc
                                                 vector<LogicalType> &return_types, vector<string> &names) {
     auto bind_data = make_uniq<AdbcTablesBindData>();
 
-    // Check for NULL connection handle
+    // Check for NULL database name
     if (input.inputs[0].IsNull()) {
-        throw InvalidInputException("adbc_tables: Connection handle cannot be NULL");
+        throw InvalidInputException("adbc_tables: database name cannot be NULL");
     }
 
-    bind_data->connection_id = input.inputs[0].GetValue<int64_t>();
+    bind_data->database = input.inputs[0].IsNull() ? string() : input.inputs[0].GetValue<string>();
 
     // Check for optional filter parameters
     auto catalog_it = input.named_parameters.find("catalog");
@@ -342,7 +342,7 @@ static unique_ptr<FunctionData> AdbcTablesBind(ClientContext &context, TableFunc
         bind_data->has_table_filter = true;
     }
 
-    bind_data->connection = GetValidatedConnection(context, bind_data->connection_id, "adbc_tables");
+    bind_data->connection = GetAttachedConnection(context, Value(bind_data->database), "adbc_tables", false);
 
     // Return a simple schema for tables: catalog, schema, table_name, table_type
     names = {"catalog_name", "schema_name", "table_name", "table_type"};
@@ -363,7 +363,7 @@ static unique_ptr<GlobalTableFunctionState> AdbcTablesInitGlobal(ClientContext &
 
     try {
         // depth=3 means catalogs, schemas, and tables (but not columns)
-        bind_data.connection->GetObjects(3, catalog, schema, table_name, nullptr, nullptr, &global_state->stream);
+        GetAttachedConnection(context, Value(bind_data.database), "adbc_tables", false)->GetObjects(3, catalog, schema, table_name, nullptr, nullptr, &global_state->stream);
     } catch (Exception &e) {
         throw IOException("adbc_tables: Failed to get tables: " + string(e.what()));
     }
@@ -415,7 +415,7 @@ static void AdbcTablesFunction(ClientContext &context, TableFunctionInput &data,
 //===--------------------------------------------------------------------===//
 
 struct AdbcTableTypesBindData : public TableFunctionData {
-    int64_t connection_id;
+    string database;
     shared_ptr<AdbcConnectionWrapper> connection;
 };
 
@@ -442,13 +442,13 @@ static unique_ptr<FunctionData> AdbcTableTypesBind(ClientContext &context, Table
                                                     vector<LogicalType> &return_types, vector<string> &names) {
     auto bind_data = make_uniq<AdbcTableTypesBindData>();
 
-    // Check for NULL connection handle
+    // Check for NULL database name
     if (input.inputs[0].IsNull()) {
-        throw InvalidInputException("adbc_table_types: Connection handle cannot be NULL");
+        throw InvalidInputException("adbc_table_types: database name cannot be NULL");
     }
 
-    bind_data->connection_id = input.inputs[0].GetValue<int64_t>();
-    bind_data->connection = GetValidatedConnection(context, bind_data->connection_id, "adbc_table_types");
+    bind_data->database = input.inputs[0].IsNull() ? string() : input.inputs[0].GetValue<string>();
+    bind_data->connection = GetAttachedConnection(context, Value(bind_data->database), "adbc_table_types", false);
 
     // Return single column schema
     names = {"table_type"};
@@ -463,7 +463,7 @@ static unique_ptr<GlobalTableFunctionState> AdbcTableTypesInitGlobal(ClientConte
 
     memset(&global_state->stream, 0, sizeof(global_state->stream));
     try {
-        bind_data.connection->GetTableTypes(&global_state->stream);
+        GetAttachedConnection(context, Value(bind_data.database), "adbc_table_types", false)->GetTableTypes(&global_state->stream);
     } catch (Exception &e) {
         throw IOException("adbc_table_types: Failed to get table types: " + string(e.what()));
     }
@@ -528,7 +528,7 @@ struct ColumnRow {
 };
 
 struct AdbcColumnsBindData : public TableFunctionData {
-    int64_t connection_id;
+    string database;
     shared_ptr<AdbcConnectionWrapper> connection;
     // Filter parameters
     string catalog_filter;
@@ -726,12 +726,12 @@ static unique_ptr<FunctionData> AdbcColumnsBind(ClientContext &context, TableFun
                                                  vector<LogicalType> &return_types, vector<string> &names) {
     auto bind_data = make_uniq<AdbcColumnsBindData>();
 
-    // Check for NULL connection handle
+    // Check for NULL database name
     if (input.inputs[0].IsNull()) {
-        throw InvalidInputException("adbc_columns: Connection handle cannot be NULL");
+        throw InvalidInputException("adbc_columns: database name cannot be NULL");
     }
 
-    bind_data->connection_id = input.inputs[0].GetValue<int64_t>();
+    bind_data->database = input.inputs[0].IsNull() ? string() : input.inputs[0].GetValue<string>();
 
     // Check for optional filter parameters
     auto catalog_it = input.named_parameters.find("catalog");
@@ -758,7 +758,7 @@ static unique_ptr<FunctionData> AdbcColumnsBind(ClientContext &context, TableFun
         bind_data->has_column_filter = true;
     }
 
-    bind_data->connection = GetValidatedConnection(context, bind_data->connection_id, "adbc_columns");
+    bind_data->connection = GetAttachedConnection(context, Value(bind_data->database), "adbc_columns", false);
 
     // Return schema for columns
     names = {"catalog_name", "schema_name", "table_name", "column_name", "ordinal_position", "remarks", "type_name", "is_nullable"};
@@ -781,7 +781,7 @@ static unique_ptr<GlobalTableFunctionState> AdbcColumnsInitGlobal(ClientContext 
 
     try {
         // depth=0 (ADBC_OBJECT_DEPTH_ALL) means catalogs, schemas, tables, and columns
-        bind_data.connection->GetObjects(0, catalog, schema, table_name, nullptr, column_name, &global_state->stream);
+        GetAttachedConnection(context, Value(bind_data.database), "adbc_columns", false)->GetObjects(0, catalog, schema, table_name, nullptr, column_name, &global_state->stream);
     } catch (Exception &e) {
         throw IOException("adbc_columns: Failed to get columns: " + string(e.what()));
     }
@@ -849,7 +849,7 @@ struct SchemaFieldRow {
 };
 
 struct AdbcSchemaBindData : public TableFunctionData {
-    int64_t connection_id;
+    string database;
     shared_ptr<AdbcConnectionWrapper> connection;
     string table_name;
     string catalog_filter;
@@ -894,12 +894,12 @@ static unique_ptr<FunctionData> AdbcSchemaBind(ClientContext &context, TableFunc
                                                 vector<LogicalType> &return_types, vector<string> &names) {
     auto bind_data = make_uniq<AdbcSchemaBindData>();
 
-    // Check for NULL connection handle
+    // Check for NULL database name
     if (input.inputs[0].IsNull()) {
-        throw InvalidInputException("adbc_schema: Connection handle cannot be NULL");
+        throw InvalidInputException("adbc_schema: database name cannot be NULL");
     }
 
-    bind_data->connection_id = input.inputs[0].GetValue<int64_t>();
+    bind_data->database = input.inputs[0].IsNull() ? string() : input.inputs[0].GetValue<string>();
 
     // Check for NULL table name
     if (input.inputs[1].IsNull()) {
@@ -921,7 +921,7 @@ static unique_ptr<FunctionData> AdbcSchemaBind(ClientContext &context, TableFunc
         bind_data->has_schema_filter = true;
     }
 
-    bind_data->connection = GetValidatedConnection(context, bind_data->connection_id, "adbc_schema");
+    bind_data->connection = GetAttachedConnection(context, Value(bind_data->database), "adbc_schema", false);
 
     // Return schema for fields
     names = {"field_name", "field_type", "nullable", "arrow_format"};
@@ -941,7 +941,7 @@ static unique_ptr<GlobalTableFunctionState> AdbcSchemaInitGlobal(ClientContext &
     memset(&schema, 0, sizeof(schema));
 
     try {
-        bind_data.connection->GetTableSchema(catalog, db_schema, bind_data.table_name.c_str(), &schema);
+        GetAttachedConnection(context, Value(bind_data.database), "adbc_schema", false)->GetTableSchema(catalog, db_schema, bind_data.table_name.c_str(), &schema);
     } catch (Exception &e) {
         throw IOException("adbc_schema: Failed to get table schema: " + string(e.what()));
     }
@@ -996,25 +996,25 @@ static void AdbcSchemaFunction(ClientContext &context, TableFunctionInput &data,
 void RegisterAdbcCatalogFunctions(DatabaseInstance &db) {
     ExtensionLoader loader(db, "adbc");
 
-    // adbc_info(connection_id) - Get driver/database information
+    // adbc_info(database) - Get driver/database information
     {
-        TableFunction adbc_info_function("adbc_info", {LogicalType::BIGINT}, AdbcInfoFunction,
+        TableFunction adbc_info_function("adbc_info", {LogicalType::VARCHAR}, AdbcInfoFunction,
                                           AdbcInfoBind, AdbcInfoInitGlobal, AdbcInfoInitLocal);
         adbc_info_function.projection_pushdown = false;
         CreateTableFunctionInfo info(adbc_info_function);
         FunctionDescription desc;
-        desc.description = "Get driver and database information from an ADBC connection";
-        desc.parameter_names = {"connection_handle"};
-        desc.parameter_types = {LogicalType::BIGINT};
-        desc.examples = {"SELECT * FROM adbc_info(connection_handle)"};
+        desc.description = "Get driver and database information from an attached ADBC database";
+        desc.parameter_names = {"database"};
+        desc.parameter_types = {LogicalType::VARCHAR};
+        desc.examples = {"SELECT * FROM adbc_info('pg')"};
         desc.categories = {"adbc"};
         info.descriptions.push_back(std::move(desc));
         loader.RegisterFunction(info);
     }
 
-    // adbc_tables(connection_id, catalog, schema, table_name) - Get tables
+    // adbc_tables(database, catalog, schema, table_name) - Get tables
     {
-        TableFunction adbc_tables_function("adbc_tables", {LogicalType::BIGINT}, AdbcTablesFunction,
+        TableFunction adbc_tables_function("adbc_tables", {LogicalType::VARCHAR}, AdbcTablesFunction,
                                             AdbcTablesBind, AdbcTablesInitGlobal, AdbcTablesInitLocal);
         adbc_tables_function.named_parameters["catalog"] = LogicalType::VARCHAR;
         adbc_tables_function.named_parameters["schema"] = LogicalType::VARCHAR;
@@ -1023,35 +1023,35 @@ void RegisterAdbcCatalogFunctions(DatabaseInstance &db) {
         CreateTableFunctionInfo info(adbc_tables_function);
         FunctionDescription desc;
         desc.description = "Get list of tables from an ADBC data source";
-        desc.parameter_names = {"connection_handle", "catalog", "schema", "table_name"};
-        desc.parameter_types = {LogicalType::BIGINT, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
-        desc.examples = {"SELECT * FROM adbc_tables(conn)",
-                         "SELECT * FROM adbc_tables(conn, catalog := 'main')",
-                         "SELECT * FROM adbc_tables(conn, table_name := 'users')"};
+        desc.parameter_names = {"database", "catalog", "schema", "table_name"};
+        desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
+        desc.examples = {"SELECT * FROM adbc_tables('pg')",
+                         "SELECT * FROM adbc_tables('pg', catalog := 'main')",
+                         "SELECT * FROM adbc_tables('pg', table_name := 'users')"};
         desc.categories = {"adbc"};
         info.descriptions.push_back(std::move(desc));
         loader.RegisterFunction(info);
     }
 
-    // adbc_table_types(connection_id) - Get supported table types
+    // adbc_table_types(database) - Get supported table types
     {
-        TableFunction adbc_table_types_function("adbc_table_types", {LogicalType::BIGINT}, AdbcTableTypesFunction,
+        TableFunction adbc_table_types_function("adbc_table_types", {LogicalType::VARCHAR}, AdbcTableTypesFunction,
                                                  AdbcTableTypesBind, AdbcTableTypesInitGlobal, AdbcTableTypesInitLocal);
         adbc_table_types_function.projection_pushdown = false;
         CreateTableFunctionInfo info(adbc_table_types_function);
         FunctionDescription desc;
         desc.description = "Get supported table types from an ADBC data source (e.g., 'table', 'view')";
-        desc.parameter_names = {"connection_handle"};
-        desc.parameter_types = {LogicalType::BIGINT};
-        desc.examples = {"SELECT * FROM adbc_table_types(conn)"};
+        desc.parameter_names = {"database"};
+        desc.parameter_types = {LogicalType::VARCHAR};
+        desc.examples = {"SELECT * FROM adbc_table_types('pg')"};
         desc.categories = {"adbc"};
         info.descriptions.push_back(std::move(desc));
         loader.RegisterFunction(info);
     }
 
-    // adbc_columns(connection_id, ...) - Get column metadata
+    // adbc_columns(database, ...) - Get column metadata
     {
-        TableFunction adbc_columns_function("adbc_columns", {LogicalType::BIGINT}, AdbcColumnsFunction,
+        TableFunction adbc_columns_function("adbc_columns", {LogicalType::VARCHAR}, AdbcColumnsFunction,
                                              AdbcColumnsBind, AdbcColumnsInitGlobal, AdbcColumnsInitLocal);
         adbc_columns_function.named_parameters["catalog"] = LogicalType::VARCHAR;
         adbc_columns_function.named_parameters["schema"] = LogicalType::VARCHAR;
@@ -1061,19 +1061,19 @@ void RegisterAdbcCatalogFunctions(DatabaseInstance &db) {
         CreateTableFunctionInfo info(adbc_columns_function);
         FunctionDescription desc;
         desc.description = "Get column metadata for tables in an ADBC data source";
-        desc.parameter_names = {"connection_handle", "catalog", "schema", "table_name", "column_name"};
-        desc.parameter_types = {LogicalType::BIGINT, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
-        desc.examples = {"SELECT * FROM adbc_columns(conn)",
-                         "SELECT * FROM adbc_columns(conn, table_name := 'users')",
-                         "SELECT * FROM adbc_columns(conn, table_name := 'users', column_name := 'id')"};
+        desc.parameter_names = {"database", "catalog", "schema", "table_name", "column_name"};
+        desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
+        desc.examples = {"SELECT * FROM adbc_columns('pg')",
+                         "SELECT * FROM adbc_columns('pg', table_name := 'users')",
+                         "SELECT * FROM adbc_columns('pg', table_name := 'users', column_name := 'id')"};
         desc.categories = {"adbc"};
         info.descriptions.push_back(std::move(desc));
         loader.RegisterFunction(info);
     }
 
-    // adbc_schema(connection_id, table_name, ...) - Get Arrow schema for a table
+    // adbc_schema(database, table_name, ...) - Get Arrow schema for a table
     {
-        TableFunction adbc_schema_function("adbc_schema", {LogicalType::BIGINT, LogicalType::VARCHAR}, AdbcSchemaFunction,
+        TableFunction adbc_schema_function("adbc_schema", {LogicalType::VARCHAR, LogicalType::VARCHAR}, AdbcSchemaFunction,
                                             AdbcSchemaBind, AdbcSchemaInitGlobal, AdbcSchemaInitLocal);
         adbc_schema_function.named_parameters["catalog"] = LogicalType::VARCHAR;
         adbc_schema_function.named_parameters["schema"] = LogicalType::VARCHAR;
@@ -1081,10 +1081,10 @@ void RegisterAdbcCatalogFunctions(DatabaseInstance &db) {
         CreateTableFunctionInfo info(adbc_schema_function);
         FunctionDescription desc;
         desc.description = "Get the Arrow schema for a specific table in an ADBC data source";
-        desc.parameter_names = {"connection_handle", "table_name", "catalog", "schema"};
-        desc.parameter_types = {LogicalType::BIGINT, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
-        desc.examples = {"SELECT * FROM adbc_schema(conn, 'users')",
-                         "SELECT * FROM adbc_schema(conn, 'users', catalog := 'main')"};
+        desc.parameter_names = {"database", "table_name", "catalog", "schema"};
+        desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
+        desc.examples = {"SELECT * FROM adbc_schema('pg', 'users')",
+                         "SELECT * FROM adbc_schema('pg', 'users', catalog := 'main')"};
         desc.categories = {"adbc"};
         info.descriptions.push_back(std::move(desc));
         loader.RegisterFunction(info);

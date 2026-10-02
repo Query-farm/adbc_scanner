@@ -17,10 +17,6 @@ AdbcCatalog::AdbcCatalog(AttachedDatabase &db_p, shared_ptr<AdbcConnectionWrappe
                          const string &path, AccessMode access_mode_p)
     : Catalog(db_p), connection(std::move(connection_p)), attach_path(path),
       access_mode(access_mode_p), schemas(*this) {
-	// Register the connection in the ConnectionRegistry so adbc_scan_table can use it
-	auto &registry = ConnectionRegistry::Get();
-	connection_handle = registry.Add(connection);
-
 	// Build a connection pool over the same shared database so concurrent reads
 	// (scans, catalog introspection) each get their own ADBC connection.
 	connection_pool = make_uniq<AdbcConnectionPool>(connection->GetDatabase());
@@ -30,11 +26,7 @@ AdbcCatalog::AdbcCatalog(AttachedDatabase &db_p, shared_ptr<AdbcConnectionWrappe
 	default_schema = "main";
 }
 
-AdbcCatalog::~AdbcCatalog() {
-	// Remove the connection from the registry when the catalog is destroyed
-	auto &registry = ConnectionRegistry::Get();
-	registry.Remove(connection_handle);
-}
+AdbcCatalog::~AdbcCatalog() = default;
 
 void AdbcCatalog::Initialize(bool load_builtin) {
 }

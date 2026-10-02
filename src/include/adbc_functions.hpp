@@ -5,11 +5,15 @@
 namespace adbc_scanner {
 using namespace duckdb;
 
-// Register scalar functions (adbc_connect, adbc_disconnect)
-void RegisterAdbcScalarFunctions(DatabaseInstance &db);
 
 // Register table functions (adbc_scan)
 void RegisterAdbcTableFunctions(DatabaseInstance &db);
+
+class AdbcConnectionWrapper;
+// Bind adbc_scan_table over an already-resolved connection (ATTACH scans)
+unique_ptr<FunctionData> AdbcScanTableBindWithConnection(ClientContext &context, TableFunctionBindInput &input,
+                                                         shared_ptr<AdbcConnectionWrapper> connection,
+                                                         vector<LogicalType> &return_types, vector<string> &names);
 
 // Register catalog functions (adbc_info, adbc_tables)
 void RegisterAdbcCatalogFunctions(DatabaseInstance &db);

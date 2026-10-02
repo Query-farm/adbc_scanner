@@ -6,18 +6,12 @@ require adbc_scanner
 
 require-env HAS_ADBC_SQLITE_DRIVER
 
+statement ok
+ATTACH '__TEST_DIR__/test_storage_txn.db' AS w (TYPE adbc, driver 'sqlite');
+
 # Clean slate
 statement ok
-SET VARIABLE c = (SELECT adbc_connect({'driver': 'sqlite', 'uri': '/tmp/test_storage_txn.db'}));
-
-statement ok
-CALL adbc_execute(getvariable('c')::BIGINT, 'DROP TABLE IF EXISTS t');
-
-statement ok
-CALL adbc_disconnect(getvariable('c')::BIGINT);
-
-statement ok
-ATTACH '/tmp/test_storage_txn.db' AS w (TYPE adbc, driver 'sqlite');
+CALL adbc_execute('w', 'DROP TABLE IF EXISTS t');
 
 # Seed with 3 committed rows
 statement ok
@@ -55,6 +49,58 @@ COMMIT;
 
 query I
 SELECT COUNT(*) FROM w.t;
+----
+13
+
+# adbc_execute inside an explicit transaction joins it: it rolls back together
+# with writes made through the catalog...
+statement ok
+BEGIN;
+
+statement ok
+CALL adbc_execute('w', 'INSERT INTO t VALUES (200)');
+
+statement ok
+INSERT INTO w.t VALUES (201);
+
+# reads inside the transaction see its uncommitted adbc_execute writes
+query I
+SELECT COUNT(*) FROM adbc_scan('w', 'SELECT id FROM t', columns := {'id': 'BIGINT'});
+----
+15
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT COUNT(*) FROM adbc_scan('w', 'SELECT id FROM t', columns := {'id': 'BIGINT'});
+----
+13
+
+# ...and commits together
+statement ok
+BEGIN;
+
+statement ok
+CALL adbc_execute('w', 'INSERT INTO t VALUES (300)');
+
+statement ok
+INSERT INTO w.t VALUES (301);
+
+statement ok
+COMMIT;
+
+query I
+SELECT COUNT(*) FROM w.t;
+----
+15
+
+# Outside a transaction adbc_execute autocommits
+statement ok
+CALL adbc_execute('w', 'DELETE FROM t WHERE id >= 300');
+
+query I
+SELECT COUNT(*) FROM adbc_scan('w', 'SELECT id FROM t', columns := {'id': 'BIGINT'});
 ----
 13
 

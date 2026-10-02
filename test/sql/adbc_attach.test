@@ -84,22 +84,16 @@ DETACH sqlite_db;
 # ============================================
 
 statement ok
-SET VARIABLE conn_id2 = (SELECT adbc_connect({'driver': 'sqlite', 'uri': '/tmp/test_attach_string_first.db'}));
+ATTACH '__TEST_DIR__/test_attach_string_first.db' AS sqlite_db2 (TYPE adbc, driver 'sqlite');
 
 statement ok
-CALL adbc_execute(getvariable('conn_id2')::BIGINT, 'DROP TABLE IF EXISTS string_first_test');
+CALL adbc_execute('sqlite_db2', 'DROP TABLE IF EXISTS string_first_test');
 
 statement ok
-CALL adbc_execute(getvariable('conn_id2')::BIGINT, 'CREATE TABLE string_first_test (label TEXT, id INTEGER)');
+CALL adbc_execute('sqlite_db2', 'CREATE TABLE string_first_test (label TEXT, id INTEGER)');
 
 statement ok
-CALL adbc_execute(getvariable('conn_id2')::BIGINT, 'INSERT INTO string_first_test VALUES (''alpha'', 1), (''beta'', 2), (''gamma'', 3)');
-
-statement ok
-CALL adbc_disconnect(getvariable('conn_id2')::BIGINT);
-
-statement ok
-ATTACH '/tmp/test_attach_string_first.db' AS sqlite_db2 (TYPE adbc, driver 'sqlite');
+CALL adbc_execute('sqlite_db2', 'INSERT INTO string_first_test VALUES (''alpha'', 1), (''beta'', 2), (''gamma'', 3)');
 
 query I
 SELECT COUNT(*) FROM sqlite_db2.string_first_test;

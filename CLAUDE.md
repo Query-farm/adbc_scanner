@@ -130,14 +130,19 @@ ATTACH 'profile://mydb' AS mydb (TYPE adbc);
 ```
 
 ### Transaction Control
-- `adbc_set_autocommit(handle, enabled)` - Enable or disable autocommit mode. When disabled, changes require explicit commit.
-- `adbc_commit(handle)` - Commit the current transaction.
-- `adbc_rollback(handle)` - Rollback the current transaction, discarding all uncommitted changes.
+- `CALL adbc_set_autocommit(handle, enabled)` - Enable or disable autocommit mode. When disabled, changes require explicit commit.
+- `CALL adbc_commit(handle)` - Commit the current transaction.
+- `CALL adbc_rollback(handle)` - Rollback the current transaction, discarding all uncommitted changes.
 
 ### Query Execution
+Binding must not execute user SQL. `adbc_scan` uses ADBC `ExecuteSchema`, or an
+explicit `columns := {'name': 'TYPE'}` declaration when metadata is unavailable
+(including SQLite). `adbc_scan_table` uses `GetTableSchema`. Runtime result types
+are checked before reading values. See [docs/runtime-commands.md](docs/runtime-commands.md).
+
 - `adbc_scan(handle, query, [params := row(...)], [batch_size := N])` - Execute a SELECT query and return results as a table. Supports parameterized queries via the optional `params` named parameter. The optional `batch_size` parameter hints to the driver how many rows to return per batch (default: driver-specific, typically 2048). This is a best-effort hint that may be ignored by drivers that don't support it.
 - `adbc_scan_table(handle, table_name, [catalog := ...], [schema := ...], [batch_size := N])` - Scan an entire table by name and return all rows. Supports optional `catalog` and `schema` parameters for fully qualified table names. Supports projection pushdown (only requested columns are fetched), filter pushdown (WHERE clauses are pushed to the remote database with parameter binding), cardinality estimation, progress reporting, and column-level statistics for query optimization (distinct count, null count, min/max when available from the driver via `AdbcConnectionGetStatistics`).
-- `adbc_execute(handle, query)` - Execute DDL/DML statements (CREATE, INSERT, UPDATE, DELETE). Returns affected row count.
+- `CALL adbc_execute(handle, query)` - Execute DDL/DML statements (CREATE, INSERT, UPDATE, DELETE) at runtime. Returns affected row count, or NULL when unknown. No scalar form is registered.
 - `adbc_insert(handle, table_name, <table>, [mode := ...], [max_batches := ...], [options := ...])` - Bulk insert data from a subquery. Modes: 'create', 'append', 'replace', 'create_append'. `options` is a STRUCT or MAP of driver-specific statement options (e.g. `{'adbc.ingest.temporary': 'true'}`), applied after the target table and mode.
 
 ### Catalog Functions
@@ -194,7 +199,7 @@ SET VARIABLE conn = (SELECT adbc_connect({'driver': '/path/to/libadbc_driver_sql
 SET VARIABLE conn = (SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory:', 'search_paths': '/opt/adbc/drivers'}));
 
 -- Query data
-SELECT * FROM adbc_scan(getvariable('conn')::BIGINT, 'SELECT 1 AS a, 2 AS b');
+SELECT * FROM adbc_scan(getvariable('conn')::BIGINT, 'SELECT 1 AS a, 2 AS b', columns := {'a': 'BIGINT', 'b': 'BIGINT'});
 
 -- Scan an entire table by name
 SELECT * FROM adbc_scan_table(getvariable('conn')::BIGINT, 'test');
@@ -206,14 +211,14 @@ SELECT * FROM adbc_scan_table(getvariable('conn')::BIGINT, 'users', schema := 'p
 SELECT * FROM adbc_scan_table(getvariable('conn')::BIGINT, 'users', catalog := 'mydb', schema := 'public');
 
 -- Parameterized query
-SELECT * FROM adbc_scan(getvariable('conn')::BIGINT, 'SELECT ? AS value', params := row(42));
+SELECT * FROM adbc_scan(getvariable('conn')::BIGINT, 'SELECT ? AS value', params := row(42), columns := {'value': 'BIGINT'});
 
 -- Query with batch size hint (for network drivers, larger batches reduce round-trips)
-SELECT * FROM adbc_scan(getvariable('conn')::BIGINT, 'SELECT * FROM large_table', batch_size := 65536);
+SELECT * FROM adbc_scan_table(getvariable('conn')::BIGINT, 'large_table', batch_size := 65536);
 
 -- Execute DDL/DML
-SELECT adbc_execute(getvariable('conn')::BIGINT, 'CREATE TABLE test (id INTEGER, name TEXT)');
-SELECT adbc_execute(getvariable('conn')::BIGINT, 'INSERT INTO test VALUES (1, ''hello'')');
+CALL adbc_execute(getvariable('conn')::BIGINT, 'CREATE TABLE test (id INTEGER, name TEXT)');
+CALL adbc_execute(getvariable('conn')::BIGINT, 'INSERT INTO test VALUES (1, ''hello'')');
 
 -- Bulk insert from DuckDB query
 SELECT * FROM adbc_insert(getvariable('conn')::BIGINT, 'target', (SELECT * FROM local_table), mode := 'create');
@@ -226,14 +231,14 @@ SELECT * FROM adbc_columns(getvariable('conn')::BIGINT, table_name := 'test');
 SELECT * FROM adbc_schema(getvariable('conn')::BIGINT, 'test');
 
 -- Transaction control
-SELECT adbc_set_autocommit(getvariable('conn')::BIGINT, false);  -- Start transaction
-SELECT adbc_execute(getvariable('conn')::BIGINT, 'INSERT INTO test VALUES (2, ''world'')');
-SELECT adbc_commit(getvariable('conn')::BIGINT);  -- Commit changes
--- Or: SELECT adbc_rollback(getvariable('conn')::BIGINT);  -- Discard changes
-SELECT adbc_set_autocommit(getvariable('conn')::BIGINT, true);  -- Back to autocommit
+CALL adbc_set_autocommit(getvariable('conn')::BIGINT, false);  -- Start transaction
+CALL adbc_execute(getvariable('conn')::BIGINT, 'INSERT INTO test VALUES (2, ''world'')');
+CALL adbc_commit(getvariable('conn')::BIGINT);  -- Commit changes
+-- Or: CALL adbc_rollback(getvariable('conn')::BIGINT);  -- Discard changes
+CALL adbc_set_autocommit(getvariable('conn')::BIGINT, true);  -- Back to autocommit
 
 -- Disconnect
-SELECT adbc_disconnect(getvariable('conn')::BIGINT);
+CALL adbc_disconnect(getvariable('conn')::BIGINT);
 ```
 
 ## Build Commands

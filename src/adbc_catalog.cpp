@@ -67,7 +67,7 @@ static unique_ptr<FunctionData> AdbcInfoBind(ClientContext &context, TableFuncti
     }
 
     bind_data->connection_id = input.inputs[0].GetValue<int64_t>();
-    bind_data->connection = GetValidatedConnection(bind_data->connection_id, "adbc_info");
+    bind_data->connection = GetValidatedConnection(context, bind_data->connection_id, "adbc_info");
 
     // Return simple key-value schema
     names = {"info_name", "info_value"};
@@ -342,7 +342,7 @@ static unique_ptr<FunctionData> AdbcTablesBind(ClientContext &context, TableFunc
         bind_data->has_table_filter = true;
     }
 
-    bind_data->connection = GetValidatedConnection(bind_data->connection_id, "adbc_tables");
+    bind_data->connection = GetValidatedConnection(context, bind_data->connection_id, "adbc_tables");
 
     // Return a simple schema for tables: catalog, schema, table_name, table_type
     names = {"catalog_name", "schema_name", "table_name", "table_type"};
@@ -448,7 +448,7 @@ static unique_ptr<FunctionData> AdbcTableTypesBind(ClientContext &context, Table
     }
 
     bind_data->connection_id = input.inputs[0].GetValue<int64_t>();
-    bind_data->connection = GetValidatedConnection(bind_data->connection_id, "adbc_table_types");
+    bind_data->connection = GetValidatedConnection(context, bind_data->connection_id, "adbc_table_types");
 
     // Return single column schema
     names = {"table_type"};
@@ -758,7 +758,7 @@ static unique_ptr<FunctionData> AdbcColumnsBind(ClientContext &context, TableFun
         bind_data->has_column_filter = true;
     }
 
-    bind_data->connection = GetValidatedConnection(bind_data->connection_id, "adbc_columns");
+    bind_data->connection = GetValidatedConnection(context, bind_data->connection_id, "adbc_columns");
 
     // Return schema for columns
     names = {"catalog_name", "schema_name", "table_name", "column_name", "ordinal_position", "remarks", "type_name", "is_nullable"};
@@ -921,7 +921,7 @@ static unique_ptr<FunctionData> AdbcSchemaBind(ClientContext &context, TableFunc
         bind_data->has_schema_filter = true;
     }
 
-    bind_data->connection = GetValidatedConnection(bind_data->connection_id, "adbc_schema");
+    bind_data->connection = GetValidatedConnection(context, bind_data->connection_id, "adbc_schema");
 
     // Return schema for fields
     names = {"field_name", "field_type", "nullable", "arrow_format"};

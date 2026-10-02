@@ -65,7 +65,7 @@ TableFunction AdbcTableEntry::GetScanFunction(ClientContext &context, unique_ptr
 	// when the query (and its bind data) is destroyed.
 	auto scan_connection = adbc_catalog.GetPool().GetConnectionShared();
 	auto &registry = ConnectionRegistry::Get();
-	auto temp_handle = registry.Add(scan_connection);
+	auto temp_handle = registry.Add(scan_connection, &context);
 
 	// Look up adbc_scan_table from the catalog
 	auto &adbc_scan_table_function_set = GetTableFunction(db, "adbc_scan_table");

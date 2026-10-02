@@ -17,13 +17,13 @@ statement ok
 SET VARIABLE c = (SELECT adbc_connect({'driver':'mysql','uri':'mysql://root:root@localhost:3306/testdb'}));
 
 statement ok
-SELECT adbc_execute(getvariable('c')::BIGINT, 'DROP TABLE IF EXISTS adbc_my_wide');
+CALL adbc_execute(getvariable('c')::BIGINT, 'DROP TABLE IF EXISTS adbc_my_wide');
 
 statement ok
-SELECT adbc_execute(getvariable('c')::BIGINT, 'CREATE TABLE adbc_my_wide (id INT PRIMARY KEY, v BIGINT, a DECIMAL(41,0), b DECIMAL(65,30), c DECIMAL(10,2))');
+CALL adbc_execute(getvariable('c')::BIGINT, 'CREATE TABLE adbc_my_wide (id INT PRIMARY KEY, v BIGINT, a DECIMAL(41,0), b DECIMAL(65,30), c DECIMAL(10,2))');
 
 statement ok
-SELECT adbc_execute(getvariable('c')::BIGINT, 'INSERT INTO adbc_my_wide VALUES
+CALL adbc_execute(getvariable('c')::BIGINT, 'INSERT INTO adbc_my_wide VALUES
   (1, 9223372036854775807, 12345678901234567890123456789012345678901, 1.5, 1.25),
   (2, 5, -12345678901234567890123456789012345678901, -0.000000000000000000000000000001, -3.50),
   (3, NULL, NULL, NULL, NULL),
@@ -48,12 +48,19 @@ SELECT id, a, b, c::VARCHAR FROM adbc_scan(getvariable('c')::BIGINT, 'SELECT id,
 4	0.0	0.0	0.00
 5	1e+41	-1e+35	0.01
 
+# Simultaneous scans use independent ADBC connections.
+statement ok
+SET VARIABLE peer = (SELECT adbc_connect({'driver':'mysql','uri':'mysql://root:root@localhost:3306/testdb'}));
+
 query I
 SELECT count(*) FROM adbc_scan(getvariable('c')::BIGINT, 'SELECT id, a, b FROM adbc_my_wide') w
-JOIN adbc_scan(getvariable('c')::BIGINT, 'SELECT id, CAST(a AS DOUBLE) AS a, CAST(b AS DOUBLE) AS b FROM adbc_my_wide') m USING (id)
+JOIN adbc_scan(getvariable('peer')::BIGINT, 'SELECT id, CAST(a AS DOUBLE) AS a, CAST(b AS DOUBLE) AS b FROM adbc_my_wide') m USING (id)
 WHERE w.a IS NOT DISTINCT FROM m.a AND w.b IS NOT DISTINCT FROM m.b;
 ----
 5
+
+statement ok
+CALL adbc_disconnect(getvariable('peer')::BIGINT);
 
 query TT
 SELECT field_name, field_type FROM adbc_schema(getvariable('c')::BIGINT, 'adbc_my_wide') WHERE field_name IN ('a', 'b', 'c') ORDER BY field_name;
@@ -70,7 +77,7 @@ SELECT id, a FROM adbc_scan_table(getvariable('c')::BIGINT, 'adbc_my_wide') WHER
 5	1e+41
 
 statement ok
-SELECT adbc_disconnect(getvariable('c')::BIGINT);
+CALL adbc_disconnect(getvariable('c')::BIGINT);
 
 # ATTACH storage path.
 statement ok
@@ -90,7 +97,7 @@ statement ok
 SET VARIABLE c2 = (SELECT adbc_connect({'driver':'mysql','uri':'mysql://root:root@localhost:3306/testdb'}));
 
 statement ok
-SELECT adbc_execute(getvariable('c2')::BIGINT, 'DROP TABLE IF EXISTS adbc_my_wide');
+CALL adbc_execute(getvariable('c2')::BIGINT, 'DROP TABLE IF EXISTS adbc_my_wide');
 
 statement ok
-SELECT adbc_disconnect(getvariable('c2')::BIGINT);
+CALL adbc_disconnect(getvariable('c2')::BIGINT);

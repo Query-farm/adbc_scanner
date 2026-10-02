@@ -27,10 +27,10 @@ SET VARIABLE conn_id = (SELECT adbc_connect({'driver': 'sqlite', 'uri': '/tmp/te
 # from the bug report (L_ORDERKEY, L_PARTKEY, L_SUPPKEY, L_LINENUMBER are integer;
 # L_QUANTITY, L_EXTENDEDPRICE, L_DISCOUNT, L_TAX are decimal/real)
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'DROP TABLE IF EXISTS lineitem');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'DROP TABLE IF EXISTS lineitem');
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, '
+CALL adbc_execute(getvariable('conn_id')::BIGINT, '
     CREATE TABLE lineitem (
         l_orderkey INTEGER,
         l_partkey INTEGER,
@@ -47,7 +47,7 @@ SELECT adbc_execute(getvariable('conn_id')::BIGINT, '
 
 # Insert the exact values from the bug report (Python/correct output)
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, '
+CALL adbc_execute(getvariable('conn_id')::BIGINT, '
     INSERT INTO lineitem VALUES
         (2400001, 132304, 4818, 1, 10.0, 13363.0, 0.03, 0.02, ''SHIP'', ''egular dolphins''),
         (2400001, 24513,  2020, 2, 14.0, 20125.14, 0.04, 0.03, ''SHIP'', ''es wake quickly bold packages''),
@@ -137,7 +137,7 @@ SELECT AVG(l_discount) FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'lin
 0.048
 
 statement ok
-SELECT adbc_disconnect(getvariable('conn_id')::BIGINT);
+CALL adbc_disconnect(getvariable('conn_id')::BIGINT);
 
 # ============================================
 # Test via ATTACH (exercises the full storage scan path)
@@ -183,7 +183,7 @@ statement ok
 SET VARIABLE cleanup_conn = (SELECT adbc_connect({'driver': 'sqlite', 'uri': '/tmp/test_numeric_types.db'}));
 
 statement ok
-SELECT adbc_execute(getvariable('cleanup_conn')::BIGINT, 'DROP TABLE IF EXISTS lineitem');
+CALL adbc_execute(getvariable('cleanup_conn')::BIGINT, 'DROP TABLE IF EXISTS lineitem');
 
 statement ok
-SELECT adbc_disconnect(getvariable('cleanup_conn')::BIGINT);
+CALL adbc_disconnect(getvariable('cleanup_conn')::BIGINT);

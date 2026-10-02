@@ -34,10 +34,10 @@ SET VARIABLE conn_id = (SELECT adbc_connect({'driver': 'sqlite', 'uri': ':memory
 # ============================================
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE employees (id INTEGER, name TEXT, salary REAL)');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE employees (id INTEGER, name TEXT, salary REAL)');
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO employees VALUES (1, ''Alice'', 75000.0), (2, ''Bob'', 85000.0), (3, ''Charlie'', 95000.0)');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO employees VALUES (1, ''Alice'', 75000.0), (2, ''Bob'', 85000.0), (3, ''Charlie'', 95000.0)');
 
 # Test basic adbc_scan_table
 query ITR
@@ -79,10 +79,10 @@ SELECT * FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'nonexistent_table
 
 # Create a table with special characters in name
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE "my-table" (value INTEGER)');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE "my-table" (value INTEGER)');
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO "my-table" VALUES (42)');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO "my-table" VALUES (42)');
 
 # Test adbc_scan_table with special characters in table name
 query I
@@ -95,10 +95,10 @@ SELECT * FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'my-table');
 # ============================================
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE wide_proj_test (col0 INTEGER, col1 TEXT, col2 REAL, col3 INTEGER, col4 TEXT, col5 REAL)');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE wide_proj_test (col0 INTEGER, col1 TEXT, col2 REAL, col3 INTEGER, col4 TEXT, col5 REAL)');
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO wide_proj_test VALUES (1, ''a'', 1.1, 10, ''aa'', 10.1), (2, ''b'', 2.2, 20, ''bb'', 20.2), (3, ''c'', 3.3, 30, ''cc'', 30.3)');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO wide_proj_test VALUES (1, ''a'', 1.1, 10, ''aa'', 10.1), (2, ''b'', 2.2, 20, ''bb'', 20.2), (3, ''c'', 3.3, 30, ''cc'', 30.3)');
 
 # Select only first column
 query I
@@ -219,10 +219,10 @@ SELECT 42 FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'employees') LIMI
 # ============================================
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE filter_test (id INTEGER, name TEXT, value REAL, category TEXT)');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE filter_test (id INTEGER, name TEXT, value REAL, category TEXT)');
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO filter_test VALUES (1, ''Alice'', 10.5, ''A''), (2, ''Bob'', 20.5, ''B''), (3, ''Charlie'', 30.5, ''A''), (4, ''Diana'', 40.5, ''B''), (5, ''Eve'', 50.5, ''C'')');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO filter_test VALUES (1, ''Alice'', 10.5, ''A''), (2, ''Bob'', 20.5, ''B''), (3, ''Charlie'', 30.5, ''A''), (4, ''Diana'', 40.5, ''B''), (5, ''Eve'', 50.5, ''C'')');
 
 # Basic equality filter
 query ITR
@@ -295,10 +295,10 @@ SELECT COUNT(*), AVG(value) FROM adbc_scan_table(getvariable('conn_id')::BIGINT,
 
 # IS NULL filter
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE null_filter_test (id INTEGER, name TEXT)');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE null_filter_test (id INTEGER, name TEXT)');
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO null_filter_test VALUES (1, ''One''), (2, NULL), (3, ''Three''), (4, NULL)');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO null_filter_test VALUES (1, ''One''), (2, NULL), (3, ''Three''), (4, NULL)');
 
 query IT
 SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'null_filter_test') WHERE name IS NULL ORDER BY id;
@@ -339,12 +339,12 @@ SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'filter_tes
 
 # Large table filter test
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, '
+CALL adbc_execute(getvariable('conn_id')::BIGINT, '
     CREATE TABLE large_filter_test (id INTEGER, category TEXT, value REAL)
 ');
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, '
+CALL adbc_execute(getvariable('conn_id')::BIGINT, '
     WITH RECURSIVE cnt(n) AS (
         SELECT 0
         UNION ALL
@@ -368,34 +368,34 @@ SELECT COUNT(*) FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'large_filt
 # ============================================
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE binding_test (id INTEGER, name TEXT, description TEXT)');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE binding_test (id INTEGER, name TEXT, description TEXT)');
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (1, ''normal'', ''Just a normal string'')');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (1, ''normal'', ''Just a normal string'')');
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (2, ''single''''quote'', ''String with single quote'')');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (2, ''single''''quote'', ''String with single quote'')');
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (3, ''double"quote'', ''String with double quote'')');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (3, ''double"quote'', ''String with double quote'')');
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (4, ''back\slash'', ''String with backslash'')');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (4, ''back\slash'', ''String with backslash'')');
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (5, ''semi;colon'', ''String with semicolon'')');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (5, ''semi;colon'', ''String with semicolon'')');
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (6, ''--comment'', ''String that looks like SQL comment'')');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (6, ''--comment'', ''String that looks like SQL comment'')');
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (7, ''DROP TABLE'', ''String with SQL keywords'')');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (7, ''DROP TABLE'', ''String with SQL keywords'')');
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (8, ''1=1 OR'', ''String with SQL injection attempt'')');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (8, ''1=1 OR'', ''String with SQL injection attempt'')');
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (9, ''percent%wild_card'', ''String with SQL wildcards'')');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO binding_test VALUES (9, ''percent%wild_card'', ''String with SQL wildcards'')');
 
 # Single quote in value
 query IT
@@ -455,10 +455,10 @@ SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'binding_te
 
 # Numeric comparison with negative numbers
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE numeric_binding_test (id INTEGER, value REAL)');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'CREATE TABLE numeric_binding_test (id INTEGER, value REAL)');
 
 statement ok
-SELECT adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO numeric_binding_test VALUES (1, -123.456), (2, 0.0), (3, 123.456), (4, -0.001)');
+CALL adbc_execute(getvariable('conn_id')::BIGINT, 'INSERT INTO numeric_binding_test VALUES (1, -123.456), (2, 0.0), (3, 123.456), (4, -0.001)');
 
 query IR
 SELECT id, value FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'numeric_binding_test') WHERE value < 0 ORDER BY id;
@@ -563,4 +563,4 @@ SELECT id, name FROM adbc_scan_table(getvariable('conn_id')::BIGINT, 'employees'
 
 # Clean up
 statement ok
-SELECT adbc_disconnect(getvariable('conn_id')::BIGINT);
+CALL adbc_disconnect(getvariable('conn_id')::BIGINT);

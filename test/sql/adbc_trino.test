@@ -50,4 +50,4 @@ SELECT COUNT(*) AS n FROM adbc_scan_table(getvariable('c')::BIGINT, 'nation', ca
 25
 
 statement ok
-SELECT adbc_disconnect(getvariable('c')::BIGINT);
+CALL adbc_disconnect(getvariable('c')::BIGINT);

@@ -36,7 +36,7 @@ SELECT COUNT(*) AS n FROM adbc_scan_table(getvariable('c')::BIGINT, 'region');
 5
 
 statement ok
-SELECT adbc_disconnect(getvariable('c')::BIGINT);
+CALL adbc_disconnect(getvariable('c')::BIGINT);
 
 # ATTACH storage path (read-only)
 statement ok

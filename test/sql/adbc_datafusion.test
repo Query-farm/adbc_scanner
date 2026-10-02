@@ -19,7 +19,7 @@ statement ok
 SET VARIABLE c = (SELECT adbc_connect({'driver':'datafusion'}));
 
 statement ok
-SELECT adbc_execute(getvariable('c')::BIGINT, 'CREATE TABLE items AS SELECT 1 AS id, ''apple'' AS name UNION ALL SELECT 2, ''pear'' UNION ALL SELECT 3, ''plum''');
+CALL adbc_execute(getvariable('c')::BIGINT, 'CREATE TABLE items AS SELECT 1 AS id, ''apple'' AS name UNION ALL SELECT 2, ''pear'' UNION ALL SELECT 3, ''plum''');
 
 # Full scan
 query IT
@@ -54,4 +54,4 @@ SELECT c FROM adbc_scan(getvariable('c')::BIGINT, 'SELECT COUNT(*) AS c FROM ite
 3
 
 statement ok
-SELECT adbc_disconnect(getvariable('c')::BIGINT);
+CALL adbc_disconnect(getvariable('c')::BIGINT);

@@ -29,6 +29,36 @@ INSTALL adbc_scanner FROM community;
 LOAD adbc_scanner;
 ```
 
+## Runtime command API (breaking change)
+
+This source version removes scalar remote commands. Use `CALL` for execution,
+transactions, disconnecting, and cache clearing:
+
+```sql
+SET VARIABLE conn = (SELECT adbc_connect({'driver': 'sqlite', 'uri': 'shared.sqlite'}));
+CALL adbc_execute(getvariable('conn')::BIGINT, 'CREATE TABLE IF NOT EXISTS messages (id INTEGER, body TEXT)');
+CALL adbc_execute(getvariable('conn')::BIGINT, 'INSERT INTO messages VALUES (1, ''hello'')');
+SELECT * FROM adbc_scan_table(getvariable('conn')::BIGINT, 'messages');
+SELECT * FROM adbc_scan(getvariable('conn')::BIGINT,
+    'SELECT id, body FROM messages WHERE id = ?', params := row(1),
+    columns := {'id': 'BIGINT', 'body': 'VARCHAR'});
+CALL adbc_disconnect(getvariable('conn')::BIGINT);
+```
+
+`EXPLAIN` and `PREPARE` do not execute these commands. `EXPLAIN ANALYZE` does
+execute them. `adbc_execute` returns one `rows_affected` value, or SQL `NULL` if
+the driver does not supply a count. The former `SELECT adbc_execute(...)` syntax
+is rejected. The community package must be updated before these examples apply
+to `INSTALL ... FROM community`.
+
+Query binding uses ADBC schema metadata only. Drivers such as SQLite that cannot
+describe arbitrary queries without executing them require `columns := {...}`.
+`adbc_scan_table` uses table metadata. Returned column counts and types are checked
+against the bound schema before Arrow data is read.
+
+See [the migration guide](docs/runtime-commands.md) for transactions, connection
+ownership, typed options, and driver limitations.
+
 ## Development
 
 For instructions on building the extension from source and running its tests, see [docs/BUILDING.md](docs/BUILDING.md).

@@ -54,24 +54,24 @@ statement ok
 SET VARIABLE pconn = (SELECT adbc_connect({'uri': 'profile://sqlite_mem', 'search_paths': 'test/profiles'}));
 
 query II
-SELECT * FROM adbc_scan(getvariable('pconn')::BIGINT, 'SELECT 1 AS a, 2 AS b');
+SELECT * FROM adbc_scan(getvariable('pconn')::BIGINT, 'SELECT 1 AS a, 2 AS b', columns := {'a': 'BIGINT', 'b': 'BIGINT'});
 ----
 1	2
 
 statement ok
-SELECT adbc_disconnect(getvariable('pconn')::BIGINT);
+CALL adbc_disconnect(getvariable('pconn')::BIGINT);
 
 # Connect using the 'profile' option form instead of a profile:// URI
 statement ok
 SET VARIABLE pconn2 = (SELECT adbc_connect({'profile': 'sqlite_mem', 'search_paths': 'test/profiles'}));
 
 query I
-SELECT * FROM adbc_scan(getvariable('pconn2')::BIGINT, 'SELECT 42');
+SELECT * FROM adbc_scan(getvariable('pconn2')::BIGINT, 'SELECT 42', columns := {'42': 'BIGINT'});
 ----
 42
 
 statement ok
-SELECT adbc_disconnect(getvariable('pconn2')::BIGINT);
+CALL adbc_disconnect(getvariable('pconn2')::BIGINT);
 
 # ATTACH via a profile:// URI. AdbcAttach connects eagerly, so a successful
 # ATTACH proves the profile was resolved and the driver loaded.

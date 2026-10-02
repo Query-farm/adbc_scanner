@@ -14,13 +14,13 @@ statement ok
 SET VARIABLE setup_conn = (SELECT adbc_connect({'driver': 'sqlite', 'uri': '/tmp/test_storage_write.db'}));
 
 statement ok
-SELECT adbc_execute(getvariable('setup_conn')::BIGINT, 'DROP TABLE IF EXISTS big');
+CALL adbc_execute(getvariable('setup_conn')::BIGINT, 'DROP TABLE IF EXISTS big');
 
 statement ok
-SELECT adbc_execute(getvariable('setup_conn')::BIGINT, 'DROP TABLE IF EXISTS small');
+CALL adbc_execute(getvariable('setup_conn')::BIGINT, 'DROP TABLE IF EXISTS small');
 
 statement ok
-SELECT adbc_disconnect(getvariable('setup_conn')::BIGINT);
+CALL adbc_disconnect(getvariable('setup_conn')::BIGINT);
 
 statement ok
 ATTACH '/tmp/test_storage_write.db' AS w (TYPE adbc, driver 'sqlite');

@@ -23,7 +23,7 @@ static unique_ptr<Catalog> AdbcAttach(optional_ptr<StorageExtensionInfo> storage
 	// Format: ATTACH 'connection_string' AS name (TYPE adbc, driver 'path')
 
 	// First, collect explicit options into a vector for secret merging
-	vector<pair<string, string>> explicit_options;
+	AdbcOptions explicit_options;
 	idx_t batch_size = 0;
 
 	for (auto &entry : attach_options.options) {
@@ -32,7 +32,7 @@ static unique_ptr<Catalog> AdbcAttach(optional_ptr<StorageExtensionInfo> storage
 			// batch_size is handled separately as it's DuckDB-specific, not passed to ADBC
 			batch_size = entry.second.GetValue<idx_t>();
 		} else {
-			explicit_options.emplace_back(lower_name, entry.second.ToString());
+			explicit_options.emplace_back(lower_name, entry.second);
 		}
 	}
 

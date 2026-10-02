@@ -3,9 +3,9 @@
 namespace adbc_scanner {
 using namespace duckdb;
 
-shared_ptr<AdbcConnectionWrapper> GetValidatedConnection(int64_t connection_id, const string &function_name) {
+shared_ptr<AdbcConnectionWrapper> GetValidatedConnection(ClientContext &context, int64_t connection_id, const string &function_name) {
 	auto &registry = ConnectionRegistry::Get();
-	auto connection = registry.Get(connection_id);
+	auto connection = registry.Get(connection_id, &context);
 	if (!connection) {
 		throw InvalidInputException(function_name + ": Invalid connection handle: " + to_string(connection_id));
 	}
@@ -15,28 +15,28 @@ shared_ptr<AdbcConnectionWrapper> GetValidatedConnection(int64_t connection_id, 
 	return connection;
 }
 
-shared_ptr<AdbcConnectionWrapper> CreateConnectionFromOptions(const vector<pair<string, string>> &options) {
+shared_ptr<AdbcConnectionWrapper> CreateConnectionFromOptions(const AdbcOptions &options) {
 	string driver;
 	string entrypoint;
 	string uri;
 	string search_paths;
 	string profile;
 	bool use_manifests = true;
-	vector<pair<string, string>> db_options;
+	AdbcOptions db_options;
 
 	for (const auto &opt : options) {
 		if (opt.first == "driver") {
-			driver = opt.second;
+			driver = opt.second.GetValue<string>();
 		} else if (opt.first == "entrypoint") {
-			entrypoint = opt.second;
+			entrypoint = opt.second.GetValue<string>();
 		} else if (opt.first == "uri") {
-			uri = opt.second;
+			uri = opt.second.GetValue<string>();
 		} else if (opt.first == "search_paths") {
-			search_paths = opt.second;
+			search_paths = opt.second.GetValue<string>();
 		} else if (opt.first == "profile") {
-			profile = opt.second;
+			profile = opt.second.GetValue<string>();
 		} else if (opt.first == "use_manifests") {
-			use_manifests = (opt.second == "true" || opt.second == "1");
+			use_manifests = (opt.second.ToString() == "true" || opt.second.ToString() == "1");
 		} else if (opt.first == "secret") {
 			// Skip the secret option itself - it was used for lookup
 			continue;

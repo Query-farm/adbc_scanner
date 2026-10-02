@@ -21,13 +21,13 @@ statement ok
 SET VARIABLE c = (SELECT adbc_connect({'driver':'mysql','uri':'mysql://root:root@localhost:3306/testdb'}));
 
 statement ok
-SELECT adbc_execute(getvariable('c')::BIGINT, 'DROP TABLE IF EXISTS adbc_my_items');
+CALL adbc_execute(getvariable('c')::BIGINT, 'DROP TABLE IF EXISTS adbc_my_items');
 
 statement ok
-SELECT adbc_execute(getvariable('c')::BIGINT, 'CREATE TABLE adbc_my_items (id INT PRIMARY KEY, name VARCHAR(50), active BOOLEAN)');
+CALL adbc_execute(getvariable('c')::BIGINT, 'CREATE TABLE adbc_my_items (id INT PRIMARY KEY, name VARCHAR(50), active BOOLEAN)');
 
 statement ok
-SELECT adbc_execute(getvariable('c')::BIGINT, 'INSERT INTO adbc_my_items VALUES (1,''apple'',1),(2,''pear'',0),(3,''plum'',1)');
+CALL adbc_execute(getvariable('c')::BIGINT, 'INSERT INTO adbc_my_items VALUES (1,''apple'',1),(2,''pear'',0),(3,''plum'',1)');
 
 # Imperative scan_table builds `SELECT * FROM `adbc_my_items`` — backtick quoting,
 # a double-quote here would be a MySQL syntax error (the bug this guards against).
@@ -51,7 +51,7 @@ SELECT id FROM adbc_scan_table(getvariable('c')::BIGINT, 'adbc_my_items') WHERE 
 2
 
 statement ok
-SELECT adbc_disconnect(getvariable('c')::BIGINT);
+CALL adbc_disconnect(getvariable('c')::BIGINT);
 
 # ATTACH storage path: MySQL exposes the database as the "main" schema.
 statement ok
@@ -75,7 +75,7 @@ statement ok
 SET VARIABLE c2 = (SELECT adbc_connect({'driver':'mysql','uri':'mysql://root:root@localhost:3306/testdb'}));
 
 statement ok
-SELECT adbc_execute(getvariable('c2')::BIGINT, 'DROP TABLE IF EXISTS adbc_my_items');
+CALL adbc_execute(getvariable('c2')::BIGINT, 'DROP TABLE IF EXISTS adbc_my_items');
 
 statement ok
-SELECT adbc_disconnect(getvariable('c2')::BIGINT);
+CALL adbc_disconnect(getvariable('c2')::BIGINT);

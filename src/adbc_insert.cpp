@@ -292,8 +292,6 @@ void RegisterAdbcInsertFunction(DatabaseInstance &db) {
     CreateTableFunctionInfo info(adbc_insert_function);
     FunctionDescription desc;
     desc.description = "Bulk insert data from a query into an ADBC table";
-    desc.parameter_names = {"database", "table_name", "data", "mode", "max_batches", "options"};
-    desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::TABLE, LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::ANY};
     desc.examples = {"SELECT * FROM adbc_insert('pg', 'target_table', (SELECT * FROM source_table))",
                      "SELECT * FROM adbc_insert('pg', 'target', (SELECT * FROM source), mode := 'create')",
                      "SELECT * FROM adbc_insert('pg', 'target', (SELECT * FROM source), mode := 'append')",
@@ -301,6 +299,7 @@ void RegisterAdbcInsertFunction(DatabaseInstance &db) {
     desc.categories = {"adbc"};
     info.descriptions.push_back(std::move(desc));
     loader.RegisterFunction(info);
+    DescribeParameters(loader, "adbc_insert", {"database", "table_name", "data"});
 }
 
 } // namespace adbc_scanner

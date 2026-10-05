@@ -52,6 +52,15 @@ shared_ptr<AdbcConnectionWrapper> AdbcTransaction::GetWriteConnection() {
 		throw PermissionException("Cannot write to ADBC database \"%s\" — it is attached read-only",
 		                          adbc_catalog.GetName());
 	}
+	if (adbc_catalog.per_connection_memory) {
+		throw InvalidInputException(
+		    "Cannot write to ADBC database \"%s\" here: it is a SQLite ':memory:' database, and SQLite gives "
+		    "each connection its own in-memory database. Writes in a transaction and through the catalog "
+		    "(INSERT INTO %s.<table>) use a separate connection that cannot see its tables. Attach a database "
+		    "file instead.",
+		    adbc_catalog.GetName(),
+		    adbc_catalog.GetName());
+	}
 	if (!write_lease.HasConnection()) {
 		// Pin a dedicated connection for the lifetime of this transaction so all
 		// writes share one connection and commit/roll back together. It must be a

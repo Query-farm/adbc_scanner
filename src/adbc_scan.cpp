@@ -1476,14 +1476,13 @@ void RegisterAdbcTableFunctions(DatabaseInstance &db) {
     CreateTableFunctionInfo info(adbc_scan_function);
     FunctionDescription desc;
     desc.description = "Execute a SELECT query on an attached ADBC database and return the results as a table";
-    desc.parameter_names = {"database", "query", "params", "batch_size"};
-    desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::ANY, LogicalType::BIGINT};
     desc.examples = {"SELECT * FROM adbc_scan('pg', 'SELECT * FROM users')",
                      "SELECT * FROM adbc_scan('pg', 'SELECT * FROM users WHERE id = ?', params := row(42))",
                      "SELECT * FROM adbc_scan('pg', 'SELECT * FROM large_table', batch_size := 65536)"};
     desc.categories = {"adbc"};
     info.descriptions.push_back(std::move(desc));
     loader.RegisterFunction(info);
+    DescribeParameters(loader, "adbc_scan", {"database", "query"});
 
     // ========================================================================
     // adbc_scan_table - Scan an entire table from an attached ADBC database
@@ -1515,14 +1514,13 @@ void RegisterAdbcTableFunctions(DatabaseInstance &db) {
     CreateTableFunctionInfo scan_table_info(adbc_scan_table_function);
     FunctionDescription scan_table_desc;
     scan_table_desc.description = "Scan an entire table from an attached ADBC database";
-    scan_table_desc.parameter_names = {"database", "table_name", "catalog", "schema", "batch_size"};
-    scan_table_desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT};
     scan_table_desc.examples = {"SELECT * FROM adbc_scan_table('pg', 'users')",
                                 "SELECT * FROM adbc_scan_table('pg', 'users', schema := 'public')",
                                 "SELECT * FROM adbc_scan_table('pg', 'large_table', batch_size := 65536)"};
     scan_table_desc.categories = {"adbc"};
     scan_table_info.descriptions.push_back(std::move(scan_table_desc));
     loader.RegisterFunction(scan_table_info);
+    DescribeParameters(loader, "adbc_scan_table", {"database", "table_name"});
 }
 
 } // namespace adbc_scanner

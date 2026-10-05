@@ -42,6 +42,9 @@ public:
 	AccessMode access_mode;
 	//! Optional batch size for scan operations (0 means use driver default)
 	idx_t batch_size = 0;
+	//! SQLite ':memory:' gives each ADBC connection its own empty database, so
+	//! the transaction's write connection cannot see this attachment's tables.
+	bool per_connection_memory = false;
 
 public:
 	void Initialize(bool load_builtin) override;

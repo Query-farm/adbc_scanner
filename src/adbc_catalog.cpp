@@ -1004,12 +1004,11 @@ void RegisterAdbcCatalogFunctions(DatabaseInstance &db) {
         CreateTableFunctionInfo info(adbc_info_function);
         FunctionDescription desc;
         desc.description = "Get driver and database information from an attached ADBC database";
-        desc.parameter_names = {"database"};
-        desc.parameter_types = {LogicalType::VARCHAR};
         desc.examples = {"SELECT * FROM adbc_info('pg')"};
         desc.categories = {"adbc"};
         info.descriptions.push_back(std::move(desc));
         loader.RegisterFunction(info);
+        DescribeParameters(loader, "adbc_info", {"database"});
     }
 
     // adbc_tables(database, catalog, schema, table_name) - Get tables
@@ -1023,14 +1022,13 @@ void RegisterAdbcCatalogFunctions(DatabaseInstance &db) {
         CreateTableFunctionInfo info(adbc_tables_function);
         FunctionDescription desc;
         desc.description = "Get list of tables from an ADBC data source";
-        desc.parameter_names = {"database", "catalog", "schema", "table_name"};
-        desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
         desc.examples = {"SELECT * FROM adbc_tables('pg')",
                          "SELECT * FROM adbc_tables('pg', catalog := 'main')",
                          "SELECT * FROM adbc_tables('pg', table_name := 'users')"};
         desc.categories = {"adbc"};
         info.descriptions.push_back(std::move(desc));
         loader.RegisterFunction(info);
+        DescribeParameters(loader, "adbc_tables", {"database"});
     }
 
     // adbc_table_types(database) - Get supported table types
@@ -1041,12 +1039,11 @@ void RegisterAdbcCatalogFunctions(DatabaseInstance &db) {
         CreateTableFunctionInfo info(adbc_table_types_function);
         FunctionDescription desc;
         desc.description = "Get supported table types from an ADBC data source (e.g., 'table', 'view')";
-        desc.parameter_names = {"database"};
-        desc.parameter_types = {LogicalType::VARCHAR};
         desc.examples = {"SELECT * FROM adbc_table_types('pg')"};
         desc.categories = {"adbc"};
         info.descriptions.push_back(std::move(desc));
         loader.RegisterFunction(info);
+        DescribeParameters(loader, "adbc_table_types", {"database"});
     }
 
     // adbc_columns(database, ...) - Get column metadata
@@ -1061,14 +1058,13 @@ void RegisterAdbcCatalogFunctions(DatabaseInstance &db) {
         CreateTableFunctionInfo info(adbc_columns_function);
         FunctionDescription desc;
         desc.description = "Get column metadata for tables in an ADBC data source";
-        desc.parameter_names = {"database", "catalog", "schema", "table_name", "column_name"};
-        desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
         desc.examples = {"SELECT * FROM adbc_columns('pg')",
                          "SELECT * FROM adbc_columns('pg', table_name := 'users')",
                          "SELECT * FROM adbc_columns('pg', table_name := 'users', column_name := 'id')"};
         desc.categories = {"adbc"};
         info.descriptions.push_back(std::move(desc));
         loader.RegisterFunction(info);
+        DescribeParameters(loader, "adbc_columns", {"database"});
     }
 
     // adbc_schema(database, table_name, ...) - Get Arrow schema for a table
@@ -1081,13 +1077,12 @@ void RegisterAdbcCatalogFunctions(DatabaseInstance &db) {
         CreateTableFunctionInfo info(adbc_schema_function);
         FunctionDescription desc;
         desc.description = "Get the Arrow schema for a specific table in an ADBC data source";
-        desc.parameter_names = {"database", "table_name", "catalog", "schema"};
-        desc.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
         desc.examples = {"SELECT * FROM adbc_schema('pg', 'users')",
                          "SELECT * FROM adbc_schema('pg', 'users', catalog := 'main')"};
         desc.categories = {"adbc"};
         info.descriptions.push_back(std::move(desc));
         loader.RegisterFunction(info);
+        DescribeParameters(loader, "adbc_schema", {"database", "table_name"});
     }
 }
 

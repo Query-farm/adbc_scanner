@@ -70,6 +70,12 @@ own connection in autocommit, so session state such as a temporary table
 created by `adbc_insert` or a `SET` run by `adbc_execute` is visible to later
 calls. Writes to an attachment made with `READ_ONLY` are rejected.
 
+SQLite's `:memory:` gives every connection its own empty database, so the
+transaction's write connection, which catalog writes (`INSERT INTO db.…`) also
+use, cannot see the attachment's tables. Such writes fail with an error saying
+so; attach a database file instead. Omitting the path uses the SQLite driver's
+shared-cache in-memory database, which `adbc_execute` transactions can use.
+
 Only one operation may use an ADBC connection at a time. Statements and metadata
 streams retain an operation lease until released; overlap fails promptly rather
 than waiting on a lock. A query that needs two simultaneous `adbc_*` scans of
@@ -112,6 +118,18 @@ and BLOB the bytes setter. Unsupported types and nested containers are rejected.
 For example, pass `"grainlift.request_timeout_ms" 10000` as an integer. ATTACH
 option names are lowercased, so a driver option whose name needs uppercase
 letters has to come from a secret's `EXTRA_OPTIONS` or a connection profile.
+
+The standard `username` and `password` options (from a secret's `USERNAME` /
+`PASSWORD` or from ATTACH) are passed to the driver as options first. Drivers
+that accept only `uri`, such as PostgreSQL and SQLite, reject them; when the URI
+has the form `scheme://host…`, the connection is retried once with them
+percent-encoded into the URI's userinfo, and `database` into an
+empty URI path. A URI that already carries userinfo, or names a different
+database, is left alone and the driver's error is reported.
+
+An ATTACH path is read as `key=value;…` options only when the text before its
+first `=` is a bare option name; otherwise it is the URI, so
+`ATTACH 'postgresql://host/db?sslmode=require' …` works as written.
 
 Secret `EXTRA_OPTIONS` remains a string-to-string MAP. Its values are all redacted
 from secret display, including driver-specific private keys. Supply non-string

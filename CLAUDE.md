@@ -49,7 +49,9 @@ CREATE SECRET my_postgres (
 - `uri` - Connection URI passed to the driver
 - `username` - Database username
 - `password` - Database password (automatically redacted in logs)
-- `database` - Database name
+- `database` - Database name (no driver accepts it as an option; it is folded into an empty `scheme://` URI path)
+
+`username` / `password` / `database` are sent as driver options first; if the driver rejects one (NOT_IMPLEMENTED, as PostgreSQL and SQLite do — they accept only `uri`) and the URI is `scheme://…` without userinfo, `CreateConnectionFromOptions` retries once with them percent-encoded into the URI (`FoldCredentialsIntoUri` in `src/adbc_connection.cpp`).
 - `entrypoint` - Custom driver entry point
 - `extra_options` - MAP of additional driver-specific options
 

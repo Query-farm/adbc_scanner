@@ -59,11 +59,10 @@ void RegisterAdbcExecuteFunction(DatabaseInstance &db) {
     CreateTableFunctionInfo info(function);
     FunctionDescription description;
     description.description = "Execute a remote command at runtime; return NULL when the affected-row count is unknown";
-    description.parameter_names = {"database", "query"};
-    description.parameter_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
     description.examples = {"CALL adbc_execute('pg', 'INSERT INTO example VALUES (1)')"};
     description.categories = {"adbc"};
     info.descriptions.push_back(std::move(description));
     loader.RegisterFunction(info);
+    DescribeParameters(loader, "adbc_execute", {"database", "query"});
 }
 } // namespace adbc_scanner

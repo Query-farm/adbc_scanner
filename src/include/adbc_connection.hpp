@@ -209,6 +209,31 @@ public:
         CheckAdbc(status, error.Get(), "Failed to set connection option '" + key + "'", GetDriverName());
     }
 
+    // Read a string connection option (ADBC 1.1.0+). Returns false when the driver
+    // does not report it (unknown option, pre-1.1 driver, or any other failure).
+    bool TryGetOption(const string &key, string &value) {
+        auto lock = AcquireOperation();
+        AdbcErrorGuard error;
+        char buffer[1024];
+        size_t length = sizeof(buffer);
+        auto status = AdbcConnectionGetOption(&connection, key.c_str(), buffer, &length, error.Get());
+        if (status != ADBC_STATUS_OK || length == 0) {
+            return false;
+        }
+        if (length <= sizeof(buffer)) {
+            // length includes the null terminator
+            value = string(buffer, length - 1);
+            return true;
+        }
+        string large(length, '\0');
+        status = AdbcConnectionGetOption(&connection, key.c_str(), &large[0], &length, error.Get());
+        if (status != ADBC_STATUS_OK || length == 0 || length > large.size()) {
+            return false;
+        }
+        value = large.substr(0, length - 1);
+        return true;
+    }
+
     void Initialize() {
         AdbcErrorGuard error;
         auto status = AdbcConnectionInit(&connection, database->Get(), error.Get());

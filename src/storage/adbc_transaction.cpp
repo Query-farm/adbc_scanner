@@ -1,6 +1,7 @@
 #include "storage/adbc_transaction.hpp"
 #include "storage/adbc_catalog.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 
 namespace adbc_scanner {
@@ -72,11 +73,19 @@ shared_ptr<AdbcConnectionWrapper> AdbcTransaction::GetWriteConnection() {
 	if (!write_started) {
 		try {
 			conn->SetAutocommit(false);
-		} catch (std::exception &e) {
+		} catch (NotImplementedException &e) {
+			// The driver has no transactions. Outside BEGIN each DuckDB statement
+			// commits on its own anyway, so let the write run in the driver's
+			// autocommit, as adbc_execute and adbc_insert do. Commit/Rollback stay
+			// no-ops because write_started is left false.
+			if (GetContext().transaction.IsAutoCommit()) {
+				return conn;
+			}
 			throw NotImplementedException(
 			    "ADBC driver does not support multi-statement transactions (could not disable "
-			    "autocommit): %s",
-			    e.what());
+			    "autocommit), so ROLLBACK could not undo this write. Run it outside BEGIN … COMMIT, "
+			    "where each statement commits on its own: %s",
+			    ErrorData(e).RawMessage());
 		}
 		write_started = true;
 	}

@@ -4,6 +4,7 @@
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
 #include "duckdb/common/shared_ptr.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
+#include "duckdb/common/set.hpp"
 #include <nanoarrow/nanoarrow.h>
 
 namespace adbc_scanner {
@@ -32,30 +33,20 @@ static string ExtractArrowString(ArrowArray *array, int64_t idx) {
 	return string(data + start, end - start);
 }
 
-void AdbcSchemaSet::LoadEntries(AdbcTransaction &transaction) {
-	auto &adbc_catalog = catalog.Cast<AdbcCatalog>();
-	// Lease a connection so concurrent catalog binds don't share one connection.
-	auto lease = adbc_catalog.GetPool().GetConnection();
-	auto connection = lease.GetConnection();
-
+vector<string> AdbcSchemaSet::ListSchemaNames(AdbcConnectionWrapper &connection) {
 	// Use GetObjects with depth=2 to get catalogs and schemas
 	ArrowArrayStream stream;
 	memset(&stream, 0, sizeof(stream));
 
 	try {
 		// depth=2 means get catalogs and schemas (but not tables)
-		connection->GetObjects(2, nullptr, nullptr, nullptr, nullptr, nullptr, &stream);
+		connection.GetObjects(2, nullptr, nullptr, nullptr, nullptr, nullptr, &stream);
 	} catch (Exception &e) {
-		// If GetObjects fails, create a default "main" schema
-		CreateSchemaInfo info;
-		info.schema = "main";
-		info.internal = false;
-		auto schema = make_shared_ptr<AdbcSchemaEntry>(catalog, info);
-		CreateEntry(transaction, std::move(schema));
-		return;
+		// If GetObjects fails, fall back to a default "main" schema
+		return {"main"};
 	}
 
-	unordered_set<string> schema_names;
+	set<string> schema_names;
 
 	// Parse the hierarchical Arrow result to extract schema names
 	ArrowArray batch;
@@ -105,6 +96,15 @@ void AdbcSchemaSet::LoadEntries(AdbcTransaction &transaction) {
 	if (schema_names.empty()) {
 		schema_names.insert("main");
 	}
+
+	return vector<string>(schema_names.begin(), schema_names.end());
+}
+
+void AdbcSchemaSet::LoadEntries(AdbcTransaction &transaction) {
+	auto &adbc_catalog = catalog.Cast<AdbcCatalog>();
+	// Lease a connection so concurrent catalog binds don't share one connection.
+	auto lease = adbc_catalog.GetPool().GetConnection();
+	auto schema_names = ListSchemaNames(*lease.GetConnection());
 
 	// Create schema entries for each discovered schema
 	for (const auto &schema_name : schema_names) {

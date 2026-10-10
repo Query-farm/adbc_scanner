@@ -62,6 +62,17 @@ temporary tables carries across calls. Two `adbc_*` reads of one attachment
 cannot run at the same time (for example a self-join); attach the database
 twice for that. Writes to a `READ_ONLY` attachment are rejected. Secrets and connection profiles work through `ATTACH` options.
 
+An unqualified name (`db.orders`, or `orders` after `USE db`) resolves to the
+attachment's default schema: the schema the connection reports as current
+(PostgreSQL's `public`, for example), or the database's only schema, or `main`.
+Set it yourself with `ATTACH '…' AS db (TYPE adbc, driver '…', default_schema 'sales')`.
+
+A driver without transactions (one that cannot turn autocommit off) can still be
+written to outside `BEGIN … COMMIT`, through `adbc_execute`, `adbc_insert`,
+`INSERT INTO db.…` and `CREATE TABLE db.… AS`. Each statement runs in the driver's
+autocommit, so one that fails part-way can leave some rows written. Inside
+`BEGIN … COMMIT` the first write fails, because `ROLLBACK` could not undo it.
+
 `adbc_execute` is a `CALL`-only command: `EXPLAIN` and `PREPARE` do not execute
 it, `EXPLAIN ANALYZE` does. It returns one `rows_affected` value, or SQL `NULL`
 if the driver does not supply a count.

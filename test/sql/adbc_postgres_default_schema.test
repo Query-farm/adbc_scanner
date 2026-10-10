@@ -1,0 +1,118 @@
+# name: test/sql/adbc_postgres_default_schema.test
+# description: An attached PostgreSQL database uses the connection's schema ("public") as its default schema
+# group: [adbc]
+#
+# Requires the postgresql ADBC driver and a PostgreSQL server reachable at
+# postgresql://postgres:postgres@localhost:5432/postgres. Gate by setting
+# ADBC_POSTGRES_TEST_AVAILABLE=1.
+
+require adbc_scanner
+
+require-env ADBC_POSTGRES_TEST_AVAILABLE
+
+statement ok
+ATTACH 'postgresql://postgres:postgres@localhost:5432/postgres' AS pg (TYPE adbc, driver 'postgresql');
+
+statement ok
+CALL adbc_execute('pg', 'DROP SCHEMA IF EXISTS adbc_ds_other CASCADE');
+
+statement ok
+CALL adbc_execute('pg', 'DROP TABLE IF EXISTS adbc_ds_orders');
+
+statement ok
+CALL adbc_execute('pg', 'DROP TABLE IF EXISTS adbc_ds_copy');
+
+statement ok
+CALL adbc_execute('pg', 'CREATE TABLE adbc_ds_orders (id INTEGER, country TEXT)');
+
+statement ok
+CALL adbc_execute('pg', 'CREATE SCHEMA adbc_ds_other');
+
+statement ok
+CALL adbc_execute('pg', 'CREATE TABLE adbc_ds_other.adbc_ds_orders (id INTEGER, country TEXT)');
+
+# Re-attach so the catalog lists the new schema
+statement ok
+DETACH pg;
+
+statement ok
+ATTACH 'postgresql://postgres:postgres@localhost:5432/postgres' AS pg (TYPE adbc, driver 'postgresql');
+
+# More than one schema: the default is the one the connection reports
+query I
+SELECT schema_name FROM duckdb_schemas() WHERE database_name = 'pg' AND schema_name IN ('public', 'adbc_ds_other') ORDER BY 1;
+----
+adbc_ds_other
+public
+
+# Unqualified names resolve to public
+statement ok
+INSERT INTO pg.adbc_ds_orders VALUES (1, 'US'), (2, 'FR');
+
+query I
+SELECT count(*) FROM pg.adbc_ds_orders;
+----
+2
+
+statement ok
+USE pg;
+
+query TI
+SELECT current_schema(), count(*) FROM adbc_ds_orders GROUP BY ALL;
+----
+public	2
+
+statement ok
+USE memory;
+
+# A write that names another schema lands in that schema, not in public
+statement ok
+INSERT INTO pg.adbc_ds_other.adbc_ds_orders VALUES (9, 'DE');
+
+statement ok
+CREATE TABLE pg.adbc_ds_other.adbc_ds_copy AS SELECT 1 AS x UNION ALL SELECT 2;
+
+statement ok
+CREATE TABLE pg.adbc_ds_copy AS SELECT 1 AS x;
+
+query III
+SELECT * FROM adbc_scan('pg', 'SELECT (SELECT count(*) FROM public.adbc_ds_orders) AS a, (SELECT count(*) FROM adbc_ds_other.adbc_ds_orders) AS b, (SELECT count(*) FROM adbc_ds_other.adbc_ds_copy) AS c');
+----
+2	1	2
+
+query I
+SELECT count(*) FROM pg.adbc_ds_copy;
+----
+1
+
+# The default_schema ATTACH option overrides the connection's schema
+statement ok
+ATTACH 'postgresql://postgres:postgres@localhost:5432/postgres' AS pg_other (TYPE adbc, driver 'postgresql', default_schema 'adbc_ds_other');
+
+query I
+SELECT id FROM pg_other.adbc_ds_orders;
+----
+9
+
+statement ok
+INSERT INTO pg_other.adbc_ds_orders VALUES (10, 'IT');
+
+query II
+SELECT (SELECT count(*) FROM pg_other.adbc_ds_other.adbc_ds_orders), (SELECT count(*) FROM pg_other.public.adbc_ds_orders);
+----
+2	2
+
+statement ok
+DETACH pg_other;
+
+statement ok
+CALL adbc_execute('pg', 'DROP SCHEMA adbc_ds_other CASCADE');
+
+statement ok
+CALL adbc_execute('pg', 'DROP TABLE adbc_ds_orders');
+
+statement ok
+CALL adbc_execute('pg', 'DROP TABLE adbc_ds_copy');
+
+statement ok
+DETACH pg;

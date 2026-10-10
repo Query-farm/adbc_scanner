@@ -10,6 +10,7 @@
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/enums/access_mode.hpp"
+#include "duckdb/common/mutex.hpp"
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
 #include "duckdb/parser/parsed_data/drop_info.hpp"
 #include "duckdb/planner/operator/logical_create_table.hpp"
@@ -51,9 +52,12 @@ public:
 	string GetCatalogType() override {
 		return "adbc";
 	}
-	string GetDefaultSchema() const override {
-		return default_schema.empty() ? "main" : default_schema;
-	}
+	//! The schema an unqualified name (db.table, USE db) resolves to: the
+	//! default_schema ATTACH option if given, otherwise worked out from the
+	//! driver on first use (see ResolveDefaultSchema).
+	string GetDefaultSchema() const override;
+	//! Pin the default schema (the default_schema ATTACH option).
+	void SetDefaultSchema(const string &schema);
 
 	optional_ptr<CatalogEntry> CreateSchema(CatalogTransaction transaction, CreateSchemaInfo &info) override;
 
@@ -105,8 +109,15 @@ private:
 	void DropSchema(ClientContext &context, DropInfo &info) override;
 
 private:
+	//! Ask the driver which schema is the default one. Never throws; returns an
+	//! empty string if the driver could not be asked (so the next call retries).
+	string ResolveDefaultSchema() const;
+
+private:
 	AdbcSchemaSet schemas;
-	string default_schema;
+	mutable mutex default_schema_lock;
+	//! Empty until resolved.
+	mutable string default_schema;
 };
 
 } // namespace adbc_scanner

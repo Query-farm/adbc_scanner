@@ -38,8 +38,10 @@ public:
 	//! Connection used for writes in this transaction. On first use it leases a
 	//! connection and disables ADBC autocommit so every write in the transaction
 	//! commits or rolls back together (driven by Commit/Rollback below). Throws if
-	//! the catalog is read-only, or NotImplemented if the driver cannot disable
-	//! autocommit (fail loud rather than silently auto-committing).
+	//! the catalog is read-only. If the driver cannot disable autocommit, the
+	//! write runs in the driver's autocommit when DuckDB is in auto-commit mode
+	//! too, and throws NotImplemented inside an explicit transaction (fail loud
+	//! rather than silently auto-committing what ROLLBACK should undo).
 	shared_ptr<AdbcConnectionWrapper> GetWriteConnection();
 	//! Whether this transaction has started writing (holds a write connection).
 	bool HasWriteConnection() const {

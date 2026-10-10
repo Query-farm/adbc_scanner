@@ -129,7 +129,7 @@ ATTACH '' AS mydb (TYPE adbc, profile 'mydb', search_paths '/opt/adbc/profiles')
 ```
 
 ### Transaction Control
-Use DuckDB's `BEGIN` / `COMMIT` / `ROLLBACK`. Inside a transaction, `adbc_execute` and `adbc_insert` commit or roll back together with writes made through the attached catalog (`INSERT INTO db.t …`), and reads see the transaction's uncommitted writes. A driver that cannot disable autocommit fails the first write in a transaction.
+Use DuckDB's `BEGIN` / `COMMIT` / `ROLLBACK`. Inside a transaction, `adbc_execute` and `adbc_insert` commit or roll back together with writes made through the attached catalog (`INSERT INTO db.t …`), and reads see the transaction's uncommitted writes. A driver that cannot disable autocommit (NOT_IMPLEMENTED) fails the first write in an explicit transaction; outside one, `AdbcTransaction::GetWriteConnection` lets catalog writes run in the driver's autocommit, without per-statement atomicity.
 
 ### Query Execution
 Binding must not execute user SQL. `adbc_scan` uses ADBC `ExecuteSchema`, or an
@@ -168,6 +168,7 @@ SELECT * FROM my_db.my_table;
 - `search_paths` - Additional paths to search for driver manifests
 - `use_manifests` - Enable/disable manifest search (default: 'true')
 - `batch_size` - Hint for number of rows per batch when scanning tables (default: driver-specific). Larger batch sizes can reduce network round-trips for remote databases.
+- `default_schema` - Schema that unqualified names (`db.table`, `USE db`) resolve to. When omitted, `AdbcCatalog::GetDefaultSchema` resolves it on first use: the connection's `adbc.connection.db_schema` if the catalog lists that schema, else the only schema listed, else `main`. Catalog writes pass their schema as `adbc.ingest.target_db_schema` (`main` is the placeholder for drivers without schemas and is not passed).
 - Other options are passed directly to the ADBC driver (e.g., `username`, `password`)
 
 **Examples:**

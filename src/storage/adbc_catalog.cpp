@@ -20,10 +20,48 @@ AdbcCatalog::AdbcCatalog(AttachedDatabase &db_p, shared_ptr<AdbcConnectionWrappe
 	// Build a connection pool over the same shared database so concurrent reads
 	// (scans, catalog introspection) each get their own ADBC connection.
 	connection_pool = make_uniq<AdbcConnectionPool>(connection->GetDatabase());
+}
 
-	// Try to determine default schema from the connection
-	// For most databases, "main" is a reasonable default
-	default_schema = "main";
+void AdbcCatalog::SetDefaultSchema(const string &schema) {
+	lock_guard<mutex> l(default_schema_lock);
+	default_schema = schema;
+}
+
+string AdbcCatalog::GetDefaultSchema() const {
+	lock_guard<mutex> l(default_schema_lock);
+	if (default_schema.empty()) {
+		auto resolved = ResolveDefaultSchema();
+		if (resolved.empty()) {
+			return "main";
+		}
+		default_schema = std::move(resolved);
+	}
+	return default_schema;
+}
+
+string AdbcCatalog::ResolveDefaultSchema() const {
+	try {
+		// A pooled connection, like the scans that will use the answer: the
+		// attachment's own connection may have had its schema changed by adbc_execute.
+		auto lease = connection_pool->GetConnection();
+		auto &conn = *lease.GetConnection();
+		string current_schema;
+		bool has_current = conn.TryGetOption(ADBC_CONNECTION_OPTION_CURRENT_DB_SCHEMA, current_schema);
+		auto schema_names = AdbcSchemaSet::ListSchemaNames(conn);
+		// 1. The schema the connection says it is using (e.g. PostgreSQL's "public"),
+		//    as long as it is one this catalog exposes.
+		if (has_current && std::find(schema_names.begin(), schema_names.end(), current_schema) != schema_names.end()) {
+			return current_schema;
+		}
+		// 2. The only schema there is.
+		if (schema_names.size() == 1) {
+			return schema_names[0];
+		}
+		// 3. No way to tell: keep "main", as for drivers that have no schemas.
+		return "main";
+	} catch (std::exception &) {
+		return string();
+	}
 }
 
 AdbcCatalog::~AdbcCatalog() = default;

@@ -25,12 +25,16 @@ static unique_ptr<Catalog> AdbcAttach(optional_ptr<StorageExtensionInfo> storage
 	// First, collect explicit options into a vector for secret merging
 	AdbcOptions explicit_options;
 	idx_t batch_size = 0;
+	string default_schema;
 
 	for (auto &entry : attach_options.options) {
 		auto lower_name = StringUtil::Lower(entry.first);
 		if (lower_name == "batch_size") {
 			// batch_size is handled separately as it's DuckDB-specific, not passed to ADBC
 			batch_size = entry.second.GetValue<idx_t>();
+		} else if (lower_name == "default_schema") {
+			// Also DuckDB-specific: the schema that unqualified names resolve to
+			default_schema = entry.second.ToString();
 		} else {
 			explicit_options.emplace_back(lower_name, entry.second);
 		}
@@ -87,6 +91,9 @@ static unique_ptr<Catalog> AdbcAttach(optional_ptr<StorageExtensionInfo> storage
 	// Create and return the catalog
 	auto catalog = make_uniq<AdbcCatalog>(db, connection, info.path, attach_options.access_mode);
 	catalog->batch_size = batch_size;
+	if (!default_schema.empty()) {
+		catalog->SetDefaultSchema(default_schema);
+	}
 	string driver, uri;
 	for (const auto &opt : options) {
 		if (opt.first == "driver") {

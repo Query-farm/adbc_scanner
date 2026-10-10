@@ -61,7 +61,10 @@ attachment's write connection (autocommit disabled), so they commit or roll
 back together with writes made through the catalog. Reads (`adbc_scan`,
 `adbc_scan_table`, the metadata functions) see the transaction's uncommitted
 writes once it has written. A driver that cannot disable autocommit fails the
-first write in the transaction rather than silently autocommitting. These
+first write in the transaction rather than silently autocommitting; outside an
+explicit transaction its writes, including `INSERT INTO db.…` and
+`CREATE TABLE db.… AS`, run in the driver's autocommit, so a statement that
+fails part-way can leave some rows written. These
 transactions control the remote ADBC connection; local and remote writes are
 not one distributed transaction.
 

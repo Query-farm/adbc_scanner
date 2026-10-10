@@ -6,11 +6,13 @@
 # is an in-process engine (no service needed), so the data is created in the same
 # connection it is read from. Gate by setting ADBC_DATAFUSION_TEST_AVAILABLE=1.
 #
-# NOTE: covered via the adbc_* functions. DataFusion does not support disabling
-# autocommit, so the transactional ATTACH write path (CREATE TABLE / INSERT)
-# fails loud — but adbc_execute outside an explicit transaction autocommits on the
-# attachment's own connection, which adbc_scan/adbc_scan_table read from too. DataFusion uses $1/$2
-# numbered placeholders (like PostgreSQL); the wrong style breaks filter pushdown.
+# NOTE: DataFusion does not support disabling autocommit. Outside an explicit
+# transaction every write (adbc_execute, adbc_insert, and INSERT / CREATE TABLE AS
+# through the attached catalog) runs in the driver's autocommit; inside BEGIN the
+# first write fails loud, because ROLLBACK could not undo it. DataFusion keeps its
+# tables in the schema "public", which the attachment uses as its default schema.
+# DataFusion uses $1/$2 numbered placeholders (like PostgreSQL); the wrong style
+# breaks filter pushdown.
 
 require adbc_scanner
 
@@ -53,6 +55,74 @@ query I
 SELECT c FROM adbc_scan('df', 'SELECT COUNT(*) AS c FROM items') AS t(c);
 ----
 3
+
+# Default schema: DataFusion's tables are in "public", not "main", so unqualified
+# names and USE resolve there (issue #19)
+query I
+SELECT schema_name FROM duckdb_schemas() WHERE database_name = 'df';
+----
+public
+
+query I
+SELECT count(*) FROM df.items;
+----
+3
+
+statement ok
+USE df;
+
+query TI
+SELECT current_schema(), count(*) FROM items GROUP BY ALL;
+----
+public	3
+
+statement ok
+USE memory;
+
+# Catalog writes with an autocommit-only driver: outside BEGIN they run in the
+# driver's autocommit, like adbc_execute (issue #20)
+statement ok
+INSERT INTO df.items VALUES (4, 'fig');
+
+statement ok
+INSERT INTO df.public.items VALUES (5, 'kiwi');
+
+statement ok
+CREATE TABLE df.items_copy AS SELECT id, name FROM df.items WHERE id >= 4;
+
+query IT
+SELECT id, name FROM df.items_copy ORDER BY id;
+----
+4	fig
+5	kiwi
+
+# Inside BEGIN the write still fails loud, and nothing is written
+statement ok
+BEGIN;
+
+statement error
+INSERT INTO df.items VALUES (6, 'lime');
+----
+does not support multi-statement transactions
+
+statement ok
+ROLLBACK;
+
+statement ok
+BEGIN;
+
+statement error
+CALL adbc_execute('df', 'INSERT INTO items VALUES (7, ''date'')');
+----
+does not support multi-statement transactions
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT count(*) FROM df.items;
+----
+5
 
 statement ok
 DETACH df;

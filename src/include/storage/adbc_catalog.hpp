@@ -9,6 +9,8 @@
 #pragma once
 
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/parser/qualified_name.hpp"
 #include "duckdb/common/enums/access_mode.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
@@ -104,6 +106,11 @@ public:
 	}
 
 	void ClearCache();
+
+	//! The already-loaded table a pushed-down base table reference names, or nullptr. Never loads
+	//! anything: RemotePushdownOptimizer has looked every referenced table up before asking whether
+	//! a query node can be pushed down.
+	optional_ptr<TableCatalogEntry> GetLoadedTable(const QualifiedName &name);
 
 	//! Whether or not this catalog should search a specific type with the standard priority
 	CatalogLookupBehavior CatalogTypeLookupRule(CatalogType type) const override {

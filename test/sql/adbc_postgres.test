@@ -231,6 +231,44 @@ SELECT regexp_extract(name, 'a') FROM pg.public.adbc_pg_events WHERE id = 2;
 ----
 a
 
+# A column the remote table does not have is never pushed down: DuckDB's rowid
+# (remote tables expose none) and PostgreSQL system columns such as ctid fail
+# to bind, as they do on the scan path, instead of PostgreSQL answering them.
+query II
+EXPLAIN SELECT count(*) FROM pg.public.adbc_pg_events WHERE id > 1;
+----
+physical_plan	<REGEX>:(?is).*ADBC.REMOTE.QUERY.*
+
+query I
+SELECT count(*) FROM pg.public.adbc_pg_events WHERE id > 1;
+----
+2
+
+statement error
+SELECT rowid FROM pg.public.adbc_pg_events;
+----
+rowid
+
+statement error
+SELECT id FROM pg.public.adbc_pg_events WHERE rowid = 1;
+----
+rowid
+
+statement error
+SELECT count(*) FROM pg.public.adbc_pg_events WHERE rowid >= 0;
+----
+rowid
+
+statement error
+SELECT ctid FROM pg.public.adbc_pg_events;
+----
+ctid
+
+statement error
+SELECT e.xmin FROM pg.public.adbc_pg_events e;
+----
+xmin
+
 # TINYINT has no PostgreSQL equivalent, so this cast is deliberately local.
 query II
 EXPLAIN SELECT CAST(id AS TINYINT) FROM pg.public.adbc_pg_events;

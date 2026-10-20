@@ -37,6 +37,19 @@ optional_ptr<CatalogEntry> AdbcCatalogSet::GetEntry(AdbcTransaction &transaction
 	return it->second.get();
 }
 
+optional_ptr<CatalogEntry> AdbcCatalogSet::GetLoadedEntry(const string &name) {
+	lock_guard<mutex> l(entry_lock);
+	auto entry = entry_map.find(name);
+	if (entry == entry_map.end()) {
+		return nullptr;
+	}
+	auto it = entries.find(entry->second);
+	if (it == entries.end()) {
+		return nullptr;
+	}
+	return it->second.get();
+}
+
 void AdbcCatalogSet::DropEntry(AdbcTransaction &transaction, DropInfo &info) {
 	throw BinderException("ADBC databases do not support dropping entries");
 }

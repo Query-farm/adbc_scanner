@@ -18,8 +18,32 @@ CALL adbc_execute('count_db', 'CREATE TABLE countries (code TEXT, name TEXT)');
 statement ok
 CALL adbc_execute('count_db', 'INSERT INTO countries VALUES (''AR'', ''Argentina''), (''AU'', ''Australia'')');
 
+statement ok
+CALL adbc_execute('count_db', 'DROP TABLE IF EXISTS with_rowid');
+
+statement ok
+CALL adbc_execute('count_db', 'CREATE TABLE with_rowid (id INTEGER PRIMARY KEY, label TEXT)');
+
+statement ok
+CALL adbc_execute('count_db', 'INSERT INTO with_rowid VALUES (7, ''seven''), (9, ''nine'')');
+
+statement ok
+CALL adbc_execute('count_db', 'DROP TABLE IF EXISTS real_rowid');
+
+statement ok
+CALL adbc_execute('count_db', 'CREATE TABLE real_rowid ("rowid" INTEGER, label TEXT)');
+
+statement ok
+CALL adbc_execute('count_db', 'INSERT INTO real_rowid VALUES (100, ''a''), (200, ''b'')');
+
 # Remote tables advertise no rowid, so count(*) reads a real column instead of
-# a fake rowid filled from 'code' ("Could not convert string 'AR' to INT64")
+# a fake rowid filled from 'code' ("Could not convert string 'AR' to INT64").
+# With DuckDB 2.0 query pushdown these run as one remote query.
+query II
+EXPLAIN SELECT count(*) FROM count_db.countries;
+----
+physical_plan	<REGEX>:(?is).*ADBC.REMOTE.QUERY.*Remote SQL:.*count\(\*\).*
+
 query I
 SELECT count(*) FROM count_db.countries;
 ----
@@ -30,12 +54,114 @@ SELECT count(*) FROM count_db.countries WHERE name = 'Australia';
 ----
 1
 
+# SQLite has a rowid of its own, but the attached table does not: a query
+# naming a column the remote table lacks is not pushed down, so the binder
+# rejects it exactly as on the scan path instead of SQLite answering it.
+query II
+EXPLAIN SELECT code FROM count_db.countries WHERE name = 'Australia';
+----
+physical_plan	<REGEX>:(?is).*ADBC.REMOTE.QUERY.*
+
+statement error
+SELECT rowid FROM count_db.countries;
+----
+rowid
+
+statement error
+SELECT countries.rowid FROM count_db.countries;
+----
+rowid
+
+statement error
+SELECT c.rowid FROM count_db.countries AS c;
+----
+rowid
+
+statement error
+SELECT code FROM count_db.countries WHERE rowid = 1;
+----
+rowid
+
+statement error
+SELECT count(*) FROM count_db.countries WHERE rowid > 0;
+----
+rowid
+
+statement error
+SELECT count(rowid) FROM count_db.countries;
+----
+rowid
+
+statement error
+SELECT code FROM count_db.countries ORDER BY rowid;
+----
+rowid
+
+statement error
+SELECT code FROM (SELECT code, rowid FROM count_db.countries);
+----
+rowid
+
+statement error
+SELECT code FROM count_db.countries WHERE code IN (SELECT code FROM count_db.countries WHERE rowid = 1);
+----
+rowid
+
+# Other SQLite pseudo-columns are refused the same way
+statement error
+SELECT oid FROM count_db.countries;
+----
+oid
+
+statement error
+SELECT _rowid_ FROM count_db.countries;
+----
+_rowid_
+
+# Names the query itself defines, qualified references and correlated
+# subqueries are still pushed down.
+query II
+EXPLAIN SELECT c.code AS k FROM count_db.countries c WHERE c.name = 'Australia' ORDER BY k;
+----
+physical_plan	<REGEX>:(?is).*ADBC.REMOTE.QUERY.*
+
+query T
+SELECT c.code AS k FROM count_db.countries c WHERE c.name = 'Australia' ORDER BY k;
+----
+AU
+
+query II
+EXPLAIN SELECT code, (SELECT count(*) FROM count_db.countries i WHERE i.code <= o.code) FROM count_db.countries o ORDER BY code;
+----
+physical_plan	<REGEX>:(?is).*ADBC.REMOTE.QUERY.*
+
+query TI
+SELECT code, (SELECT count(*) FROM count_db.countries i WHERE i.code <= o.code) FROM count_db.countries o ORDER BY code;
+----
+AR	1
+AU	2
+
+# A table with a real column called rowid keeps it, pushed down; one whose
+# INTEGER PRIMARY KEY is SQLite's rowid alias does not have one
+query II
+EXPLAIN SELECT rowid FROM count_db.real_rowid WHERE rowid > 150;
+----
+physical_plan	<REGEX>:(?is).*ADBC.REMOTE.QUERY.*
+
+query IT
+SELECT rowid, label FROM count_db.real_rowid WHERE rowid > 150;
+----
+200	b
+
+statement error
+SELECT rowid FROM count_db.with_rowid;
+----
+rowid
+
 statement ok
 DETACH count_db;
 
-# DuckDB 2.0 pushes whole queries down to drivers with a SQL dialect profile, so
-# "SELECT rowid" reaches SQLite, which has a rowid of its own. The scan path
-# (query_pushdown false) still exposes no rowid.
+# The scan path (query_pushdown false) exposes no rowid either.
 statement ok
 ATTACH '__TEST_DIR__/test_count_star.db' AS count_db (TYPE adbc, driver 'sqlite', query_pushdown false);
 

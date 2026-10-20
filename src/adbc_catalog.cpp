@@ -1001,6 +1001,7 @@ void RegisterAdbcCatalogFunctions(DatabaseInstance &db) {
         TableFunction adbc_info_function("adbc_info", {LogicalType::VARCHAR}, AdbcInfoFunction,
                                           AdbcInfoBind, AdbcInfoInitGlobal, AdbcInfoInitLocal);
         adbc_info_function.projection_pushdown = false;
+        NameParameters(adbc_info_function, {"database"});
         CreateTableFunctionInfo info(adbc_info_function);
         FunctionDescription desc;
         desc.description = "Get driver and database information from an attached ADBC database";
@@ -1008,17 +1009,20 @@ void RegisterAdbcCatalogFunctions(DatabaseInstance &db) {
         desc.categories = {"adbc"};
         info.descriptions.push_back(std::move(desc));
         loader.RegisterFunction(info);
-        DescribeParameters(loader, "adbc_info", {"database"});
     }
 
     // adbc_tables(database, catalog, schema, table_name) - Get tables
     {
         TableFunction adbc_tables_function("adbc_tables", {LogicalType::VARCHAR}, AdbcTablesFunction,
                                             AdbcTablesBind, AdbcTablesInitGlobal, AdbcTablesInitLocal);
-        adbc_tables_function.named_parameters["catalog"] = LogicalType::VARCHAR;
-        adbc_tables_function.named_parameters["schema"] = LogicalType::VARCHAR;
-        adbc_tables_function.named_parameters["table_name"] = LogicalType::VARCHAR;
+        // Optional named parameters: a call that leaves one out does not pass it.
+        adbc_tables_function.GetSignature().WithTypedKwargs("kwargs", [](TypedKwargs &options) {
+            options.Add("catalog", LogicalType::VARCHAR);
+            options.Add("schema", LogicalType::VARCHAR);
+            options.Add("table_name", LogicalType::VARCHAR);
+        });
         adbc_tables_function.projection_pushdown = false;
+        NameParameters(adbc_tables_function, {"database"});
         CreateTableFunctionInfo info(adbc_tables_function);
         FunctionDescription desc;
         desc.description = "Get list of tables from an ADBC data source";
@@ -1028,7 +1032,6 @@ void RegisterAdbcCatalogFunctions(DatabaseInstance &db) {
         desc.categories = {"adbc"};
         info.descriptions.push_back(std::move(desc));
         loader.RegisterFunction(info);
-        DescribeParameters(loader, "adbc_tables", {"database"});
     }
 
     // adbc_table_types(database) - Get supported table types
@@ -1036,6 +1039,7 @@ void RegisterAdbcCatalogFunctions(DatabaseInstance &db) {
         TableFunction adbc_table_types_function("adbc_table_types", {LogicalType::VARCHAR}, AdbcTableTypesFunction,
                                                  AdbcTableTypesBind, AdbcTableTypesInitGlobal, AdbcTableTypesInitLocal);
         adbc_table_types_function.projection_pushdown = false;
+        NameParameters(adbc_table_types_function, {"database"});
         CreateTableFunctionInfo info(adbc_table_types_function);
         FunctionDescription desc;
         desc.description = "Get supported table types from an ADBC data source (e.g., 'table', 'view')";
@@ -1043,18 +1047,21 @@ void RegisterAdbcCatalogFunctions(DatabaseInstance &db) {
         desc.categories = {"adbc"};
         info.descriptions.push_back(std::move(desc));
         loader.RegisterFunction(info);
-        DescribeParameters(loader, "adbc_table_types", {"database"});
     }
 
     // adbc_columns(database, ...) - Get column metadata
     {
         TableFunction adbc_columns_function("adbc_columns", {LogicalType::VARCHAR}, AdbcColumnsFunction,
                                              AdbcColumnsBind, AdbcColumnsInitGlobal, AdbcColumnsInitLocal);
-        adbc_columns_function.named_parameters["catalog"] = LogicalType::VARCHAR;
-        adbc_columns_function.named_parameters["schema"] = LogicalType::VARCHAR;
-        adbc_columns_function.named_parameters["table_name"] = LogicalType::VARCHAR;
-        adbc_columns_function.named_parameters["column_name"] = LogicalType::VARCHAR;
+        // Optional named parameters: a call that leaves one out does not pass it.
+        adbc_columns_function.GetSignature().WithTypedKwargs("kwargs", [](TypedKwargs &options) {
+            options.Add("catalog", LogicalType::VARCHAR);
+            options.Add("schema", LogicalType::VARCHAR);
+            options.Add("table_name", LogicalType::VARCHAR);
+            options.Add("column_name", LogicalType::VARCHAR);
+        });
         adbc_columns_function.projection_pushdown = false;
+        NameParameters(adbc_columns_function, {"database"});
         CreateTableFunctionInfo info(adbc_columns_function);
         FunctionDescription desc;
         desc.description = "Get column metadata for tables in an ADBC data source";
@@ -1064,16 +1071,19 @@ void RegisterAdbcCatalogFunctions(DatabaseInstance &db) {
         desc.categories = {"adbc"};
         info.descriptions.push_back(std::move(desc));
         loader.RegisterFunction(info);
-        DescribeParameters(loader, "adbc_columns", {"database"});
     }
 
     // adbc_schema(database, table_name, ...) - Get Arrow schema for a table
     {
         TableFunction adbc_schema_function("adbc_schema", {LogicalType::VARCHAR, LogicalType::VARCHAR}, AdbcSchemaFunction,
                                             AdbcSchemaBind, AdbcSchemaInitGlobal, AdbcSchemaInitLocal);
-        adbc_schema_function.named_parameters["catalog"] = LogicalType::VARCHAR;
-        adbc_schema_function.named_parameters["schema"] = LogicalType::VARCHAR;
+        // Optional named parameters: a call that leaves one out does not pass it.
+        adbc_schema_function.GetSignature().WithTypedKwargs("kwargs", [](TypedKwargs &options) {
+            options.Add("catalog", LogicalType::VARCHAR);
+            options.Add("schema", LogicalType::VARCHAR);
+        });
         adbc_schema_function.projection_pushdown = false;
+        NameParameters(adbc_schema_function, {"database", "table_name"});
         CreateTableFunctionInfo info(adbc_schema_function);
         FunctionDescription desc;
         desc.description = "Get the Arrow schema for a specific table in an ADBC data source";
@@ -1082,7 +1092,6 @@ void RegisterAdbcCatalogFunctions(DatabaseInstance &db) {
         desc.categories = {"adbc"};
         info.descriptions.push_back(std::move(desc));
         loader.RegisterFunction(info);
-        DescribeParameters(loader, "adbc_schema", {"database", "table_name"});
     }
 }
 

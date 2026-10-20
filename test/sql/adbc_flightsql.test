@@ -47,6 +47,7 @@ SELECT COUNT(*) FROM nation;
 
 statement ok
 DISCONNECT;
+
 query I
 SELECT COUNT(*) FROM f.main.nation;
 ----

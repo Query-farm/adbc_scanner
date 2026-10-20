@@ -11,7 +11,7 @@ struct ClearCacheState : public GlobalTableFunctionState {
 };
 
 static unique_ptr<FunctionData> BindClear(ClientContext &, TableFunctionBindInput &,
-                                         vector<LogicalType> &types, vector<string> &names) {
+                                         vector<LogicalType> &types, vector<Identifier> &names) {
     types.emplace_back(LogicalType::BOOLEAN);
     names.emplace_back("cleared");
     return nullptr;

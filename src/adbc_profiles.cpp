@@ -208,7 +208,10 @@ void RegisterAdbcProfilesFunction(DatabaseInstance &db) {
 	ExtensionLoader loader(db, "adbc");
 
 	TableFunction profiles("adbc_profiles", {}, AdbcProfilesFunction, AdbcProfilesBind, AdbcProfilesInit);
-	profiles.named_parameters["search_paths"] = LogicalType::VARCHAR;
+	// Optional named parameters: a call that leaves one out does not pass it.
+	profiles.GetSignature().WithTypedKwargs("kwargs", [](TypedKwargs &options) {
+	    options.Add("search_paths", LogicalType::VARCHAR);
+	});
 
 	CreateTableFunctionInfo info(profiles);
 	FunctionDescription desc;

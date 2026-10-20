@@ -52,6 +52,10 @@ public:
 
 	TableStorageInfo GetStorageInfo(ClientContext &context) override;
 
+	//! Remote tables have no DuckDB rowid (see AdbcScanGetVirtualColumns).
+	virtual_column_map_t GetVirtualColumns() const override;
+	vector<column_t> GetRowIdColumns() const override;
+
 	void BindUpdateConstraints(Binder &binder, LogicalGet &get, LogicalProjection &proj, LogicalUpdate &update,
 	                           ClientContext &context) override;
 

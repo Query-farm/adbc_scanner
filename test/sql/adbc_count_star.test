@@ -30,6 +30,20 @@ SELECT count(*) FROM count_db.countries WHERE name = 'Australia';
 ----
 1
 
+statement ok
+DETACH count_db;
+
+# DuckDB 2.0 pushes whole queries down to drivers with a SQL dialect profile, so
+# "SELECT rowid" reaches SQLite, which has a rowid of its own. The scan path
+# (query_pushdown false) still exposes no rowid.
+statement ok
+ATTACH '__TEST_DIR__/test_count_star.db' AS count_db (TYPE adbc, driver 'sqlite', query_pushdown false);
+
+query I
+SELECT count(*) FROM count_db.countries;
+----
+2
+
 statement error
 SELECT rowid FROM count_db.countries;
 ----

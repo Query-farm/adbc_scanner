@@ -82,22 +82,33 @@ TableFunction AdbcTableEntry::GetScanFunction(ClientContext &context, unique_ptr
 	vector<Value> inputs = {Value(catalog.GetName()), Value(name)};
 
 	// Set up named parameters for schema (if not "main") and batch_size (if set)
-	named_parameter_map_t param_map;
+	named_argument_map_t param_map;
 	if (schema.name != "main") {
-		param_map["schema"] = Value(schema.name);
+		param_map[Identifier("schema")] = Value(schema.name);
 	}
 	if (adbc_catalog.batch_size > 0) {
-		param_map["batch_size"] = Value::BIGINT(static_cast<int64_t>(adbc_catalog.batch_size));
+		param_map[Identifier("batch_size")] = Value::BIGINT(static_cast<int64_t>(adbc_catalog.batch_size));
 	}
 
 	vector<LogicalType> return_types;
 	vector<Identifier> names;
 	TableFunctionRef empty_ref;
-	TableFunctionBindInput bind_input(inputs, param_map, return_types, names, nullptr, nullptr,
-	                                  adbc_scan_table_function, empty_ref);
+	vector<LogicalType> input_table_types;
+	vector<Identifier> input_table_names;
+	BoundTableFunction bound_function(adbc_scan_table_function_ptr);
+	TableFunctionBindInput bind_input(inputs, param_map, input_table_types, input_table_names, nullptr, nullptr,
+	                                  bound_function, empty_ref);
 	bind_data = AdbcScanTableBindWithConnection(context, bind_input, std::move(scan_connection), return_types, names);
 
 	return adbc_scan_table_function;
+}
+
+virtual_column_map_t AdbcTableEntry::GetVirtualColumns() const {
+	return virtual_column_map_t();
+}
+
+vector<column_t> AdbcTableEntry::GetRowIdColumns() const {
+	return vector<column_t>();
 }
 
 TableStorageInfo AdbcTableEntry::GetStorageInfo(ClientContext &context) {

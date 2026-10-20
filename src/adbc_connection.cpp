@@ -14,7 +14,7 @@ shared_ptr<AdbcConnectionWrapper> GetAttachedConnection(ClientContext &context, 
 		throw InvalidInputException("%s: database name must not be NULL", function_name);
 	}
 	auto name = database.GetValue<string>();
-	auto attached = DatabaseManager::Get(context).GetDatabase(context, name);
+	auto attached = DatabaseManager::Get(context).GetDatabase(context, Identifier(name));
 	if (!attached) {
 		throw BinderException("%s: no attached database named \"%s\"; attach one with "
 		                      "ATTACH '<uri>' AS %s (TYPE adbc, driver '...')",

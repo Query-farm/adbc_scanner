@@ -13,7 +13,7 @@ class AdbcConnectionWrapper;
 // Bind adbc_scan_table over an already-resolved connection (ATTACH scans)
 unique_ptr<FunctionData> AdbcScanTableBindWithConnection(ClientContext &context, TableFunctionBindInput &input,
                                                          shared_ptr<AdbcConnectionWrapper> connection,
-                                                         vector<LogicalType> &return_types, vector<string> &names);
+                                                         vector<LogicalType> &return_types, vector<Identifier> &names);
 
 // Register catalog functions (adbc_info, adbc_tables)
 void RegisterAdbcCatalogFunctions(DatabaseInstance &db);

@@ -284,12 +284,16 @@ void RegisterAdbcInsertFunction(DatabaseInstance &db) {
                                         AdbcInsertInitGlobal);
     adbc_insert_function.in_out_function = AdbcInsertInOut;
     adbc_insert_function.in_out_function_final = AdbcInsertFinalize;
-    adbc_insert_function.named_parameters["mode"] = LogicalType::VARCHAR;
-    // Optional bounded-queue depth override (default 32 / ADBC_INSERT_MAX_PENDING_BATCHES).
-    adbc_insert_function.named_parameters["max_batches"] = LogicalType::BIGINT;
-    // Driver-specific statement options as a STRUCT or MAP of key/value pairs.
-    adbc_insert_function.named_parameters["options"] = LogicalType::ANY;
+    // Optional named parameters: a call that leaves one out does not pass it.
+    adbc_insert_function.GetSignature().WithTypedKwargs("kwargs", [](TypedKwargs &options) {
+        options.Add("mode", LogicalType::VARCHAR);
+        // Optional bounded-queue depth override (default 32 / ADBC_INSERT_MAX_PENDING_BATCHES).
+        options.Add("max_batches", LogicalType::BIGINT);
+        // Driver-specific statement options as a STRUCT or MAP of key/value pairs.
+        options.Add("options", LogicalType::ANY);
+    });
 
+    NameParameters(adbc_insert_function, {"database", "table_name", "data"});
     CreateTableFunctionInfo info(adbc_insert_function);
     FunctionDescription desc;
     desc.description = "Bulk insert data from a query into an ADBC table";
@@ -300,7 +304,6 @@ void RegisterAdbcInsertFunction(DatabaseInstance &db) {
     desc.categories = {"adbc"};
     info.descriptions.push_back(std::move(desc));
     loader.RegisterFunction(info);
-    DescribeParameters(loader, "adbc_insert", {"database", "table_name", "data"});
 }
 
 } // namespace adbc_scanner

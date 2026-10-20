@@ -213,24 +213,15 @@ private:
     AdbcError error;
 };
 
-// Name a registered table function's parameters in its FunctionDescription.
-// duckdb_functions() pairs description names by index with the positional
-// arguments followed by named_parameters in the map's iteration order, and the
-// copies made while registering can change that order. duckdb_functions()
-// reads a copy of the stored function, so take the same copy rather than
-// hand-ordering a list.
-inline void DescribeParameters(ExtensionLoader &loader, const string &function_name,
-                               vector<string> positional_names) {
-    auto &entry = loader.GetTableFunction(function_name);
-    D_ASSERT(entry.functions.Size() == 1 && entry.descriptions.size() == 1);
-    auto function = entry.functions.GetFunctionByOffset(0);
-    auto &desc = entry.descriptions[0];
-    D_ASSERT(positional_names.size() == function.arguments.size());
-    desc.parameter_names = std::move(positional_names);
-    desc.parameter_types = function.arguments;
-    for (auto &param : function.named_parameters) {
-        desc.parameter_names.push_back(param.first);
-        desc.parameter_types.push_back(param.second);
+// Name a table function's positional parameters before it is registered, so
+// duckdb_functions() lists them by name instead of a generated colN. In DuckDB
+// 2.0 parameter names live in the function's signature; named (keyword-only)
+// parameters are declared with GetSignature().AddKeywordOnly(...).
+inline void NameParameters(TableFunction &function, const vector<string> &positional_names) {
+    auto &signature = function.GetSignature();
+    D_ASSERT(positional_names.size() <= signature.GetParameterCount());
+    for (idx_t i = 0; i < positional_names.size(); i++) {
+        signature.GetParameter(i).SetName(Identifier(positional_names[i]));
     }
 }
 

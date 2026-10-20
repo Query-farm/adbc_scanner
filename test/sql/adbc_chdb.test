@@ -12,7 +12,8 @@ ATTACH '' AS chdb_scan (TYPE adbc, driver 'chdb');
 query IT
 SELECT number, s
 FROM adbc_scan('chdb_scan',
-               'SELECT number, toString(number) AS s FROM numbers(3) ORDER BY number');
+               'SELECT number, toString(number) AS s FROM numbers(3) ORDER BY number',
+               columns := {'number': 'UBIGINT', 's': 'VARCHAR'});
 ----
 0	0
 1	1

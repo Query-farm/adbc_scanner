@@ -1,0 +1,179 @@
+{
+  "date": "2026-09-27",
+  "repository_base": "7a21dda798707d85d369c0c13499b3bdd21d5ffe",
+  "source_state": "working tree with runtime command changes",
+  "source_tree_sha256": "f3273c55d2476fae4146caefff610bebe2d4e487031ee24df021176b8ea63d89",
+  "build": {
+    "duckdb_commit": "d8cdaa33fda8df955cc76ef58a280f68f4cd43fa",
+    "type": "Release",
+    "extension_static_build": true,
+    "compiler": "GCC 14.2.1",
+    "platform": "linux_arm64",
+    "targets": [
+      "adbc_scanner_loadable_extension",
+      "unittest"
+    ],
+    "status": "passed"
+  },
+  "pytest": {
+    "name": "pytest",
+    "errors": "0",
+    "failures": "0",
+    "skipped": "0",
+    "tests": "26",
+    "time": "0.870",
+    "timestamp": "2026-09-27T16:09:56.854119+00:00",
+    "hostname": "ip-172-31-43-65.ec2.internal"
+  },
+  "sqllogictest": {
+    "passed_cases": 20,
+    "assertions": 1026,
+    "failed": 0,
+    "skipped_cases": 1,
+    "skipped_reason": "SQL Server unavailable on EC2",
+    "drivers": [
+      "sqlite",
+      "postgresql",
+      "mysql",
+      "datafusion",
+      "flightsql",
+      "trino"
+    ]
+  },
+  "python_checks": [
+    "ruff check",
+    "ruff format --check",
+    "py_compile"
+  ],
+  "iroh": {
+    "platform": "Linux-6.18.41-94.142.amzn2023.aarch64-aarch64-with-glibc2.34",
+    "duckdb": "1.5.5",
+    "extension": "",
+    "transport": "iroh_direct",
+    "clients": 2,
+    "busy_timeout_ms": 3000,
+    "watchdog_seconds": 12,
+    "optimizer_disabled": false,
+    "extension_sha256": "09c2b15d1c64676dd92f904fed8e1f4dd380df1438fe960ef9551cb0d2b0bc3f",
+    "status": "passed",
+    "cases": [
+      {
+        "case": "commit_unblocks_waiting_writer",
+        "commit": {
+          "ok": true,
+          "rows": [
+            [
+              true
+            ]
+          ],
+          "seconds": 0.0017733570002747001
+        },
+        "waiting_writer": {
+          "ok": true,
+          "rows": [
+            [
+              1
+            ]
+          ],
+          "seconds": 0.3318949580007029
+        }
+      },
+      {
+        "case": "busy_timeout_then_connection_reuse",
+        "exceeds_single_busy_timeout": false,
+        "ok": false,
+        "locked": true,
+        "read_only": false,
+        "unsupported": false,
+        "exception": "IOException",
+        "seconds": 3.005526054001166
+      },
+      {
+        "case": "opposite_order_upgrade_rollback_retry",
+        "ok": false,
+        "locked": true,
+        "read_only": false,
+        "unsupported": false,
+        "exception": "IOException",
+        "seconds": 0.0027291520000289893
+      },
+      {
+        "case": "post_contention_50_updates",
+        "rows": [
+          [
+            1,
+            28
+          ],
+          [
+            2,
+            29
+          ]
+        ]
+      },
+      {
+        "case": "explain_must_not_execute_write",
+        "unexpected_write": false,
+        "before": [
+          [
+            1,
+            28
+          ],
+          [
+            2,
+            29
+          ]
+        ],
+        "after": [
+          [
+            1,
+            28
+          ],
+          [
+            2,
+            29
+          ]
+        ]
+      },
+      {
+        "case": "alice_bob_catalog_discovery",
+        "status": "passed"
+      },
+      {
+        "case": "bidirectional_catalog_visibility",
+        "rows": [
+          [
+            1,
+            101
+          ],
+          [
+            2,
+            202
+          ]
+        ]
+      },
+      {
+        "case": "catalog_commit_rollback_visibility",
+        "rows": [
+          [
+            1,
+            404
+          ],
+          [
+            2,
+            202
+          ]
+        ]
+      },
+      {
+        "case": "read_only_catalog_write_rejection_and_join",
+        "status": "passed"
+      }
+    ],
+    "server_exit_code": 0
+  },
+  "limitations": [
+    "SQL Server test not run on EC2",
+    "No GitHub CI run for this working tree",
+    "No community extension release published"
+  ]
+}

@@ -1,0 +1,35 @@
+# name: test/sql/adbc_function_parameters.test
+# description: duckdb_functions() names each adbc_* parameter next to its own type
+# group: [adbc]
+
+require adbc_scanner
+
+# Named parameters must be labelled with their own names, not shifted by
+# position: 'columns' is the only ANY-typed named parameter of adbc_scan_table.
+query II
+SELECT function_name, list_sort(list_filter(list_zip(parameters, parameter_types), p -> p[2] = 'ANY'))
+FROM duckdb_functions()
+WHERE function_name IN ('adbc_scan', 'adbc_scan_table', 'adbc_insert')
+ORDER BY function_name;
+----
+adbc_insert	[(options, ANY)]
+adbc_scan	[(columns, ANY), (params, ANY)]
+adbc_scan_table	[(columns, ANY)]
+
+query II
+SELECT function_name, list_sort(parameters)
+FROM duckdb_functions()
+WHERE function_name IN ('adbc_scan', 'adbc_scan_table', 'adbc_columns')
+ORDER BY function_name;
+----
+adbc_columns	[catalog, column_name, database, schema, table_name]
+adbc_scan	[batch_size, columns, database, params, query]
+adbc_scan_table	[batch_size, catalog, columns, database, schema, table_name]
+
+# No parameter falls back to a generated colN name
+query I
+SELECT count(*) FROM (
+    SELECT unnest(parameters) AS p FROM duckdb_functions() WHERE function_name LIKE 'adbc%'
+) WHERE regexp_matches(p, '^col[0-9]+$');
+----
+0

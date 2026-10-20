@@ -64,16 +64,20 @@ unique_ptr<GlobalSinkState> AdbcInsert::GetGlobalSinkState(ClientContext &contex
 
 	// Determine target table name and get connection
 	string target_table;
+	string target_schema;
 	string ingest_mode;
+	optional_ptr<AdbcCatalog> adbc_catalog;
 	shared_ptr<AdbcConnectionWrapper> connection;
 
 	if (table) {
 		// INSERT INTO existing table
 		auto &adbc_table = table->Cast<AdbcTableEntry>();
 		target_table = adbc_table.name.GetIdentifierName();
+		target_schema = adbc_table.schema.name.GetIdentifierName();
 		ingest_mode = "adbc.ingest.mode.append";
 
 		auto &catalog = adbc_table.catalog.Cast<AdbcCatalog>();
+		adbc_catalog = catalog;
 		// Use the transaction's write connection (autocommit disabled) so the
 		// insert participates in the active transaction and can be rolled back.
 		connection = AdbcTransaction::Get(context, catalog).GetWriteConnection();
@@ -90,6 +94,8 @@ unique_ptr<GlobalSinkState> AdbcInsert::GetGlobalSinkState(ClientContext &contex
 		auto &schema_ref = schema->Cast<AdbcSchemaEntry>();
 		auto &catalog = const_cast<AdbcCatalog &>(schema_ref.ParentCatalog().Cast<AdbcCatalog>());
 		connection = AdbcTransaction::Get(context, catalog).GetWriteConnection();
+		adbc_catalog = catalog;
+		target_schema = schema_ref.name.GetIdentifierName();
 		target_table = info->Base().GetTableName().GetIdentifierName();
 		ingest_mode = "adbc.ingest.mode.create";
 
@@ -104,6 +110,19 @@ unique_ptr<GlobalSinkState> AdbcInsert::GetGlobalSinkState(ClientContext &contex
 	state->consumer.statement = make_shared_ptr<AdbcStatementWrapper>(connection);
 	state->consumer.statement->Init();
 	state->consumer.statement->SetOption("adbc.ingest.target_table", target_table);
+	// Name the schema, so the write lands in the schema the statement names and
+	// not in whichever one the connection happens to be using. "main" is the
+	// placeholder for drivers without schemas.
+	if (target_schema != "main") {
+		try {
+			state->consumer.statement->SetOption(ADBC_INGEST_OPTION_TARGET_DB_SCHEMA, target_schema);
+		} catch (NotImplementedException &) {
+			// A driver that cannot target a schema can still write to its default one.
+			if (target_schema != adbc_catalog->GetDefaultSchemaName()) {
+				throw;
+			}
+		}
+	}
 	state->consumer.statement->SetOption("adbc.ingest.mode", ingest_mode);
 
 	// Set the schema on the bounded stream
@@ -112,13 +131,9 @@ unique_ptr<GlobalSinkState> AdbcInsert::GetGlobalSinkState(ClientContext &contex
 	                               state->client_properties);
 	state->consumer.SetSchema(&arrow_schema);
 
-	// Bind the stream, then start the background ExecuteUpdate consumer so it
-	// drains batches concurrently with the producer (keeps RSS flat).
-	try {
-		state->consumer.BindStream();
-	} catch (std::exception &e) {
-		throw IOException("ADBC insert: failed to bind stream: " + string(e.what()));
-	}
+	// Bind and drain on the background consumer, concurrently with the producer:
+	// a driver may consume the stream while binding, and the overlap keeps RSS
+	// flat. Bind failures surface when the sink finishes.
 	state->consumer.StartConsumer();
 
 	return std::move(state);

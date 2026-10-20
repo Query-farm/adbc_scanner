@@ -7,22 +7,22 @@ require adbc_scanner
 require-env ADBC_POSTGRES_TEST_AVAILABLE
 
 statement ok
-SET VARIABLE c = (SELECT adbc_connect({'driver':'postgresql','uri':'postgresql://postgres:postgres@localhost:5432/postgres'}));
+ATTACH 'postgresql://postgres:postgres@localhost:5432/postgres' AS pushdown_seed (TYPE adbc, driver 'postgresql');
 
 statement ok
-SELECT adbc_execute(getvariable('c')::BIGINT, 'DROP TABLE IF EXISTS adbc_pushdown_fact');
+CALL adbc_execute('pushdown_seed', 'DROP TABLE IF EXISTS adbc_pushdown_fact');
 
 statement ok
-SELECT adbc_execute(getvariable('c')::BIGINT, 'DROP TABLE IF EXISTS adbc_pushdown_dim');
+CALL adbc_execute('pushdown_seed', 'DROP TABLE IF EXISTS adbc_pushdown_dim');
 
 statement ok
-SELECT adbc_execute(getvariable('c')::BIGINT, 'CREATE TABLE adbc_pushdown_fact AS SELECT i AS id, i % 100 AS dim_id FROM generate_series(1, 100000) i');
+CALL adbc_execute('pushdown_seed', 'CREATE TABLE adbc_pushdown_fact AS SELECT i AS id, i % 100 AS dim_id FROM generate_series(1, 100000) i');
 
 statement ok
-SELECT adbc_execute(getvariable('c')::BIGINT, 'CREATE TABLE adbc_pushdown_dim AS SELECT i AS id, i = 42 AS keep FROM generate_series(0, 99) i');
+CALL adbc_execute('pushdown_seed', 'CREATE TABLE adbc_pushdown_dim AS SELECT i AS id, i = 42 AS keep FROM generate_series(0, 99) i');
 
 statement ok
-SELECT adbc_disconnect(getvariable('c')::BIGINT);
+DETACH pushdown_seed;
 
 statement ok
 ATTACH 'postgresql://postgres:postgres@localhost:5432/postgres' AS pushed (TYPE adbc, driver 'postgresql');
@@ -56,13 +56,13 @@ statement ok
 DETACH local_plan;
 
 statement ok
-SET VARIABLE cleanup = (SELECT adbc_connect({'driver':'postgresql','uri':'postgresql://postgres:postgres@localhost:5432/postgres'}));
+ATTACH 'postgresql://postgres:postgres@localhost:5432/postgres' AS pushdown_cleanup (TYPE adbc, driver 'postgresql');
 
 statement ok
-SELECT adbc_execute(getvariable('cleanup')::BIGINT, 'DROP TABLE IF EXISTS adbc_pushdown_fact');
+CALL adbc_execute('pushdown_cleanup', 'DROP TABLE IF EXISTS adbc_pushdown_fact');
 
 statement ok
-SELECT adbc_execute(getvariable('cleanup')::BIGINT, 'DROP TABLE IF EXISTS adbc_pushdown_dim');
+CALL adbc_execute('pushdown_cleanup', 'DROP TABLE IF EXISTS adbc_pushdown_dim');
 
 statement ok
-SELECT adbc_disconnect(getvariable('cleanup')::BIGINT);
+DETACH pushdown_cleanup;

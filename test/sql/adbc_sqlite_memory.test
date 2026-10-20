@@ -1,0 +1,84 @@
+# name: test/sql/adbc_sqlite_memory.test
+# description: SQLite in-memory attachments and URIs containing '=' as the ATTACH path
+# group: [adbc]
+
+require adbc_scanner
+
+require-env HAS_ADBC_SQLITE_DRIVER
+
+# ':memory:' gives each SQLite connection its own database, so a write on the
+# transaction's separate connection fails with an explanation, not "no such table".
+statement ok
+ATTACH ':memory:' AS mem (TYPE adbc, driver 'sqlite');
+
+statement ok
+CALL adbc_execute('mem', 'CREATE TABLE t (id INTEGER)');
+
+# Autocommit calls use the attachment's own connection and keep working
+statement ok
+CALL adbc_execute('mem', 'INSERT INTO t VALUES (1)');
+
+statement ok
+BEGIN;
+
+statement error
+CALL adbc_execute('mem', 'INSERT INTO t VALUES (2)');
+----
+it is a SQLite ':memory:' database
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT count(*) FROM adbc_scan('mem', 'SELECT id FROM t', columns := {'id': 'BIGINT'});
+----
+1
+
+statement ok
+DETACH mem;
+
+# The driver's default (no path) is one shared-cache database across connections,
+# so a transaction's adbc_execute writes are visible and roll back.
+statement ok
+ATTACH '' AS shared_mem (TYPE adbc, driver 'sqlite');
+
+statement ok
+CALL adbc_execute('shared_mem', 'CREATE TABLE t (id INTEGER)');
+
+statement ok
+BEGIN;
+
+statement ok
+CALL adbc_execute('shared_mem', 'INSERT INTO t VALUES (1)');
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT count(*) FROM adbc_scan('shared_mem', 'SELECT id FROM t', columns := {'id': 'BIGINT'});
+----
+0
+
+statement ok
+DETACH shared_mem;
+
+# A URI whose query string contains '=' is a URI, not key=value options
+statement ok
+ATTACH 'file:adbc_eq_path?mode=memory&cache=shared' AS eq (TYPE adbc, driver 'sqlite');
+
+query I
+SELECT * FROM adbc_scan('eq', 'SELECT 1 AS one', columns := {'one': 'BIGINT'});
+----
+1
+
+statement ok
+DETACH eq;
+
+# The key=value path form still works
+statement ok
+ATTACH 'driver=sqlite;uri=:memory:' AS kv (TYPE adbc);
+
+query I
+SELECT * FROM adbc_scan('kv', 'SELECT 2 AS two', columns := {'two': 'BIGINT'});
+----
+2

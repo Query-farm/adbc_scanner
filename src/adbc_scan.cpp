@@ -1,5 +1,6 @@
 #include "adbc_connection.hpp"
 #include "adbc_filter_pushdown.hpp"
+#include "adbc_arrow_types.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
@@ -72,12 +73,16 @@ struct AdbcPrefetchedResult {
 
 // Bind data for adbc_scan - holds the connection, query, and schema information
 struct AdbcScanBindData : public TableFunctionData {
-    // Connection handle
-    int64_t connection_id;
+    // Attached ADBC database (its ATTACH alias)
+    string database;
     // SQL query to execute
     string query;
     // Connection wrapper (kept alive during scan)
     shared_ptr<AdbcConnectionWrapper> connection;
+    // Whether `database` names the connection, resolved again at execution
+    // (adbc_scan / adbc_scan_table). False for ATTACH scans, whose bind data
+    // owns a pooled connection lease.
+    bool resolve_at_runtime = false;
     // Arrow schema from the result
     ArrowSchemaWrapper schema_root;
     // Arrow table schema for type conversion
@@ -134,6 +139,8 @@ struct AdbcScanGlobalState : public GlobalTableFunctionState {
     ArrowTableSchema projected_arrow_table;
     bool has_projected_schema = false;
     bool command_result_returned = false;
+    vector<LogicalType> expected_types;
+    bool schema_validated = false;
 
     // For adbc_scan: projection_ids for removing filter-only columns from output.
     // When DuckDB applies filters after the scan (filter_pushdown = false), it may request
@@ -163,18 +170,6 @@ struct AdbcScanLocalState : public ArrowScanLocalState {
         : ArrowScanLocalState(std::move(current_chunk), ctx) {}
 };
 
-// Helper to format error messages with query context
-static string FormatError(const string &message, const string &query) {
-    string result = message;
-    // Truncate query if too long for error message
-    if (query.length() > 100) {
-        result += " [Query: " + query.substr(0, 100) + "...]";
-    } else {
-        result += " [Query: " + query + "]";
-    }
-    return result;
-}
-
 // ============================================================================
 // Shared bind logic for adbc_scan and adbc_scan_table
 // ============================================================================
@@ -195,42 +190,51 @@ static idx_t ExtractBatchSize(TableFunctionBindInput &input, const string &func_
     return 0;
 }
 
-// Helper to get schema from a prepared statement by executing and reading the stream schema.
-// Note: We intentionally do NOT use AdbcStatementExecuteSchema here. Some drivers
-// (notably the Snowflake ADBC driver) return schema types from ExecuteSchema that
-// don't match the actual data format returned by ExecuteQuery (e.g., reporting
-// int64/double format strings while sending Decimal128 data). This causes data
-// corruption because ArrowToDuckDB reads the wrong number of bytes per value.
-// By always getting the schema from an actual execution stream, we guarantee the
-// types match the data that will be returned during scanning.
-static void GetSchemaFromStatement(AdbcStatementWrapper &statement, const string &query,
-                                    ArrowSchemaWrapper &schema_root, const string &func_name) {
-    ArrowArrayStream stream;
-    memset(&stream, 0, sizeof(stream));
-
-    try {
-        statement.ExecuteQuery(&stream, nullptr);
-    } catch (Exception &e) {
-        throw IOException(FormatError(func_name + ": Failed to execute query: " + string(e.what()), query));
+// Schema discovery must not execute user SQL. Drivers without usable metadata
+// require an explicit columns := {'column': 'DUCKDB_TYPE'} declaration.
+static void GetSchemaFromStatement(AdbcStatementWrapper &statement,
+                                  ArrowSchemaWrapper &schema, const string &function) {
+    if (!statement.ExecuteSchema(&schema.arrow_schema)) {
+        throw NotImplementedException(function + ": driver cannot describe this query without execution; supply columns := {'name': 'TYPE'}");
     }
+}
 
-    int ret = stream.get_schema(&stream, &schema_root.arrow_schema);
-    if (ret != 0) {
-        const char *error_msg = stream.get_last_error(&stream);
-        string msg = func_name + ": Failed to get schema from stream";
-        if (error_msg) {
-            msg += ": ";
-            msg += error_msg;
-        }
-        if (stream.release) {
-            stream.release(&stream);
-        }
-        throw IOException(FormatError(msg, query));
+static bool ExplicitSchema(ClientContext &context, TableFunctionBindInput &input, ArrowSchemaWrapper &schema) {
+    auto found = input.named_parameters.find("columns");
+    if (found == input.named_parameters.end()) {
+        return false;
     }
+    auto &value = found->second;
+    if (value.IsNull() || value.type().id() != LogicalTypeId::STRUCT) {
+        throw InvalidInputException("columns must be a nonempty STRUCT of column names to type strings");
+    }
+    vector<string> names;
+    vector<LogicalType> types;
+    const auto &children = StructValue::GetChildren(value);
+    if (children.empty()) {
+        throw InvalidInputException("columns must not be empty");
+    }
+    for (idx_t i = 0; i < children.size(); i++) {
+        if (children[i].IsNull() || children[i].type().id() != LogicalTypeId::VARCHAR) {
+            throw InvalidInputException("column types must be non-NULL strings");
+        }
+        names.push_back(StructType::GetChildName(value.type(), i));
+        types.push_back(TransformStringToLogicalType(children[i].GetValue<string>(), context));
+    }
+    auto properties = context.GetClientProperties();
+    ArrowConverter::ToArrowSchema(&schema.arrow_schema, types, names, properties);
+    return true;
+}
 
-    // Release the stream
-    if (stream.release) {
-        stream.release(&stream);
+static void ValidateStreamSchema(ArrowTableSchema &stream, const vector<LogicalType> &expected, bool check_types = true) {
+    auto &columns = stream.GetColumns();
+    if (columns.size() != expected.size()) {
+        throw IOException("ADBC result column count differs from the bound schema");
+    }
+    for (idx_t i = 0; check_types && i < expected.size(); i++) {
+        if (columns.at(i)->GetDuckType() != expected[i]) {
+            throw IOException("ADBC result type differs from the bound schema; supply columns matching the result types");
+        }
     }
 }
 
@@ -238,7 +242,7 @@ static void GetSchemaFromStatement(AdbcStatementWrapper &statement, const string
 static void PopulateReturnTypesFromSchema(ClientContext &context, AdbcScanBindData &bind_data,
                                            vector<LogicalType> &return_types, vector<Identifier> &names) {
     // Convert Arrow schema to DuckDB types
-    ArrowTableFunction::PopulateArrowTableSchema(context, bind_data.arrow_table,
+    AdbcPopulateArrowTableSchema(context, bind_data.arrow_table,
                                                   bind_data.schema_root.arrow_schema);
 
     // Extract column names and types
@@ -546,11 +550,11 @@ static unique_ptr<FunctionData> AdbcScanBind(ClientContext &context, TableFuncti
                                               vector<LogicalType> &return_types, vector<Identifier> &names) {
     auto bind_data = make_uniq<AdbcScanBindData>();
 
-    // Check for NULL connection handle first
+    // Check for NULL database name first
     if (input.inputs[0].IsNull()) {
-        throw InvalidInputException("adbc_scan: Connection handle cannot be NULL");
+        throw InvalidInputException("adbc_scan: database name cannot be NULL");
     }
-    bind_data->connection_id = input.inputs[0].GetValue<int64_t>();
+    bind_data->database = input.inputs[0].IsNull() ? string() : input.inputs[0].GetValue<string>();
 
     // Check for NULL query before connection validation
     if (input.inputs[1].IsNull()) {
@@ -562,7 +566,8 @@ static unique_ptr<FunctionData> AdbcScanBind(ClientContext &context, TableFuncti
     bind_data->batch_size = ExtractBatchSize(input, "adbc_scan");
 
     // Now validate and get connection wrapper
-    bind_data->connection = GetValidatedConnection(bind_data->connection_id, "adbc_scan");
+    bind_data->connection = GetAttachedConnection(context, Value(bind_data->database), "adbc_scan", false);
+    bind_data->resolve_at_runtime = true;
 
     // Check for params named parameter
     auto params_it = input.named_parameters.find("params");
@@ -586,28 +591,30 @@ static unique_ptr<FunctionData> AdbcScanBind(ClientContext &context, TableFuncti
         }
     }
 
-    // Create and prepare statement
-    auto statement = make_shared_ptr<AdbcStatementWrapper>(bind_data->connection);
-    statement->Init();
-    statement->SetSqlQuery(bind_data->query);
+    if (!ExplicitSchema(context, input, bind_data->schema_root)) {
+        // Create and prepare statement
+        auto statement = make_shared_ptr<AdbcStatementWrapper>(bind_data->connection);
+        statement->Init();
+        statement->SetSqlQuery(bind_data->query);
 
-    try {
-        statement->Prepare();
-    } catch (Exception &e) {
-        throw InvalidInputException(FormatError("adbc_scan: Failed to prepare statement: " + string(e.what()), bind_data->query));
-    }
-
-    // Bind parameters if present (needed for schema inference)
-    if (bind_data->HasParams()) {
         try {
-            BindParameters(context, *statement, bind_data->params, bind_data->param_types);
+            statement->Prepare();
         } catch (Exception &e) {
-            throw InvalidInputException(FormatError("adbc_scan: Failed to bind parameters: " + string(e.what()), bind_data->query));
+            throw InvalidInputException("adbc_scan: Failed to prepare statement: " + string(e.what()));
         }
-    }
 
-    // Get schema from statement (tries ExecuteSchema, falls back to execute)
-    GetSchemaFromStatement(*statement, bind_data->query, bind_data->schema_root, "adbc_scan");
+        // Bind parameters if present (needed for schema inference)
+        if (bind_data->HasParams()) {
+            try {
+                BindParameters(context, *statement, bind_data->params, bind_data->param_types);
+            } catch (Exception &e) {
+                throw InvalidInputException("adbc_scan: Failed to bind parameters: " + string(e.what()));
+            }
+        }
+
+        // Only metadata discovery is permitted during binding.
+        GetSchemaFromStatement(*statement, bind_data->schema_root, "adbc_scan");
+    }
 
     // Note: statement is not stored in bind_data - it will be recreated in InitGlobal
     // This is because bind_data may be reused across multiple scans
@@ -630,14 +637,15 @@ static unique_ptr<FunctionData> AdbcRemoteQueryBind(ClientContext &context, Tabl
     bind_data->remote_query = true;
 
     if (input.inputs[0].IsNull()) {
-        throw InvalidInputException("adbc_remote_query: Connection handle cannot be NULL");
+        throw InvalidInputException("adbc_remote_query: database name cannot be NULL");
     }
     if (input.inputs[1].IsNull()) {
         throw InvalidInputException("adbc_remote_query: Query cannot be NULL");
     }
-    bind_data->connection_id = input.inputs[0].GetValue<int64_t>();
+    bind_data->database = input.inputs[0].GetValue<string>();
     bind_data->query = input.inputs[1].GetValue<string>();
-    bind_data->connection = GetValidatedConnection(bind_data->connection_id, "adbc_remote_query");
+    bind_data->connection = GetAttachedConnection(context, input.inputs[0], "adbc_remote_query", false);
+    bind_data->resolve_at_runtime = true;
 
     auto statement = make_shared_ptr<AdbcStatementWrapper>(bind_data->connection);
     statement->Init();
@@ -646,7 +654,7 @@ static unique_ptr<FunctionData> AdbcRemoteQueryBind(ClientContext &context, Tabl
         statement->Prepare();
     } catch (Exception &e) {
         throw InvalidInputException(
-            FormatError("adbc_remote_query: Failed to prepare statement: " + string(e.what()), bind_data->query));
+            "adbc_remote_query: Failed to prepare statement: " + string(e.what()));
     }
 
     bool has_schema = false;
@@ -654,7 +662,7 @@ static unique_ptr<FunctionData> AdbcRemoteQueryBind(ClientContext &context, Tabl
         has_schema = statement->ExecuteSchema(&bind_data->schema_root.arrow_schema);
     } catch (Exception &e) {
         throw IOException(
-            FormatError("adbc_remote_query: Failed to get result schema: " + string(e.what()), bind_data->query));
+            "adbc_remote_query: Failed to get result schema: " + string(e.what()));
     }
 
     if (!has_schema) {
@@ -665,15 +673,14 @@ static unique_ptr<FunctionData> AdbcRemoteQueryBind(ClientContext &context, Tabl
             statement->ExecuteQuery(&prefetched->stream, &rows_affected);
         } catch (Exception &e) {
             throw IOException(
-                FormatError("adbc_remote_query: Failed to execute query: " + string(e.what()), bind_data->query));
+                "adbc_remote_query: Failed to execute query: " + string(e.what()));
         }
         if (rows_affected >= 0) {
             prefetched->rows_affected = rows_affected;
         }
         if (!prefetched->stream.get_schema ||
             prefetched->stream.get_schema(&prefetched->stream, &bind_data->schema_root.arrow_schema) != 0) {
-            throw IOException(FormatError("adbc_remote_query: Failed to get schema from query stream",
-                                          bind_data->query));
+            throw IOException("adbc_remote_query: Failed to get schema from query stream");
         }
         bind_data->prefetched_result = std::move(prefetched);
     }
@@ -689,15 +696,24 @@ static unique_ptr<FunctionData> AdbcRemoteQueryBind(ClientContext &context, Tabl
     return std::move(bind_data);
 }
 
+// The connection a scan executes on. A prepared statement can run after DETACH
+// or inside a transaction it was not bound in, so a scan that names its
+// database resolves it again; an ATTACH scan keeps the lease it was bound with.
+static shared_ptr<AdbcConnectionWrapper> ScanConnection(ClientContext &context, const AdbcScanBindData &bind_data,
+                                                        const string &function_name) {
+    if (bind_data.resolve_at_runtime) {
+        return GetAttachedConnection(context, Value(bind_data.database), function_name, false);
+    }
+    if (!bind_data.connection->IsInitialized()) {
+        throw InvalidInputException("%s: Connection has been closed", function_name);
+    }
+    return bind_data.connection;
+}
+
 // Global init - create and execute the prepared statement
 static unique_ptr<GlobalTableFunctionState> AdbcScanInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
     auto &bind_data = input.bind_data->Cast<AdbcScanBindData>();
     auto global_state = make_uniq<AdbcScanGlobalState>();
-
-    // Validate connection is still active
-    if (!bind_data.connection->IsInitialized()) {
-        throw InvalidInputException(FormatError("adbc_scan: Connection has been closed", bind_data.query));
-    }
 
     if (bind_data.prefetched_result) {
         auto &prefetched = *bind_data.prefetched_result;
@@ -712,33 +728,35 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanInitGlobal(ClientContext &co
         global_state->stream_initialized = true;
         global_state->rows_affected = prefetched.rows_affected;
     } else {
+        auto connection = ScanConnection(context, bind_data, bind_data.remote_query ? "adbc_remote_query" : "adbc_scan");
+
         // Create fresh statement for this scan (allows multiple scans of same bind_data)
-        global_state->statement = make_shared_ptr<AdbcStatementWrapper>(bind_data.connection);
+        global_state->statement = make_shared_ptr<AdbcStatementWrapper>(connection);
         global_state->statement->Init();
 
-    // Set batch size hint if provided (best-effort, driver-specific)
-    // Different drivers may use different option names, so we try common ones
-    if (bind_data.batch_size > 0) {
-        string batch_size_str = to_string(bind_data.batch_size);
-        // Try common batch size option names - ignore errors as not all drivers support these
-        try {
-            global_state->statement->SetOption("adbc.statement.batch_size", batch_size_str);
-        } catch (...) {
-            // Option not supported by this driver, ignore
+        // Set batch size hint if provided (best-effort, driver-specific)
+        // Different drivers may use different option names, so we try common ones
+        if (bind_data.batch_size > 0) {
+            string batch_size_str = to_string(bind_data.batch_size);
+            // Try common batch size option names - ignore errors as not all drivers support these
+            try {
+                global_state->statement->SetOption("adbc.statement.batch_size", batch_size_str);
+            } catch (...) {
+                // Option not supported by this driver, ignore
+            }
         }
-    }
 
-    global_state->statement->SetSqlQuery(bind_data.query);
-    global_state->statement->Prepare();
+        global_state->statement->SetSqlQuery(bind_data.query);
+        global_state->statement->Prepare();
 
-    // Bind parameters if present
-    if (bind_data.HasParams()) {
-        try {
-            BindParameters(context, *global_state->statement, bind_data.params, bind_data.param_types);
-        } catch (Exception &e) {
-            throw InvalidInputException(FormatError("adbc_scan: Failed to bind parameters: " + string(e.what()), bind_data.query));
+        // Bind parameters if present
+        if (bind_data.HasParams()) {
+            try {
+                BindParameters(context, *global_state->statement, bind_data.params, bind_data.param_types);
+            } catch (Exception &e) {
+                throw InvalidInputException("adbc_scan: Failed to bind parameters: " + string(e.what()));
+            }
         }
-    }
 
         // Execute the statement and capture row count if available
         memset(&global_state->stream, 0, sizeof(global_state->stream));
@@ -751,7 +769,7 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanInitGlobal(ClientContext &co
                 global_state->stream_initialized = true;
             }
         } catch (Exception &e) {
-            throw IOException(FormatError("adbc_scan: Failed to execute query: " + string(e.what()), bind_data.query));
+            throw IOException("adbc_scan: Failed to execute query: " + string(e.what()));
         }
 
         // Store row count for progress reporting (if driver provided it)
@@ -760,14 +778,18 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanInitGlobal(ClientContext &co
         }
     }
 
-    if (bind_data.remote_query && !bind_data.remote_command) {
+    if (!bind_data.remote_command) {
         if (!global_state->stream.get_schema ||
             global_state->stream.get_schema(&global_state->stream, &global_state->projected_schema.arrow_schema) != 0) {
-            throw IOException(FormatError("adbc_remote_query: Failed to get schema from query stream", bind_data.query));
+            throw IOException("adbc_scan: cannot read result schema");
         }
-        ArrowTableFunction::PopulateArrowTableSchema(context, global_state->projected_arrow_table,
-                                                      global_state->projected_schema.arrow_schema);
-        global_state->has_projected_schema = true;
+        AdbcPopulateArrowTableSchema(context, global_state->projected_arrow_table,
+                                     global_state->projected_schema.arrow_schema);
+        global_state->expected_types = bind_data.return_types;
+        ValidateStreamSchema(global_state->projected_arrow_table, global_state->expected_types, false);
+        if (bind_data.remote_query) {
+            global_state->has_projected_schema = true;
+        }
     }
 
     // Store projection_ids for handling filter-only columns.
@@ -813,7 +835,7 @@ static unique_ptr<LocalTableFunctionState> AdbcScanInitLocal(ExecutionContext &c
 }
 
 // Get the next batch from the Arrow stream
-static bool GetNextBatch(AdbcScanGlobalState &global_state, AdbcScanLocalState &local_state, const string &query) {
+static bool GetNextBatch(AdbcScanGlobalState &global_state, AdbcScanLocalState &local_state) {
     lock_guard<mutex> lock(global_state.main_mutex);
 
     if (global_state.done) {
@@ -830,12 +852,20 @@ static bool GetNextBatch(AdbcScanGlobalState &global_state, AdbcScanLocalState &
             msg += ": ";
             msg += error_msg;
         }
-        throw IOException(FormatError(msg, query));
+        throw IOException(msg);
     }
 
     if (!chunk->arrow_array.release) {
         global_state.done = true;
         return false;
+    }
+
+    // SQLite may report int64 for every column of an empty result, including
+    // declared TEXT columns. Validate types before reading the first nonempty
+    // batch; empty results never require interpreting any value buffers.
+    if (chunk->arrow_array.length > 0 && !global_state.schema_validated) {
+        ValidateStreamSchema(global_state.projected_arrow_table, global_state.expected_types);
+        global_state.schema_validated = true;
     }
 
     // Track rows for progress reporting
@@ -858,7 +888,7 @@ static void AdbcScanFunction(ClientContext &context, TableFunctionInput &data, D
     // Get a batch if we don't have one or we've exhausted the current one
     while (!local_state.chunk || !local_state.chunk->arrow_array.release ||
            local_state.chunk_offset >= (idx_t)local_state.chunk->arrow_array.length) {
-        if (!GetNextBatch(global_state, local_state, bind_data.query)) {
+        if (!GetNextBatch(global_state, local_state)) {
             output.SetCardinality(0);
             return;
         }
@@ -881,14 +911,14 @@ static void AdbcScanFunction(ClientContext &context, TableFunctionInput &data, D
             local_state.all_columns.Reset();
             local_state.all_columns.SetCardinality(output_size);
             ArrowTableFunction::ArrowToDuckDB(local_state,
-                                              bind_data.arrow_table.GetColumns(),
+                                              global_state.projected_arrow_table.GetColumns(),
                                               local_state.all_columns,
                                               false);
             output.ReferenceColumns(local_state.all_columns, global_state.projection_ids);
         } else {
             output.SetCardinality(output_size);
             ArrowTableFunction::ArrowToDuckDB(local_state,
-                                              bind_data.arrow_table.GetColumns(),
+                                              global_state.projected_arrow_table.GetColumns(),
                                               output,
                                               false);
         }
@@ -950,8 +980,7 @@ static InsertionOrderPreservingMap<string> AdbcScanToString(TableFunctionToStrin
         result["BatchSize"] = to_string(bind_data.batch_size);
     }
 
-    // Show connection ID for debugging
-    result["Connection"] = to_string(bind_data.connection_id);
+    result["Database"] = bind_data.database;
 
     return result;
 }
@@ -960,7 +989,7 @@ static InsertionOrderPreservingMap<string> AdbcRemoteQueryToString(TableFunction
     InsertionOrderPreservingMap<string> result;
     auto &bind_data = input.bind_data->Cast<AdbcScanBindData>();
     result["Remote SQL"] = bind_data.query;
-    result["Connection"] = to_string(bind_data.connection_id);
+    result["Database"] = bind_data.database;
     return result;
 }
 
@@ -986,15 +1015,19 @@ static string BuildQualifiedTableName(const string &catalog, const string &schem
     return result;
 }
 
-static unique_ptr<FunctionData> AdbcScanTableBind(ClientContext &context, TableFunctionBindInput &input,
-                                                   vector<LogicalType> &return_types, vector<Identifier> &names) {
+// Bind adbc_scan_table over an already-resolved connection. ATTACH scans
+// (AdbcTableEntry::GetScanFunction) lease their own pooled connection and bind
+// through this directly; inputs[0] is then just the attached database's name.
+unique_ptr<FunctionData> AdbcScanTableBindWithConnection(ClientContext &context, TableFunctionBindInput &input,
+                                                         shared_ptr<AdbcConnectionWrapper> connection,
+                                                         vector<LogicalType> &return_types, vector<Identifier> &names) {
     auto bind_data = make_uniq<AdbcScanBindData>();
 
-    // Check for NULL connection handle first
+    // Check for NULL database name first
     if (input.inputs[0].IsNull()) {
-        throw InvalidInputException("adbc_scan_table: Connection handle cannot be NULL");
+        throw InvalidInputException("adbc_scan_table: database name cannot be NULL");
     }
-    bind_data->connection_id = input.inputs[0].GetValue<int64_t>();
+    bind_data->database = input.inputs[0].IsNull() ? string() : input.inputs[0].GetValue<string>();
 
     // Check for NULL table name before connection validation
     if (input.inputs[1].IsNull()) {
@@ -1017,8 +1050,8 @@ static unique_ptr<FunctionData> AdbcScanTableBind(ClientContext &context, TableF
     // Extract batch_size parameter
     bind_data->batch_size = ExtractBatchSize(input, "adbc_scan_table");
 
-    // Validate and get connection wrapper (needed to pick the SQL dialect below)
-    bind_data->connection = GetValidatedConnection(bind_data->connection_id, "adbc_scan_table");
+    // The connection picks the SQL dialect below
+    bind_data->connection = std::move(connection);
 
     // Construct a SELECT * FROM [catalog.][schema.]table_name query for schema
     // discovery, quoting identifiers with the driver's quote char.
@@ -1027,25 +1060,11 @@ static unique_ptr<FunctionData> AdbcScanTableBind(ClientContext &context, TableF
         BuildQualifiedTableName(bind_data->catalog_name, bind_data->schema_name, bind_data->table_name, quote_char);
     bind_data->query = "SELECT * FROM " + qualified_name;
 
-    // Get schema by executing the query and reading the stream schema.
-    // We intentionally do NOT use GetTableSchema or ExecuteSchema here because some
-    // drivers (notably the Snowflake ADBC driver) return different types from metadata
-    // APIs vs the actual data stream. For example, GetTableSchema may report int64/double
-    // format strings while the stream contains Decimal128 data. Using the stream schema
-    // ensures the bind-time return types match the actual data format, which is critical
-    // because ArrowToDuckDB dispatches based on the output vector type (from bind).
-    {
-        auto statement = make_shared_ptr<AdbcStatementWrapper>(bind_data->connection);
-        statement->Init();
-        statement->SetSqlQuery(bind_data->query);
-
-        try {
-            statement->Prepare();
-        } catch (Exception &e) {
-            throw InvalidInputException("adbc_scan_table: Failed to prepare statement for table '" + bind_data->table_name + "': " + string(e.what()));
-        }
-
-        GetSchemaFromStatement(*statement, bind_data->query, bind_data->schema_root, "adbc_scan_table");
+    if (!ExplicitSchema(context, input, bind_data->schema_root)) {
+        bind_data->connection->GetTableSchema(
+            bind_data->catalog_name.empty() ? nullptr : bind_data->catalog_name.c_str(),
+            bind_data->schema_name.empty() ? nullptr : bind_data->schema_name.c_str(),
+            bind_data->table_name.c_str(), &bind_data->schema_root.arrow_schema);
     }
 
     // Populate return types and names from Arrow schema
@@ -1064,20 +1083,31 @@ static unique_ptr<FunctionData> AdbcScanTableBind(ClientContext &context, TableF
     return std::move(bind_data);
 }
 
+static unique_ptr<FunctionData> AdbcScanTableBind(ClientContext &context, TableFunctionBindInput &input,
+                                                   vector<LogicalType> &return_types, vector<string> &names) {
+    if (input.inputs[0].IsNull()) {
+        throw InvalidInputException("adbc_scan_table: database name cannot be NULL");
+    }
+    if (input.inputs[1].IsNull()) {
+        throw InvalidInputException("adbc_scan_table: Table name cannot be NULL");
+    }
+    auto connection = GetAttachedConnection(context, input.inputs[0], "adbc_scan_table", false);
+    auto result = AdbcScanTableBindWithConnection(context, input, std::move(connection), return_types, names);
+    result->Cast<AdbcScanBindData>().resolve_at_runtime = true;
+    return result;
+}
+
 // Global init for adbc_scan_table - builds projected query based on column_ids and filters
 static unique_ptr<GlobalTableFunctionState> AdbcScanTableInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
     auto &bind_data = input.bind_data->Cast<AdbcScanBindData>();
     auto global_state = make_uniq<AdbcScanGlobalState>();
 
-    // Validate connection is still active
-    if (!bind_data.connection->IsInitialized()) {
-        throw InvalidInputException("adbc_scan_table: Connection has been closed");
-    }
+    auto connection = ScanConnection(context, bind_data, "adbc_scan_table");
 
     // Build the query with projection pushdown
     // SQL dialect for the target driver (identifier quote char + placeholder style).
-    char quote_char = IdentifierQuoteForDriver(bind_data.connection->GetDriverName());
-    auto placeholder_style = PlaceholderStyleForDriver(bind_data.connection->GetDriverName());
+    char quote_char = IdentifierQuoteForDriver(connection->GetDriverName());
+    auto placeholder_style = PlaceholderStyleForDriver(connection->GetDriverName());
 
     // If we have column_ids and they're a subset of all columns, build a projected query
     string query;
@@ -1150,7 +1180,7 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanTableInitGlobal(ClientContex
     }
 
     // Create fresh statement for this scan (allows multiple scans of same bind_data)
-    global_state->statement = make_shared_ptr<AdbcStatementWrapper>(bind_data.connection);
+    global_state->statement = make_shared_ptr<AdbcStatementWrapper>(connection);
     global_state->statement->Init();
 
     // Set batch size hint if provided (best-effort, driver-specific)
@@ -1171,7 +1201,7 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanTableInitGlobal(ClientContex
         try {
             BindParameters(context, *global_state->statement, filter_result.params, filter_result.param_types);
         } catch (Exception &e) {
-            throw InvalidInputException("adbc_scan_table: Failed to bind filter parameters: " + string(e.what()) + " [Query: " + query + "]");
+            throw InvalidInputException("adbc_scan_table: Failed to bind filter parameters: " + string(e.what()));
         }
     }
 
@@ -1181,7 +1211,7 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanTableInitGlobal(ClientContex
     try {
         global_state->statement->ExecuteQuery(&global_state->stream, &rows_affected);
     } catch (Exception &e) {
-        throw IOException("adbc_scan_table: Failed to execute query: " + string(e.what()) + " [Query: " + query + "]");
+        throw IOException("adbc_scan_table: Failed to execute query: " + string(e.what()));
     }
     global_state->stream_initialized = true;
 
@@ -1200,8 +1230,19 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanTableInitGlobal(ClientContex
             }
             throw IOException(msg);
         }
-        ArrowTableFunction::PopulateArrowTableSchema(context, global_state->projected_arrow_table,
+        AdbcPopulateArrowTableSchema(context, global_state->projected_arrow_table,
                                                       global_state->projected_schema.arrow_schema);
+        vector<LogicalType> expected;
+        for (auto id : input.column_ids) {
+            if (id < bind_data.return_types.size()) {
+                expected.push_back(bind_data.return_types[id]);
+            }
+        }
+        if (expected.empty()) {
+            expected = bind_data.return_types;
+        }
+        global_state->expected_types = std::move(expected);
+        ValidateStreamSchema(global_state->projected_arrow_table, global_state->expected_types, false);
         global_state->has_projected_schema = true;
     }
 
@@ -1237,7 +1278,7 @@ static void AdbcScanTableFunction(ClientContext &context, TableFunctionInput &da
     // Get a batch if we don't have one or we've exhausted the current one
     while (!local_state.chunk || !local_state.chunk->arrow_array.release ||
            local_state.chunk_offset >= (idx_t)local_state.chunk->arrow_array.length) {
-        if (!GetNextBatch(global_state, local_state, bind_data.query)) {
+        if (!GetNextBatch(global_state, local_state)) {
             output.SetCardinality(0);
             return;
         }
@@ -1331,8 +1372,7 @@ static InsertionOrderPreservingMap<string> AdbcScanTableToString(TableFunctionTo
         result["BatchSize"] = to_string(bind_data.batch_size);
     }
 
-    // Show connection ID for debugging
-    result["Connection"] = to_string(bind_data.connection_id);
+    result["Database"] = bind_data.database;
 
     return result;
 }
@@ -1550,11 +1590,12 @@ static vector<column_t> AdbcScanGetRowIdColumns(ClientContext &, optional_ptr<Fu
 void RegisterAdbcTableFunctions(DatabaseInstance &db) {
     ExtensionLoader loader(db, "adbc");
 
-    TableFunction adbc_scan_function("adbc_scan", {LogicalType::BIGINT, LogicalType::VARCHAR}, AdbcScanFunction,
+    TableFunction adbc_scan_function("adbc_scan", {LogicalType::VARCHAR, LogicalType::VARCHAR}, AdbcScanFunction,
                                       AdbcScanBind, AdbcScanInitGlobal, AdbcScanInitLocal);
 
     // Add named parameter for bind parameters (accepts a STRUCT from row(...))
     adbc_scan_function.named_parameters["params"] = LogicalType::ANY;
+    adbc_scan_function.named_parameters["columns"] = LogicalType::ANY;
 
     // Add named parameter for batch size hint (driver-specific, best-effort)
     adbc_scan_function.named_parameters["batch_size"] = LogicalType::BIGINT;
@@ -1574,20 +1615,19 @@ void RegisterAdbcTableFunctions(DatabaseInstance &db) {
 
     CreateTableFunctionInfo info(adbc_scan_function);
     FunctionDescription desc;
-    desc.description = "Execute a SELECT query on an ADBC connection and return the results as a table";
-    desc.parameter_names = {"connection_handle", "query", "params", "batch_size"};
-    desc.parameter_types = {LogicalType::BIGINT, LogicalType::VARCHAR, LogicalType::ANY, LogicalType::BIGINT};
-    desc.examples = {"SELECT * FROM adbc_scan(conn, 'SELECT * FROM users')",
-                     "SELECT * FROM adbc_scan(conn, 'SELECT * FROM users WHERE id = ?', params := row(42))",
-                     "SELECT * FROM adbc_scan(conn, 'SELECT * FROM large_table', batch_size := 65536)"};
+    desc.description = "Execute a SELECT query on an attached ADBC database and return the results as a table";
+    desc.examples = {"SELECT * FROM adbc_scan('pg', 'SELECT * FROM users')",
+                     "SELECT * FROM adbc_scan('pg', 'SELECT * FROM users WHERE id = ?', params := row(42))",
+                     "SELECT * FROM adbc_scan('pg', 'SELECT * FROM large_table', batch_size := 65536)"};
     desc.categories = {"adbc"};
     info.descriptions.push_back(std::move(desc));
     loader.RegisterFunction(info);
+    DescribeParameters(loader, "adbc_scan", {"database", "query"});
 
     // Internal table function used by Catalog::RemoteExecute for CONNECT. It
     // handles both result-producing queries and zero-column commands.
     TableFunction adbc_remote_query_function(
-        "adbc_remote_query", {LogicalType::BIGINT, LogicalType::VARCHAR}, AdbcRemoteQueryFunction,
+        "adbc_remote_query", {LogicalType::VARCHAR, LogicalType::VARCHAR}, AdbcRemoteQueryFunction,
         AdbcRemoteQueryBind, AdbcScanInitGlobal, AdbcScanTableInitLocal);
     adbc_remote_query_function.to_string = AdbcRemoteQueryToString;
     adbc_remote_query_function.serialize = AdbcScanSerialize;
@@ -1595,13 +1635,14 @@ void RegisterAdbcTableFunctions(DatabaseInstance &db) {
     loader.RegisterFunction(CreateTableFunctionInfo(adbc_remote_query_function));
 
     // ========================================================================
-    // adbc_scan_table - Scan an entire table from an ADBC connection
+    // adbc_scan_table - Scan an entire table from an attached ADBC database
     // ========================================================================
 
-    TableFunction adbc_scan_table_function("adbc_scan_table", {LogicalType::BIGINT, LogicalType::VARCHAR},
+    TableFunction adbc_scan_table_function("adbc_scan_table", {LogicalType::VARCHAR, LogicalType::VARCHAR},
                                             AdbcScanTableFunction, AdbcScanTableBind, AdbcScanTableInitGlobal, AdbcScanTableInitLocal);
 
     // Add named parameters for catalog, schema, and batch size
+    adbc_scan_table_function.named_parameters["columns"] = LogicalType::ANY;
     adbc_scan_table_function.named_parameters["catalog"] = LogicalType::VARCHAR;
     adbc_scan_table_function.named_parameters["schema"] = LogicalType::VARCHAR;
     adbc_scan_table_function.named_parameters["batch_size"] = LogicalType::BIGINT;
@@ -1622,15 +1663,14 @@ void RegisterAdbcTableFunctions(DatabaseInstance &db) {
 
     CreateTableFunctionInfo scan_table_info(adbc_scan_table_function);
     FunctionDescription scan_table_desc;
-    scan_table_desc.description = "Scan an entire table from an ADBC connection";
-    scan_table_desc.parameter_names = {"connection_handle", "table_name", "catalog", "schema", "batch_size"};
-    scan_table_desc.parameter_types = {LogicalType::BIGINT, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT};
-    scan_table_desc.examples = {"SELECT * FROM adbc_scan_table(conn, 'users')",
-                                "SELECT * FROM adbc_scan_table(conn, 'users', schema := 'public')",
-                                "SELECT * FROM adbc_scan_table(conn, 'large_table', batch_size := 65536)"};
+    scan_table_desc.description = "Scan an entire table from an attached ADBC database";
+    scan_table_desc.examples = {"SELECT * FROM adbc_scan_table('pg', 'users')",
+                                "SELECT * FROM adbc_scan_table('pg', 'users', schema := 'public')",
+                                "SELECT * FROM adbc_scan_table('pg', 'large_table', batch_size := 65536)"};
     scan_table_desc.categories = {"adbc"};
     scan_table_info.descriptions.push_back(std::move(scan_table_desc));
     loader.RegisterFunction(scan_table_info);
+    DescribeParameters(loader, "adbc_scan_table", {"database", "table_name"});
 }
 
 } // namespace adbc_scanner

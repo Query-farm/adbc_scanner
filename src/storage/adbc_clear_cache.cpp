@@ -2,51 +2,45 @@
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
-#include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 
 namespace adbc_scanner {
 using namespace duckdb;
 
-//===--------------------------------------------------------------------===//
-// adbc_clear_cache - Clear cached schemas/tables for all ADBC catalogs
-//===--------------------------------------------------------------------===//
+struct ClearCacheState : public GlobalTableFunctionState {
+    bool finished = false;
+};
 
-static void AdbcClearCacheFunction(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &context = state.GetContext();
+static unique_ptr<FunctionData> BindClear(ClientContext &, TableFunctionBindInput &,
+                                         vector<LogicalType> &types, vector<string> &names) {
+    types.emplace_back(LogicalType::BOOLEAN);
+    names.emplace_back("cleared");
+    return nullptr;
+}
 
-	auto &db_manager = DatabaseManager::Get(context);
-	auto databases = db_manager.GetDatabases(context);
+static unique_ptr<GlobalTableFunctionState> InitClear(ClientContext &, TableFunctionInitInput &) {
+    return make_uniq<ClearCacheState>();
+}
 
-	idx_t cleared_count = 0;
-
-	for (auto db : databases) {
-		auto &catalog = db->GetCatalog();
-
-		if (catalog.GetCatalogType() == "adbc") {
-			auto &adbc_catalog = catalog.Cast<AdbcCatalog>();
-			adbc_catalog.ClearCache();
-			cleared_count++;
-		}
-	}
-
-	result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	auto result_data = ConstantVector::GetData<bool>(result);
-	result_data[0] = cleared_count > 0;
+static void ClearCache(ClientContext &context, TableFunctionInput &input, DataChunk &output) {
+    auto &state = input.global_state->Cast<ClearCacheState>();
+    if (state.finished) {
+        return;
+    }
+    state.finished = true;
+    bool cleared = false;
+    for (auto database : DatabaseManager::Get(context).GetDatabases(context)) {
+        auto &catalog = database->GetCatalog();
+        if (catalog.GetCatalogType() == "adbc") {
+            catalog.Cast<AdbcCatalog>().ClearCache();
+            cleared = true;
+        }
+    }
+    output.SetCardinality(1);
+    output.SetValue(0, 0, Value::BOOLEAN(cleared));
 }
 
 void RegisterAdbcClearCacheFunction(DatabaseInstance &db) {
-	ExtensionLoader loader(db, "adbc");
-
-	ScalarFunction clear_cache_function("adbc_clear_cache", {}, LogicalType::BOOLEAN, AdbcClearCacheFunction);
-
-	CreateScalarFunctionInfo info(clear_cache_function);
-	FunctionDescription desc;
-	desc.description = "Clear the cached schema and table metadata for all attached ADBC databases";
-	desc.examples = {"SELECT adbc_clear_cache()"};
-	desc.categories = {"adbc"};
-	info.descriptions.push_back(std::move(desc));
-
-	loader.RegisterFunction(info);
+    ExtensionLoader loader(db, "adbc");
+    loader.RegisterFunction(TableFunction("adbc_clear_cache", {}, ClearCache, BindClear, InitClear));
 }
-
 } // namespace adbc_scanner

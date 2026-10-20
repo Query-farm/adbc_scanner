@@ -212,14 +212,13 @@ struct AdbcInsertStream {
     }
 };
 
-// Owns the consumer side of a streaming insert: the bound ADBC statement, the
-// bounded stream, and the background thread running ExecuteUpdate. Embed this in
+// Owns the consumer side of a streaming insert: the ADBC statement, the bounded
+// stream, and the background thread running BindStream and ExecuteUpdate. Embed this in
 // a DuckDB global state (table function or storage sink). The destructor aborts
 // and joins so a partially-consumed stream can never leak the consumer thread.
 struct AdbcStreamingInsertConsumer {
     shared_ptr<AdbcStatementWrapper> statement;
     unique_ptr<AdbcInsertStream> insert_stream;
-    bool stream_bound = false;
 
     std::thread exec_thread;
     bool exec_ok = false;
@@ -243,19 +242,16 @@ struct AdbcStreamingInsertConsumer {
         insert_stream->SetSchema(schema);
     }
 
-    // Bind the stream to the statement (stores the stream; does not consume yet).
-    void BindStream() {
-        statement->BindStream(&insert_stream->stream);
-        stream_bound = true;
-    }
-
-    // Start draining concurrently: ExecuteUpdate runs on its own thread and pulls
-    // batches from the bound stream as the producer pushes them. Without this
-    // overlap the queue would have to hold the entire source before ExecuteUpdate
-    // ran (the OOM failure mode).
+    // Bind the stream and drain it on a background thread, concurrently with
+    // the producer pushing batches. Drivers may pull input during BindStream
+    // (Grainlift uploads bound batches there) or ExecuteUpdate, so neither may
+    // run on the producer thread: binding there deadlocks once the bounded queue
+    // is empty. The overlap also keeps the queue from holding the entire source
+    // before ExecuteUpdate runs (the OOM failure mode).
     void StartConsumer() {
         exec_thread = std::thread([this]() {
             try {
+                statement->BindStream(&insert_stream->stream);
                 statement->ExecuteUpdate(&exec_rows_affected);
                 exec_ok = true;
                 insert_stream->MarkConsumerStopped(string());
@@ -265,7 +261,7 @@ struct AdbcStreamingInsertConsumer {
                 insert_stream->MarkConsumerStopped(exec_error);
             } catch (...) {
                 exec_ok = false;
-                exec_error = "unknown error during ExecuteUpdate";
+                exec_error = "unknown error during bulk ingestion";
                 insert_stream->MarkConsumerStopped(exec_error);
             }
         });
@@ -292,7 +288,7 @@ struct AdbcStreamingInsertConsumer {
     void FinishAndJoin() {
         insert_stream->Finish();
         JoinConsumer();
-        if (stream_bound && !exec_ok) {
+        if (!exec_ok) {
             throw IOException("adbc_insert: Failed to execute insert: " + exec_error);
         }
     }

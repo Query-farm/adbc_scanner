@@ -2,11 +2,13 @@
 
 #include "duckdb.hpp"
 #include "adbc_utils.hpp"
+#include "adbc_options.hpp"
 #include <arrow-adbc/adbc.h>
 #include <arrow-adbc/adbc_driver_manager.h>
 #include <memory>
 #include <mutex>
 #include <unordered_set>
+#include <atomic>
 
 namespace adbc_scanner {
 using namespace duckdb;
@@ -14,10 +16,63 @@ using namespace duckdb;
 // Forward declaration
 class AdbcConnectionWrapper;
 
+// DuckDB can initialize and destroy execution state on different threads. A
+// lease must therefore not hold a thread-owned mutex across those callbacks.
+class AdbcOperationLease {
+public:
+    explicit AdbcOperationLease(std::atomic<bool> &active) : active(active) {
+        if (active.exchange(true)) {
+            throw InvalidInputException("ADBC connection already has an active operation; to run two adbc_* calls on one database at once, ATTACH it a second time");
+        }
+    }
+    ~AdbcOperationLease() { active.store(false); }
+    AdbcOperationLease(const AdbcOperationLease &) = delete;
+    AdbcOperationLease &operator=(const AdbcOperationLease &) = delete;
+private:
+    std::atomic<bool> &active;
+};
+
+// Metadata streams retain exclusive use of the connection until released,
+// including on errors while reading the stream.
+struct AdbcMetadataStream {
+    explicit AdbcMetadataStream(unique_ptr<AdbcOperationLease> lease) : lease(std::move(lease)) {}
+    ~AdbcMetadataStream() {
+        if (stream.release) {
+            stream.release(&stream);
+        }
+    }
+    ArrowArrayStream stream {};
+    unique_ptr<AdbcOperationLease> lease;
+
+    static AdbcMetadataStream &Get(ArrowArrayStream *out) {
+        return *static_cast<AdbcMetadataStream *>(out->private_data);
+    }
+    static void Export(unique_ptr<AdbcMetadataStream> state, ArrowArrayStream *out) {
+        out->get_schema = [](ArrowArrayStream *out, ArrowSchema *schema) {
+            auto &stream = Get(out).stream;
+            return stream.get_schema(&stream, schema);
+        };
+        out->get_next = [](ArrowArrayStream *out, ArrowArray *array) {
+            auto &stream = Get(out).stream;
+            return stream.get_next(&stream, array);
+        };
+        out->get_last_error = [](ArrowArrayStream *out) -> const char * {
+            auto &stream = Get(out).stream;
+            return stream.get_last_error ? stream.get_last_error(&stream) : nullptr;
+        };
+        out->release = [](ArrowArrayStream *out) {
+            delete static_cast<AdbcMetadataStream *>(out->private_data);
+            out->private_data = nullptr;
+            out->release = nullptr;
+        };
+        out->private_data = state.release();
+    }
+};
+
 // RAII wrapper for AdbcDatabase
 class AdbcDatabaseWrapper {
 public:
-    AdbcDatabaseWrapper() : initialized(false) {
+    AdbcDatabaseWrapper() : allocated(false), initialized(false) {
         memset(&database, 0, sizeof(database));
     }
 
@@ -35,18 +90,40 @@ public:
     }
 
     void Init() {
-        if (initialized) {
+        if (allocated) {
             return;
         }
         AdbcErrorGuard error;
         auto status = AdbcDatabaseNew(&database, error.Get());
         CheckAdbc(status, error.Get(), "Failed to create ADBC database");
+        allocated = true;
     }
 
     void SetOption(const string &key, const string &value) {
         AdbcErrorGuard error;
         auto status = AdbcDatabaseSetOption(&database, key.c_str(), value.c_str(), error.Get());
         CheckAdbc(status, error.Get(), "Failed to set database option '" + key + "'", driver_name);
+    }
+
+    void SetOption(const string &key, const Value &value) {
+        AdbcErrorGuard error;
+        AdbcStatusCode status;
+        auto type = value.type().id();
+        if (type == LogicalTypeId::VARCHAR || type == LogicalTypeId::BOOLEAN) {
+            SetOption(key, value.ToString());
+            return;
+        } else if (type == LogicalTypeId::BLOB) {
+            auto &bytes = StringValue::Get(value);
+            status = AdbcDatabaseSetOptionBytes(&database, key.c_str(),
+                reinterpret_cast<const uint8_t *>(bytes.data()), bytes.size(), error.Get());
+        } else if (value.type().IsIntegral()) {
+            status = AdbcDatabaseSetOptionInt(&database, key.c_str(), value.GetValue<int64_t>(), error.Get());
+        } else if (type == LogicalTypeId::FLOAT || type == LogicalTypeId::DOUBLE) {
+            status = AdbcDatabaseSetOptionDouble(&database, key.c_str(), value.GetValue<double>(), error.Get());
+        } else {
+            throw InvalidInputException("Unsupported ADBC option type: " + value.type().ToString());
+        }
+        CheckAdbc(status, error.Get(), "Failed to set typed database option", driver_name);
     }
 
     // Set load flags for manifest-based driver discovery
@@ -73,9 +150,10 @@ public:
     }
 
     void Release() {
-        if (initialized) {
+        if (allocated) {
             AdbcErrorGuard error;
             AdbcDatabaseRelease(&database, error.Get());
+            allocated = false;
             initialized = false;
         }
     }
@@ -94,13 +172,15 @@ public:
 
     // Movable
     AdbcDatabaseWrapper(AdbcDatabaseWrapper &&other) noexcept
-        : database(other.database), initialized(other.initialized) {
+        : database(other.database), allocated(other.allocated), initialized(other.initialized) {
+        other.allocated = false;
         other.initialized = false;
         memset(&other.database, 0, sizeof(other.database));
     }
 
 private:
     AdbcDatabase database;
+    bool allocated;
     bool initialized;
     string driver_name;
 };
@@ -108,7 +188,7 @@ private:
 // RAII wrapper for AdbcConnection
 class AdbcConnectionWrapper {
 public:
-    AdbcConnectionWrapper(shared_ptr<AdbcDatabaseWrapper> db) : database(std::move(db)), initialized(false) {
+    AdbcConnectionWrapper(shared_ptr<AdbcDatabaseWrapper> db) : database(std::move(db)), allocated(false), initialized(false) {
         memset(&connection, 0, sizeof(connection));
     }
 
@@ -120,12 +200,38 @@ public:
         AdbcErrorGuard error;
         auto status = AdbcConnectionNew(&connection, error.Get());
         CheckAdbc(status, error.Get(), "Failed to create ADBC connection", GetDriverName());
+        allocated = true;
     }
 
     void SetOption(const string &key, const string &value) {
         AdbcErrorGuard error;
         auto status = AdbcConnectionSetOption(&connection, key.c_str(), value.c_str(), error.Get());
         CheckAdbc(status, error.Get(), "Failed to set connection option '" + key + "'", GetDriverName());
+    }
+
+    // Read a string connection option (ADBC 1.1.0+). Returns false when the driver
+    // does not report it (unknown option, pre-1.1 driver, or any other failure).
+    bool TryGetOption(const string &key, string &value) {
+        auto lock = AcquireOperation();
+        AdbcErrorGuard error;
+        char buffer[1024];
+        size_t length = sizeof(buffer);
+        auto status = AdbcConnectionGetOption(&connection, key.c_str(), buffer, &length, error.Get());
+        if (status != ADBC_STATUS_OK || length == 0) {
+            return false;
+        }
+        if (length <= sizeof(buffer)) {
+            // length includes the null terminator
+            value = string(buffer, length - 1);
+            return true;
+        }
+        string large(length, '\0');
+        status = AdbcConnectionGetOption(&connection, key.c_str(), &large[0], &length, error.Get());
+        if (status != ADBC_STATUS_OK || length == 0 || length > large.size()) {
+            return false;
+        }
+        value = large.substr(0, length - 1);
+        return true;
     }
 
     void Initialize() {
@@ -136,9 +242,10 @@ public:
     }
 
     void Release() {
-        if (initialized) {
+        if (allocated) {
             AdbcErrorGuard error;
             AdbcConnectionRelease(&connection, error.Get());
+            allocated = false;
             initialized = false;
         }
     }
@@ -162,9 +269,11 @@ public:
     // Get connection info (vendor name, driver version, etc.)
     // info_codes can be NULL to get all info, or an array of specific codes
     void GetInfo(const uint32_t *info_codes, size_t info_codes_length, ArrowArrayStream *out) {
+        auto state = make_uniq<AdbcMetadataStream>(AcquireOperation());
         AdbcErrorGuard error;
-        auto status = AdbcConnectionGetInfo(&connection, info_codes, info_codes_length, out, error.Get());
+        auto status = AdbcConnectionGetInfo(&connection, info_codes, info_codes_length, &state->stream, error.Get());
         CheckAdbc(status, error.Get(), "Failed to get connection info", GetDriverName());
+        AdbcMetadataStream::Export(std::move(state), out);
     }
 
     // Get database objects (catalogs, schemas, tables, columns)
@@ -173,22 +282,27 @@ public:
     void GetObjects(int depth, const char *catalog, const char *db_schema,
                     const char *table_name, const char **table_types,
                     const char *column_name, ArrowArrayStream *out) {
+        auto state = make_uniq<AdbcMetadataStream>(AcquireOperation());
         AdbcErrorGuard error;
         auto status = AdbcConnectionGetObjects(&connection, depth, catalog, db_schema,
-                                                table_name, table_types, column_name, out, error.Get());
+                                                table_name, table_types, column_name, &state->stream, error.Get());
         CheckAdbc(status, error.Get(), "Failed to get database objects", GetDriverName());
+        AdbcMetadataStream::Export(std::move(state), out);
     }
 
     // Get table types (e.g., "TABLE", "VIEW", etc.)
     void GetTableTypes(ArrowArrayStream *out) {
+        auto state = make_uniq<AdbcMetadataStream>(AcquireOperation());
         AdbcErrorGuard error;
-        auto status = AdbcConnectionGetTableTypes(&connection, out, error.Get());
+        auto status = AdbcConnectionGetTableTypes(&connection, &state->stream, error.Get());
         CheckAdbc(status, error.Get(), "Failed to get table types", GetDriverName());
+        AdbcMetadataStream::Export(std::move(state), out);
     }
 
     // Get the Arrow schema for a specific table
     void GetTableSchema(const char *catalog, const char *db_schema,
                         const char *table_name, ArrowSchema *schema) {
+        auto lease = AcquireOperation();
         AdbcErrorGuard error;
         auto status = AdbcConnectionGetTableSchema(&connection, catalog, db_schema,
                                                     table_name, schema, error.Get());
@@ -200,30 +314,48 @@ public:
     // approximate: if non-zero, allow approximate/cached values
     bool GetStatistics(const char *catalog, const char *db_schema, const char *table_name,
                        char approximate, ArrowArrayStream *out) {
+        auto state = make_uniq<AdbcMetadataStream>(AcquireOperation());
         AdbcErrorGuard error;
         auto status = AdbcConnectionGetStatistics(&connection, catalog, db_schema, table_name,
-                                                   approximate, out, error.Get());
+                                                   approximate, &state->stream, error.Get());
         if (status == ADBC_STATUS_NOT_IMPLEMENTED) {
             return false;
         }
         CheckAdbc(status, error.Get(), "Failed to get table statistics", GetDriverName());
+        AdbcMetadataStream::Export(std::move(state), out);
         return true;
+    }
+
+    unique_ptr<AdbcOperationLease> AcquireOperation() {
+        auto lease = make_uniq<AdbcOperationLease>(operation_active);
+        if (!initialized) {
+            throw InvalidInputException("ADBC connection is closed");
+        }
+        return lease;
+    }
+
+    void Close() {
+        auto lock = AcquireOperation();
+        Release();
     }
 
     // Transaction support
     void Commit() {
+        auto lock = AcquireOperation();
         AdbcErrorGuard error;
         auto status = AdbcConnectionCommit(&connection, error.Get());
         CheckAdbc(status, error.Get(), "Failed to commit transaction", GetDriverName());
     }
 
     void Rollback() {
+        auto lock = AcquireOperation();
         AdbcErrorGuard error;
         auto status = AdbcConnectionRollback(&connection, error.Get());
         CheckAdbc(status, error.Get(), "Failed to rollback transaction", GetDriverName());
     }
 
     void SetAutocommit(bool enabled) {
+        auto lock = AcquireOperation();
         AdbcErrorGuard error;
         const char *value = enabled ? ADBC_OPTION_VALUE_ENABLED : ADBC_OPTION_VALUE_DISABLED;
         auto status = AdbcConnectionSetOption(&connection, ADBC_CONNECTION_OPTION_AUTOCOMMIT, value, error.Get());
@@ -237,13 +369,15 @@ public:
 private:
     shared_ptr<AdbcDatabaseWrapper> database;
     AdbcConnection connection;
+    bool allocated;
     bool initialized;
+    std::atomic<bool> operation_active {false};
 };
 
 // RAII wrapper for AdbcStatement
 class AdbcStatementWrapper {
 public:
-    AdbcStatementWrapper(shared_ptr<AdbcConnectionWrapper> conn) : connection(std::move(conn)), initialized(false) {
+    AdbcStatementWrapper(shared_ptr<AdbcConnectionWrapper> conn) : connection(std::move(conn)), initialized(false), operation(this->connection->AcquireOperation()) {
         memset(&statement, 0, sizeof(statement));
     }
 
@@ -355,92 +489,23 @@ private:
     shared_ptr<AdbcConnectionWrapper> connection;
     AdbcStatement statement;
     bool initialized;
-};
-
-// Thread-safe connection registry
-class ConnectionRegistry {
-public:
-    static ConnectionRegistry &Get() {
-        // Intentionally heap-allocated and never deleted. The registry can hold
-        // pooled scan connections (added via AdbcConnectionPool::GetConnectionShared,
-        // whose custom deleter returns the connection to its pool) as well as
-        // adbc_connect() handles. At process exit, C++ static-destruction order
-        // between this singleton and the AdbcCatalog-owned pools / the ADBC driver
-        // is undefined. If the singleton were destroyed here, dropping a leftover
-        // shared_ptr would invoke the pool-return deleter against an already-torn-down
-        // pool (dangling mutex/vector) — or release an ADBC connection after its
-        // driver was unloaded — throwing out of a destructor and calling
-        // std::terminate() (observed as an abort in adbc_scanner::ConnectionRegistry::
-        // ~ConnectionRegistry during __cxa_finalize). Leaking the singleton skips its
-        // destructor entirely; the OS reclaims the memory on exit. See
-        // AdbcConnectionPool::GetConnectionShared for the matching deleter hardening.
-        static ConnectionRegistry *instance = new ConnectionRegistry();
-        return *instance;
-    }
-
-    // Add a connection and return its handle
-    int64_t Add(shared_ptr<AdbcConnectionWrapper> connection) {
-        lock_guard<mutex> lock(mutex_);
-        int64_t handle = reinterpret_cast<int64_t>(connection.get());
-        connections_[handle] = std::move(connection);
-        return handle;
-    }
-
-    // Get a connection by handle (returns nullptr if not found)
-    shared_ptr<AdbcConnectionWrapper> Get(int64_t handle) {
-        lock_guard<mutex> lock(mutex_);
-        auto it = connections_.find(handle);
-        if (it == connections_.end()) {
-            return nullptr;
-        }
-        return it->second;
-    }
-
-    // Remove and return a connection (for cleanup)
-    shared_ptr<AdbcConnectionWrapper> Remove(int64_t handle) {
-        lock_guard<mutex> lock(mutex_);
-        auto it = connections_.find(handle);
-        if (it == connections_.end()) {
-            return nullptr;
-        }
-        auto conn = std::move(it->second);
-        connections_.erase(it);
-        return conn;
-    }
-
-    // Check if a handle exists
-    bool Contains(int64_t handle) {
-        lock_guard<mutex> lock(mutex_);
-        return connections_.find(handle) != connections_.end();
-    }
-
-    // Get count of active connections
-    size_t Count() {
-        lock_guard<mutex> lock(mutex_);
-        return connections_.size();
-    }
-
-private:
-    ConnectionRegistry() = default;
-    ~ConnectionRegistry() = default;
-
-    // Non-copyable
-    ConnectionRegistry(const ConnectionRegistry &) = delete;
-    ConnectionRegistry &operator=(const ConnectionRegistry &) = delete;
-
-    mutex mutex_;
-    unordered_map<int64_t, shared_ptr<AdbcConnectionWrapper>> connections_;
+    unique_ptr<AdbcOperationLease> operation;
 };
 
 // Helper to create a connection from a vector of options
 // Extracts driver, entrypoint, uri, search_paths, use_manifests and configures the connection
 // Returns the initialized connection wrapper
-shared_ptr<AdbcConnectionWrapper> CreateConnectionFromOptions(const vector<pair<string, string>> &options);
+shared_ptr<AdbcConnectionWrapper> CreateConnectionFromOptions(const AdbcOptions &options);
 
-// Helper to get a validated connection from the registry
-// Throws InvalidInputException if connection not found or closed
-// function_name is used in error messages (e.g., "adbc_scan", "adbc_tables")
-shared_ptr<AdbcConnectionWrapper> GetValidatedConnection(int64_t connection_id, const string &function_name);
+// The connection behind an attached ADBC database, named by its ATTACH alias
+// (`ATTACH '…' AS pg (TYPE adbc, …)` → "pg"). Inside an explicit transaction,
+// writes (and reads after the transaction has written) use the transaction's
+// write connection, so they commit or roll back together with writes made
+// through the catalog; otherwise the attachment's own connection, in
+// autocommit. Writes to a read-only attachment are rejected. function_name
+// prefixes error messages.
+shared_ptr<AdbcConnectionWrapper> GetAttachedConnection(ClientContext &context, const Value &database,
+                                                        const string &function_name, bool write);
 
 // Helper to iterate over batches in an ArrowArrayStream
 // Calls the callback for each batch, automatically handles errors and cleanup

@@ -1,6 +1,10 @@
 #pragma once
 
 #include "duckdb.hpp"
+#include "duckdb/function/table_function.hpp"
+#include "duckdb/parser/parsed_data/create_function_info.hpp"
+#include "duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include <nanoarrow/nanoarrow.h>
 #include <arrow-adbc/adbc.h>
 #include <arrow-adbc/adbc_driver_manager.h>
@@ -208,5 +212,26 @@ public:
 private:
     AdbcError error;
 };
+
+// Name a registered table function's parameters in its FunctionDescription.
+// duckdb_functions() pairs description names by index with the positional
+// arguments followed by named_parameters in the map's iteration order, and the
+// copies made while registering can change that order. duckdb_functions()
+// reads a copy of the stored function, so take the same copy rather than
+// hand-ordering a list.
+inline void DescribeParameters(ExtensionLoader &loader, const string &function_name,
+                               vector<string> positional_names) {
+    auto &entry = loader.GetTableFunction(function_name);
+    D_ASSERT(entry.functions.Size() == 1 && entry.descriptions.size() == 1);
+    auto function = entry.functions.GetFunctionByOffset(0);
+    auto &desc = entry.descriptions[0];
+    D_ASSERT(positional_names.size() == function.arguments.size());
+    desc.parameter_names = std::move(positional_names);
+    desc.parameter_types = function.arguments;
+    for (auto &param : function.named_parameters) {
+        desc.parameter_names.push_back(param.first);
+        desc.parameter_types.push_back(param.second);
+    }
+}
 
 } // namespace adbc_scanner

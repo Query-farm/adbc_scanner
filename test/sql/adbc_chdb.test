@@ -7,11 +7,11 @@ require adbc_scanner
 require-env ADBC_CHDB_TEST_AVAILABLE
 
 statement ok
-SET VARIABLE c = (SELECT adbc_connect({'driver':'chdb'}));
+ATTACH '' AS chdb_scan (TYPE adbc, driver 'chdb');
 
 query IT
 SELECT number, s
-FROM adbc_scan(getvariable('c')::BIGINT,
+FROM adbc_scan('chdb_scan',
                'SELECT number, toString(number) AS s FROM numbers(3) ORDER BY number');
 ----
 0	0
@@ -19,7 +19,7 @@ FROM adbc_scan(getvariable('c')::BIGINT,
 2	2
 
 statement ok
-SELECT adbc_disconnect(getvariable('c')::BIGINT);
+DETACH chdb_scan;
 
 statement ok
 ATTACH '' AS chdb_connected (TYPE adbc, driver 'chdb');

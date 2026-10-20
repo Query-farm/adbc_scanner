@@ -10,6 +10,7 @@
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/enums/access_mode.hpp"
+#include "duckdb/common/mutex.hpp"
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
 #include "duckdb/parser/parsed_data/drop_info.hpp"
 #include "duckdb/planner/operator/logical_create_table.hpp"
@@ -31,14 +32,12 @@ public:
 	                     AccessMode access_mode);
 	~AdbcCatalog();
 
-	//! The ADBC connection (shared ownership with the catalog). Kept as the
-	//! primary connection (registered in the ConnectionRegistry); concurrent reads
-	//! lease their own from connection_pool instead.
+	//! The ADBC connection (shared ownership with the catalog). The primary
+	//! connection, used by the adbc_* functions in autocommit; concurrent
+	//! reads lease their own from connection_pool instead.
 	shared_ptr<AdbcConnectionWrapper> connection;
 	//! Pool of connections over the same shared AdbcDatabase.
 	unique_ptr<AdbcConnectionPool> connection_pool;
-	//! The connection handle registered in the ConnectionRegistry
-	int64_t connection_handle;
 	//! The attach path (driver info)
 	string attach_path;
 	//! Access mode (read-only or read-write)
@@ -47,16 +46,23 @@ public:
 	idx_t batch_size = 0;
 	//! Whether complete queries may be pushed into the remote database
 	bool query_pushdown = true;
+	//! SQLite ':memory:' gives each ADBC connection its own empty database, so
+	//! the transaction's write connection cannot see this attachment's tables.
+	bool per_connection_memory = false;
 
 public:
 	void Initialize(bool load_builtin) override;
 	string GetCatalogType() override {
 		return "adbc";
 	}
-	optional<Identifier> GetDefaultSchema() const override {
-		return default_schema.empty() ? optional<Identifier>(Identifier::DefaultSchema())
-		                              : optional<Identifier>(Identifier(default_schema));
-	}
+	//! The schema an unqualified name (db.table, USE db) resolves to: the
+	//! default_schema ATTACH option if given, otherwise worked out from the
+	//! driver on first use (see ResolveDefaultSchema).
+	optional<Identifier> GetDefaultSchema() const override;
+	//! The default schema as a plain string.
+	string GetDefaultSchemaName() const;
+	//! Pin the default schema (the default_schema ATTACH option).
+	void SetDefaultSchema(const string &schema);
 
 	optional_ptr<CatalogEntry> CreateSchema(CatalogTransaction transaction, CreateSchemaInfo &info) override;
 
@@ -114,9 +120,16 @@ private:
 	void DropSchema(ClientContext &context, DropInfo &info) override;
 
 private:
+	//! Ask the driver which schema is the default one. Never throws; returns an
+	//! empty string if the driver could not be asked (so the next call retries).
+	string ResolveDefaultSchema() const;
+
+private:
 	AdbcSchemaSet schemas;
 	AdbcSQLDialect dialect;
-	string default_schema;
+	mutable mutex default_schema_lock;
+	//! Empty until resolved.
+	mutable string default_schema;
 };
 
 } // namespace adbc_scanner

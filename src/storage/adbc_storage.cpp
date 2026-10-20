@@ -23,9 +23,10 @@ static unique_ptr<Catalog> AdbcAttach(optional_ptr<StorageExtensionInfo> storage
 	// Format: ATTACH 'connection_string' AS name (TYPE adbc, driver 'path')
 
 	// First, collect explicit options into a vector for secret merging
-	vector<pair<string, string>> explicit_options;
+	AdbcOptions explicit_options;
 	idx_t batch_size = 0;
 	bool query_pushdown = true;
+	string default_schema;
 
 	for (auto &entry : attach_options.options) {
 		auto lower_name = StringUtil::Lower(entry.first);
@@ -34,28 +35,44 @@ static unique_ptr<Catalog> AdbcAttach(optional_ptr<StorageExtensionInfo> storage
 			batch_size = entry.second.GetValue<idx_t>();
 		} else if (lower_name == "query_pushdown") {
 			query_pushdown = entry.second.DefaultCastAs(LogicalType::BOOLEAN).GetValue<bool>();
+		} else if (lower_name == "default_schema") {
+			// Also DuckDB-specific: the schema that unqualified names resolve to
+			default_schema = entry.second.ToString();
 		} else {
-			explicit_options.emplace_back(lower_name, entry.second.ToString());
+			explicit_options.emplace_back(lower_name, entry.second);
 		}
 	}
 
-	// If path contains key=value pairs, extract them as explicit options
-	auto parts = StringUtil::Split(info.path, ';');
-	for (auto &part : parts) {
-		auto eq_pos = part.find('=');
-		if (eq_pos != string::npos) {
-			string key_part = part.substr(0, eq_pos);
-			string value_part = part.substr(eq_pos + 1);
-			StringUtil::Trim(key_part);
-			StringUtil::Trim(value_part);
-			auto key = StringUtil::Lower(key_part);
-			explicit_options.emplace_back(key, value_part);
+	// The path is either a URI or 'key=value;key=value' options. Decide by the
+	// text before the first '=': an option key is a bare identifier, while a URI
+	// such as 'postgresql://h/db?sslmode=require' has ':' or '/' before it.
+	auto first_eq = info.path.find('=');
+	bool path_is_options = first_eq != string::npos;
+	if (path_is_options) {
+		auto first_key = info.path.substr(0, first_eq);
+		StringUtil::Trim(first_key);
+		path_is_options = !first_key.empty();
+		for (char c : first_key) {
+			if (!StringUtil::CharacterIsAlphaNumeric(c) && c != '_' && c != '.' && c != '-') {
+				path_is_options = false;
+				break;
+			}
 		}
 	}
 
-	// Use the path as URI if it doesn't look like key=value format
-	if (!info.path.empty() && info.path.find('=') == string::npos) {
-		// Check if uri is already in explicit options
+	if (path_is_options) {
+		for (auto &part : StringUtil::Split(info.path, ';')) {
+			auto eq_pos = part.find('=');
+			if (eq_pos != string::npos) {
+				string key_part = part.substr(0, eq_pos);
+				string value_part = part.substr(eq_pos + 1);
+				StringUtil::Trim(key_part);
+				StringUtil::Trim(value_part);
+				explicit_options.emplace_back(StringUtil::Lower(key_part), value_part);
+			}
+		}
+	} else if (!info.path.empty()) {
+		// Use the path as the URI unless one was given as an option
 		bool has_uri = false;
 		for (const auto &opt : explicit_options) {
 			if (opt.first == "uri") {
@@ -78,6 +95,18 @@ static unique_ptr<Catalog> AdbcAttach(optional_ptr<StorageExtensionInfo> storage
 	auto catalog = make_uniq<AdbcCatalog>(db, connection, info.path, attach_options.access_mode);
 	catalog->batch_size = batch_size;
 	catalog->query_pushdown = query_pushdown;
+	if (!default_schema.empty()) {
+		catalog->SetDefaultSchema(default_schema);
+	}
+	string driver, uri;
+	for (const auto &opt : options) {
+		if (opt.first == "driver") {
+			driver = StringUtil::Lower(opt.second.ToString());
+		} else if (opt.first == "uri") {
+			uri = opt.second.ToString();
+		}
+	}
+	catalog->per_connection_memory = driver.find("sqlite") != string::npos && uri == ":memory:";
 	return std::move(catalog);
 }
 

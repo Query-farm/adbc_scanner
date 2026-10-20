@@ -22,6 +22,9 @@ Full documentation, including installation, driver setup, the `ATTACH` storage l
 
 **[https://query.farm/products/extensions/adbc_scanner](https://query.farm/products/extensions/adbc_scanner)**
 
+For Redis driver installation, reads, local joins, and autocommit writes, see
+the [Redis ADBC integration guide](docs/redis.md).
+
 ## Installation
 
 ```sql

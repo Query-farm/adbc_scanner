@@ -77,8 +77,9 @@ jobs:
           --health-start-period 30s
 
     env:
-      # Must match the pinned DuckDB submodule and the Python test package.
-      DUCKDB_VERSION: "1.5.5"
+      # The DuckDB release the driver tests build against; it must match the
+      # Python test package. The submodule may sit ahead of it on v1.5-variegata.
+      DUCKDB_VERSION: "1.5.6"
       # Pin vcpkg to the commit this DuckDB version is built against (matches
       # extension-ci-tools' _extension_distribution.yml default) and use DuckDB's
       # public read-only binary cache so dependencies don't build from source.
@@ -92,13 +93,14 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Verify DuckDB release metadata
+      - name: Check out the DuckDB release
         run: |
-          # Recursive shallow checkout omits tags. Without this tag, CMake
-          # labels the extension v0.0.1 and the Python package cannot load it.
+          # Build against the release tag, not the submodule commit. Recursive
+          # shallow checkout omits tags; without one CMake labels the extension
+          # v0.0.1, and the Python package only loads extensions labelled with
+          # its own version.
           git -C duckdb fetch --depth=1 origin tag "v${DUCKDB_VERSION}"
-          test "$(git -C duckdb rev-parse HEAD)" = \
-            "$(git -C duckdb rev-parse "v${DUCKDB_VERSION}^{commit}")"
+          git -C duckdb checkout --quiet "v${DUCKDB_VERSION}"
           git -C duckdb describe --tags --exact-match HEAD
 
       - name: Install build dependencies

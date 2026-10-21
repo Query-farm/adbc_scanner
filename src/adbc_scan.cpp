@@ -790,12 +790,20 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanInitGlobal(ClientContext &co
             global_state->stream.get_schema(&global_state->stream, &global_state->projected_schema.arrow_schema) != 0) {
             throw IOException("adbc_scan: cannot read result schema");
         }
-        AdbcPopulateArrowTableSchema(context, global_state->projected_arrow_table,
-                                     global_state->projected_schema.arrow_schema);
-        global_state->expected_types = bind_data.return_types;
-        ValidateStreamSchema(global_state->projected_arrow_table, global_state->expected_types, false);
-        if (bind_data.remote_query) {
-            global_state->has_projected_schema = true;
+        if (bind_data.remote_query && global_state->projected_schema.arrow_schema.n_children == 0) {
+            // The statement ran as a command although ExecuteSchema described result
+            // columns: DataFusion reports the SELECT's columns for CREATE TABLE ... AS
+            // SELECT, then returns a result without columns. Nothing can be read, so
+            // the bound columns come back empty.
+            global_state->done = true;
+        } else {
+            AdbcPopulateArrowTableSchema(context, global_state->projected_arrow_table,
+                                         global_state->projected_schema.arrow_schema);
+            global_state->expected_types = bind_data.return_types;
+            ValidateStreamSchema(global_state->projected_arrow_table, global_state->expected_types, false);
+            if (bind_data.remote_query) {
+                global_state->has_projected_schema = true;
+            }
         }
     }
 

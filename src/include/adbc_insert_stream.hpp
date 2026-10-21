@@ -120,7 +120,7 @@ inline void CheckNotNullColumns(DataChunk &chunk, const vector<bool> &not_null, 
         }
         UnifiedVectorFormat format;
         chunk.data[col].ToUnifiedFormat(chunk.size(), format);
-        if (format.validity.CannotHaveNull()) {
+        if (format.validity.AllValid()) {
             continue;
         }
         for (idx_t row = 0; row < chunk.size(); row++) {

@@ -61,6 +61,8 @@ struct AdbcInsertGlobalState : public GlobalTableFunctionState {
     unique_ptr<AdbcInsertStream> insert_stream;
     int64_t rows_inserted = 0;
     ClientProperties client_properties;
+    // Per input column: the existing target table declares it NOT NULL (append mode)
+    vector<bool> not_null_columns;
 
     // Drivers may pull input during BindStream or ExecuteUpdate. Both calls
     // must overlap the producer so an eager binder cannot deadlock startup.
@@ -179,6 +181,19 @@ static unique_ptr<GlobalTableFunctionState> AdbcInsertInitGlobal(ClientContext &
     // Resolve the database again: a prepared insert may run after DETACH, or
     // inside a transaction it was not bound in.
     auto connection = GetAttachedConnection(context, Value(bind_data.database), "adbc_insert", true);
+    if (bind_data.mode == "append") {
+        // The table must already exist: match its NOT NULL columns, which drivers
+        // that compare schemas strictly (DataFusion) require. Ask before creating
+        // the statement, which holds the connection.
+        const char *db_schema = nullptr;
+        for (auto &option : bind_data.statement_options) {
+            if (option.first == ADBC_INGEST_OPTION_TARGET_DB_SCHEMA) {
+                db_schema = option.second.c_str();
+            }
+        }
+        global_state->not_null_columns =
+            GetTargetNotNullColumns(*connection, db_schema, bind_data.target_table, bind_data.input_names);
+    }
     global_state->statement = make_shared_ptr<AdbcStatementWrapper>(connection);
     global_state->statement->Init();
     global_state->statement->SetOption("adbc.ingest.target_table", bind_data.target_table);
@@ -207,6 +222,7 @@ static unique_ptr<GlobalTableFunctionState> AdbcInsertInitGlobal(ClientContext &
     ArrowSchema schema;
     ArrowConverter::ToArrowSchema(&schema, bind_data.input_types, bind_data.input_names,
                                    global_state->client_properties);
+    ApplyNotNullColumns(schema, global_state->not_null_columns);
     global_state->insert_stream->SetSchema(&schema);
 
     // Start binding and execution concurrently with the producer. A driver can
@@ -226,6 +242,8 @@ static OperatorResultType AdbcInsertInOut(ExecutionContext &context, TableFuncti
         output.SetCardinality(0);
         return OperatorResultType::NEED_MORE_INPUT;
     }
+
+    CheckNotNullColumns(input, global_state.not_null_columns, bind_data.input_names, bind_data.target_table);
 
     // Convert DuckDB DataChunk to Arrow
     ArrowAppender appender(bind_data.input_types, input.size(),

@@ -56,6 +56,9 @@ public:
 	ClientProperties client_properties;
 	vector<LogicalType> column_types;
 	vector<string> column_names;
+	string target_table;
+	//! Per column: the target table declares it NOT NULL (INSERT into an existing table only)
+	vector<bool> not_null_columns;
 };
 
 unique_ptr<GlobalSinkState> AdbcInsert::GetGlobalSinkState(ClientContext &context) const {
@@ -106,6 +109,16 @@ unique_ptr<GlobalSinkState> AdbcInsert::GetGlobalSinkState(ClientContext &contex
 		}
 	}
 
+	if (table) {
+		// Appending to an existing table: match its NOT NULL columns, which drivers
+		// that compare schemas strictly (DataFusion) require. Ask before creating the
+		// statement, which holds the connection.
+		state->target_table = target_table;
+		state->not_null_columns =
+		    GetTargetNotNullColumns(*connection, target_schema == "main" ? nullptr : target_schema.c_str(),
+		                            target_table, state->column_names);
+	}
+
 	// Create ADBC statement for bulk ingestion
 	state->consumer.statement = make_shared_ptr<AdbcStatementWrapper>(connection);
 	state->consumer.statement->Init();
@@ -129,6 +142,7 @@ unique_ptr<GlobalSinkState> AdbcInsert::GetGlobalSinkState(ClientContext &contex
 	ArrowSchema arrow_schema;
 	ArrowConverter::ToArrowSchema(&arrow_schema, state->column_types, state->column_names,
 	                               state->client_properties);
+	ApplyNotNullColumns(arrow_schema, state->not_null_columns);
 	state->consumer.SetSchema(&arrow_schema);
 
 	// Bind and drain on the background consumer, concurrently with the producer:
@@ -149,6 +163,8 @@ SinkResultType AdbcInsert::Sink(ExecutionContext &context, DataChunk &chunk, Ope
 	if (chunk.size() == 0) {
 		return SinkResultType::NEED_MORE_INPUT;
 	}
+
+	CheckNotNullColumns(chunk, state.not_null_columns, state.column_names, state.target_table);
 
 	// Convert DuckDB DataChunk to Arrow batch
 	ArrowAppender appender(state.column_types, chunk.size(), state.client_properties,

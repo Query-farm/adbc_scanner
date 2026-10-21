@@ -47,6 +47,91 @@ inline size_t ResolveMaxPendingBatches(int64_t override_value) {
     return DEFAULT_MAX_PENDING_BATCHES;
 }
 
+// NOT NULL columns of an existing ingest target, as the driver reports them
+// through AdbcConnectionGetTableSchema.
+//
+// ArrowConverter marks every field nullable, but drivers that compare schemas
+// strictly on append reject a nullable field for a NOT NULL column (DataFusion:
+// "table 'items' exists with a different schema"; `CREATE TABLE t AS SELECT 1 AS
+// id` there makes `id` NOT NULL). Returns, per outgoing column name, whether the
+// target declares it NOT NULL, matching names exactly first, then
+// case-insensitively. Apply the result with ApplyNotNullColumns, and reject
+// rows that violate it with CheckNotNullColumns rather than send data that
+// contradicts the schema.
+//
+// Call this before creating the ingest statement: a statement holds the
+// connection, and no other call may use it until the statement is released.
+// Best effort: when the driver cannot report the schema (no such table,
+// NOT_IMPLEMENTED, ...) the result is all false and nothing changes.
+inline vector<bool> GetTargetNotNullColumns(AdbcConnectionWrapper &connection, const char *db_schema,
+                                            const string &table_name, const vector<string> &names) {
+    vector<bool> not_null(names.size(), false);
+    ArrowSchema target;
+    memset(&target, 0, sizeof(target));
+    try {
+        connection.GetTableSchema(nullptr, db_schema, table_name.c_str(), &target);
+    } catch (std::exception &) {
+        if (target.release) {
+            target.release(&target);
+        }
+        return not_null;
+    }
+
+    for (idx_t i = 0; i < names.size(); i++) {
+        ArrowSchema *match = nullptr;
+        for (int64_t j = 0; j < target.n_children; j++) {
+            auto *field = target.children[j];
+            if (!field || !field->name) {
+                continue;
+            }
+            if (names[i] == field->name) {
+                match = field;
+                break;
+            }
+            if (!match && StringUtil::CIEquals(names[i], field->name)) {
+                match = field;
+            }
+        }
+        not_null[i] = match && !(match->flags & ARROW_FLAG_NULLABLE);
+    }
+    if (target.release) {
+        target.release(&target);
+    }
+    return not_null;
+}
+
+// Clear the nullable flag of the outgoing fields the target declares NOT NULL.
+inline void ApplyNotNullColumns(ArrowSchema &outgoing, const vector<bool> &not_null) {
+    for (idx_t i = 0; i < not_null.size() && i < static_cast<idx_t>(outgoing.n_children); i++) {
+        if (not_null[i] && outgoing.children[i]) {
+            outgoing.children[i]->flags &= ~ARROW_FLAG_NULLABLE;
+        }
+    }
+}
+
+// Reject a chunk holding a NULL in a column the target table declares NOT NULL
+// (flags from GetTargetNotNullColumns). The outgoing Arrow schema marks those
+// fields non-nullable, so such a batch must never reach the driver.
+inline void CheckNotNullColumns(DataChunk &chunk, const vector<bool> &not_null, const vector<string> &names,
+                                const string &table_name) {
+    for (idx_t col = 0; col < not_null.size() && col < chunk.ColumnCount(); col++) {
+        if (!not_null[col]) {
+            continue;
+        }
+        UnifiedVectorFormat format;
+        chunk.data[col].ToUnifiedFormat(chunk.size(), format);
+        if (format.validity.CannotHaveNull()) {
+            continue;
+        }
+        for (idx_t row = 0; row < chunk.size(); row++) {
+            if (!format.validity.RowIsValid(format.sel->get_index(row))) {
+                throw ConstraintException("NOT NULL constraint failed: %s.%s", table_name,
+                                          col < names.size() ? names[col] : to_string(col));
+            }
+        }
+    }
+}
+
 // Bounded, blocking ArrowArrayStream bridging the DuckDB producer and the ADBC
 // driver consumer.
 //

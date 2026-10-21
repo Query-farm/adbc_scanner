@@ -1,70 +1,18 @@
 cmake_minimum_required(VERSION 3.5)
 
-# Set extension name here
 set(TARGET_NAME adbc_scanner)
-
-set(CMAKE_CXX_STANDARD 17 CACHE STRING "C++ standard to enforce" FORCE)
-set(CMAKE_CXX_STANDARD_REQUIRED True)
-
-
-find_package(tomlplusplus REQUIRED)
-find_package(AdbcDriverManager CONFIG REQUIRED)
-find_package(nanoarrow CONFIG REQUIRED)
+set(CMAKE_CXX_STANDARD 17)
 
 set(EXTENSION_NAME ${TARGET_NAME}_extension)
 set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
 
 project(${TARGET_NAME})
-
-# Enable all warnings
-if(MSVC)
-    add_compile_options(/W4)
-else()
-    add_compile_options(-Wall -Wextra -Wpedantic)
-endif()
-
 include_directories(src/include)
 
-set(EXTENSION_SOURCES
-    src/adbc_scanner_extension.cpp
-    src/adbc_connection.cpp
-    src/adbc_scan.cpp
-    src/adbc_arrow_types.cpp
-    src/adbc_execute.cpp
-    src/adbc_insert.cpp
-    src/adbc_catalog.cpp
-    src/adbc_profiles.cpp
-    src/adbc_secrets.cpp
-    src/adbc_filter_pushdown.cpp
-    src/adbc_sql_dialect.cpp
-    src/query_farm_telemetry.cpp
-    src/storage/adbc_catalog.cpp
-    src/storage/adbc_connection_pool.cpp
-    src/storage/adbc_insert.cpp
-    src/storage/adbc_catalog_set.cpp
-    src/storage/adbc_schema_set.cpp
-    src/storage/adbc_schema_entry.cpp
-    src/storage/adbc_table_set.cpp
-    src/storage/adbc_table_entry.cpp
-    src/storage/adbc_transaction.cpp
-    src/storage/adbc_transaction_manager.cpp
-    src/storage/adbc_storage.cpp
-    src/storage/adbc_clear_cache.cpp
-)
+set(EXTENSION_SOURCES src/adbc_scanner_extension.cpp)
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
-
-# Link dependencies in both the static library and the loadable extension
-target_link_libraries(${EXTENSION_NAME} AdbcDriverManager::adbc_driver_manager_static tomlplusplus::tomlplusplus nanoarrow::nanoarrow)
-target_link_libraries(${LOADABLE_EXTENSION_NAME} AdbcDriverManager::adbc_driver_manager_static tomlplusplus::tomlplusplus nanoarrow::nanoarrow)
-
-# On Windows, when linking statically, we need to define ADBC_EXPORT as empty
-# to prevent __declspec(dllimport) from being used
-if(WIN32)
-    target_compile_definitions(${EXTENSION_NAME} PRIVATE ADBC_EXPORT=)
-    target_compile_definitions(${LOADABLE_EXTENSION_NAME} PRIVATE ADBC_EXPORT=)
-endif()
 
 install(
   TARGETS ${EXTENSION_NAME}

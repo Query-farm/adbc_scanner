@@ -96,12 +96,31 @@ SELECT id, name FROM df.items_copy ORDER BY id;
 4	fig
 5	kiwi
 
+# The CREATE TABLE AS at the top made both columns of items NOT NULL, and
+# DataFusion rejects an append whose Arrow schema differs, nullability included.
+# Writes match the target table's NOT NULL columns; a NULL for one fails before
+# it is sent.
+statement error
+INSERT INTO df.items VALUES (6, NULL);
+----
+NOT NULL constraint failed: items.name
+
+query I
+SELECT * FROM adbc_insert('df', 'items', (SELECT 6::BIGINT AS id, 'lime' AS name), mode := 'append');
+----
+1
+
+statement error
+SELECT * FROM adbc_insert('df', 'items', (SELECT NULL::BIGINT AS id, 'lime' AS name), mode := 'append');
+----
+NOT NULL constraint failed: items.id
+
 # Inside BEGIN the write still fails loud, and nothing is written
 statement ok
 BEGIN;
 
 statement error
-INSERT INTO df.items VALUES (6, 'lime');
+INSERT INTO df.items VALUES (8, 'lime');
 ----
 does not support multi-statement transactions
 
@@ -122,7 +141,7 @@ ROLLBACK;
 query I
 SELECT count(*) FROM df.items;
 ----
-5
+6
 
 statement ok
 DETACH df;

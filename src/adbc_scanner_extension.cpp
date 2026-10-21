@@ -37,7 +37,7 @@ static void LoadInternal(duckdb::ExtensionLoader &loader) {
 	auto &config = duckdb::DBConfig::GetConfig(loader.GetDatabaseInstance());
 	StorageExtension::Register(config, "adbc", make_shared_ptr<AdbcStorageExtension>());
 
-	duckdb::QueryFarmSendTelemetry(loader, "adbc", "2026102001");
+	duckdb::QueryFarmSendTelemetry(loader, "adbc", "2026102101");
 }
 
 } // namespace adbc_scanner
@@ -53,7 +53,7 @@ std::string AdbcScannerExtension::Name() {
 }
 
 std::string AdbcScannerExtension::Version() const {
-	return "2026102001";
+	return "2026102101";
 }
 
 } // namespace duckdb

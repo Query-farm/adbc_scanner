@@ -1,0 +1,120 @@
+# name: test/sql/adbc_security.test
+# description: driver allowlist and credential redaction (no driver needed)
+# group: [adbc]
+
+require adbc_scanner
+
+# The allowlist is empty (any driver) by default
+query I
+SELECT current_setting('adbc_allowed_drivers');
+----
+(empty)
+
+statement ok
+SET adbc_allowed_drivers = 'sqlite, /opt/adbc/libadbc_driver_postgresql.so';
+
+# A driver outside the allowlist is refused before anything is loaded
+statement error
+ATTACH ':memory:' AS evil (TYPE adbc, driver '/tmp/libevil.so');
+----
+ADBC driver '/tmp/libevil.so' is not in adbc_allowed_drivers
+
+statement error
+ATTACH 'driver=/tmp/libevil.so;uri=:memory:' AS evil (TYPE adbc);
+----
+is not in adbc_allowed_drivers
+
+# Matching is exact: a path is not the bare name
+statement error
+ATTACH ':memory:' AS evil (TYPE adbc, driver '/usr/lib/sqlite');
+----
+is not in adbc_allowed_drivers
+
+# A driver from a secret is checked too
+statement ok
+CREATE SECRET evil_secret (TYPE adbc, SCOPE 'evil://host', driver '/tmp/libevil.so', uri ':memory:');
+
+statement error
+ATTACH 'evil://host' AS evil (TYPE adbc);
+----
+is not in adbc_allowed_drivers
+
+statement ok
+DROP SECRET evil_secret;
+
+# Options that redirect driver resolution are refused while an allowlist is set
+statement error
+ATTACH 'profile://mine' AS evil (TYPE adbc);
+----
+ADBC connection profiles cannot be used while adbc_allowed_drivers is set
+
+statement error
+ATTACH ':memory:' AS evil (TYPE adbc, profile 'mine');
+----
+ADBC connection profiles cannot be used while adbc_allowed_drivers is set
+
+statement error
+ATTACH ':memory:' AS evil (TYPE adbc, driver 'sqlite', search_paths '/tmp');
+----
+The 'search_paths' option cannot be used while adbc_allowed_drivers is set
+
+statement ok
+RESET adbc_allowed_drivers;
+
+# ============================================
+# Credentials in a secret's URI are redacted
+# ============================================
+
+statement ok
+CREATE SECRET pg_creds (TYPE adbc, driver 'postgresql', uri 'postgresql://alice:hunter2@db.example.com:5432/app');
+
+query II
+SELECT contains(secret_string, 'hunter2'), contains(secret_string, 'uri=redacted')
+FROM duckdb_secrets() WHERE name = 'pg_creds';
+----
+false	true
+
+# The URI-derived scope keeps the host but not the password
+query I
+SELECT scope FROM duckdb_secrets() WHERE name = 'pg_creds';
+----
+['postgresql://alice:***@db.example.com:5432/app']
+
+# Password query parameters are masked too
+statement ok
+CREATE SECRET q_creds (TYPE adbc, driver 'x', uri 'mysql://db.example.com/app?user=bob&password=s3cret&tls=true');
+
+query II
+SELECT contains(secret_string, 's3cret'), scope FROM duckdb_secrets() WHERE name = 'q_creds';
+----
+false	['mysql://db.example.com/app?user=bob&password=***&tls=true']
+
+# A URI without credentials stays visible
+statement ok
+CREATE SECRET plain (TYPE adbc, driver 'x', uri 'postgresql://db.example.com/app');
+
+query II
+SELECT contains(secret_string, 'uri=postgresql://db.example.com/app'), scope FROM duckdb_secrets() WHERE name = 'plain';
+----
+true	['postgresql://db.example.com/app']
+
+# An explicit SCOPE is scrubbed as well
+statement ok
+CREATE SECRET explicit_creds (TYPE adbc, driver 'x', SCOPE 'postgresql://carol:pw@host');
+
+query I
+SELECT scope FROM duckdb_secrets() WHERE name = 'explicit_creds';
+----
+['postgresql://carol:***@host']
+
+statement ok
+DROP SECRET pg_creds;
+
+statement ok
+DROP SECRET q_creds;
+
+statement ok
+DROP SECRET plain;
+
+statement ok
+DROP SECRET explicit_creds;

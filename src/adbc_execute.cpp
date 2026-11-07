@@ -43,11 +43,18 @@ static void AdbcExecute(ClientContext &context, TableFunctionInput &input, DataC
     state.finished = true;
     auto &data = input.bind_data->Cast<AdbcExecuteBindData>();
     auto connection = GetAttachedConnection(context, Value(data.database), "adbc_execute", true);
-    AdbcStatementWrapper statement(connection);
-    statement.Init();
-    statement.SetSqlQuery(data.query);
+    auto statement = make_shared_ptr<AdbcStatementWrapper>(connection);
+    statement->Init();
+    statement->SetSqlQuery(data.query);
     int64_t affected = -1;
-    statement.ExecuteUpdate(&affected);
+    try {
+        // Cancel the statement if the query is interrupted while it runs
+        AdbcInterruptWatcher watcher(context, statement);
+        statement->ExecuteUpdate(&affected);
+    } catch (Exception &) {
+        ThrowIfInterrupted(context);
+        throw;
+    }
     output.SetCardinality(1);
     output.SetValue(0, 0, affected < 0 ? Value(LogicalType::BIGINT) : Value::BIGINT(affected));
 }

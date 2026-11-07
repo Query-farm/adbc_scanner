@@ -175,11 +175,7 @@ SinkResultType AdbcInsert::Sink(ExecutionContext &context, DataChunk &chunk, Ope
 	// Hand the batch to the consumer; blocks for backpressure when the queue is
 	// full. Returns false only if the consumer thread already stopped (driver
 	// error / cancellation) — surface that as a query error.
-	if (!state.consumer.AddBatch(&arr)) {
-		string err = state.consumer.GetConsumerError();
-		throw IOException("ADBC insert: ingestion stopped early: " +
-		                  (err.empty() ? string("consumer terminated") : err));
-	}
+	state.consumer.PushBatch(&arr, context.client, "ADBC insert");
 	state.insert_count += chunk.size();
 
 	return SinkResultType::NEED_MORE_INPUT;
@@ -195,7 +191,7 @@ SinkFinalizeType AdbcInsert::Finalize(Pipeline &pipeline, Event &event, ClientCo
 
 	// Signal end of input and wait for the background ExecuteUpdate to finish
 	// draining the stream. Rethrows as IOException if the consumer errored.
-	state.consumer.FinishAndJoin();
+	state.consumer.FinishAndJoin(context);
 
 	// CREATE TABLE AS creates a new remote table that the attached catalog's
 	// cached table set does not yet know about. Invalidate the cache so the new

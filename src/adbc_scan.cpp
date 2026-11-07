@@ -150,11 +150,24 @@ struct AdbcScanGlobalState : public GlobalTableFunctionState {
     vector<idx_t> projection_ids;
     vector<LogicalType> scanned_types;
 
+    // Cancels the statement when the query is interrupted (see AdbcInterruptWatcher)
+    unique_ptr<AdbcInterruptWatcher> interrupt_watcher;
+
     bool CanRemoveFilterColumns() const {
         return !projection_ids.empty();
     }
 
+    void WatchForInterrupt(ClientContext &context) {
+        if (statement && !interrupt_watcher) {
+            interrupt_watcher = make_uniq<AdbcInterruptWatcher>(context, statement);
+        }
+    }
+
     ~AdbcScanGlobalState() {
+        // Stop cancelling before the stream and statement are released
+        if (interrupt_watcher) {
+            interrupt_watcher->Stop();
+        }
         if (stream_initialized && stream.release) {
             stream.release(&stream);
         }
@@ -677,8 +690,10 @@ static unique_ptr<FunctionData> AdbcRemoteQueryBind(ClientContext &context, Tabl
         prefetched->statement = statement;
         int64_t rows_affected = -1;
         try {
+            AdbcInterruptWatcher watcher(context, statement);
             statement->ExecuteQuery(&prefetched->stream, &rows_affected);
         } catch (Exception &e) {
+            ThrowIfInterrupted(context);
             throw IOException(
                 "adbc_remote_query: Failed to execute query: " + string(e.what()));
         }
@@ -734,6 +749,7 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanInitGlobal(ClientContext &co
         prefetched.claimed = true;
         global_state->stream_initialized = true;
         global_state->rows_affected = prefetched.rows_affected;
+        global_state->WatchForInterrupt(context);
     } else {
         auto connection = ScanConnection(context, bind_data, bind_data.remote_query ? "adbc_remote_query" : "adbc_scan");
 
@@ -768,6 +784,7 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanInitGlobal(ClientContext &co
         // Execute the statement and capture row count if available
         memset(&global_state->stream, 0, sizeof(global_state->stream));
         int64_t rows_affected = -1;
+        global_state->WatchForInterrupt(context);
         try {
             if (bind_data.remote_command) {
                 global_state->statement->ExecuteUpdate(&rows_affected);
@@ -776,6 +793,7 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanInitGlobal(ClientContext &co
                 global_state->stream_initialized = true;
             }
         } catch (Exception &e) {
+            ThrowIfInterrupted(context);
             throw IOException("adbc_scan: Failed to execute query: " + string(e.what()));
         }
 
@@ -850,22 +868,27 @@ static unique_ptr<LocalTableFunctionState> AdbcScanInitLocal(ExecutionContext &c
 }
 
 // Get the next batch from the Arrow stream
-static bool GetNextBatch(AdbcScanGlobalState &global_state, AdbcScanLocalState &local_state) {
+static bool GetNextBatch(ClientContext &context, AdbcScanGlobalState &global_state,
+                         AdbcScanLocalState &local_state) {
     lock_guard<mutex> lock(global_state.main_mutex);
 
     if (global_state.done) {
         return false;
     }
+    // Once per batch: also enforces max_execution_time between batches for
+    // drivers whose statements cannot be cancelled
+    context.BlockingInterruptCheck();
 
     auto chunk = make_uniq<ArrowArrayWrapper>();
 
     int ret = global_state.stream.get_next(&global_state.stream, &chunk->arrow_array);
     if (ret != 0) {
+        ThrowIfInterrupted(context);
         const char *error_msg = global_state.stream.get_last_error(&global_state.stream);
         string msg = "adbc_scan: Failed to get next batch from stream";
         if (error_msg) {
             msg += ": ";
-            msg += error_msg;
+            msg += ScrubCredentials(error_msg);
         }
         throw IOException(msg);
     }
@@ -903,7 +926,7 @@ static void AdbcScanFunction(ClientContext &context, TableFunctionInput &data, D
     // Get a batch if we don't have one or we've exhausted the current one
     while (!local_state.chunk || !local_state.chunk->arrow_array.release ||
            local_state.chunk_offset >= (idx_t)local_state.chunk->arrow_array.length) {
-        if (!GetNextBatch(global_state, local_state)) {
+        if (!GetNextBatch(context, global_state, local_state)) {
             output.SetCardinality(0);
             return;
         }
@@ -1223,9 +1246,11 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanTableInitGlobal(ClientContex
     // Execute the statement and capture row count if available
     memset(&global_state->stream, 0, sizeof(global_state->stream));
     int64_t rows_affected = -1;
+    global_state->WatchForInterrupt(context);
     try {
         global_state->statement->ExecuteQuery(&global_state->stream, &rows_affected);
     } catch (Exception &e) {
+        ThrowIfInterrupted(context);
         throw IOException("adbc_scan_table: Failed to execute query: " + string(e.what()));
     }
     global_state->stream_initialized = true;
@@ -1241,7 +1266,7 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanTableInitGlobal(ClientContex
             string msg = "adbc_scan_table: Failed to get schema from query stream";
             if (error_msg) {
                 msg += ": ";
-                msg += error_msg;
+                msg += ScrubCredentials(error_msg);
             }
             throw IOException(msg);
         }
@@ -1293,7 +1318,7 @@ static void AdbcScanTableFunction(ClientContext &context, TableFunctionInput &da
     // Get a batch if we don't have one or we've exhausted the current one
     while (!local_state.chunk || !local_state.chunk->arrow_array.release ||
            local_state.chunk_offset >= (idx_t)local_state.chunk->arrow_array.length) {
-        if (!GetNextBatch(global_state, local_state)) {
+        if (!GetNextBatch(context, global_state, local_state)) {
             output.SetCardinality(0);
             return;
         }
@@ -1650,7 +1675,15 @@ void RegisterAdbcTableFunctions(DatabaseInstance &db) {
     adbc_remote_query_function.to_string = AdbcRemoteQueryToString;
     adbc_remote_query_function.serialize = AdbcScanSerialize;
     adbc_remote_query_function.deserialize = AdbcScanDeserialize;
-    loader.RegisterFunction(CreateTableFunctionInfo(adbc_remote_query_function));
+    CreateTableFunctionInfo remote_query_info(adbc_remote_query_function);
+    FunctionDescription remote_query_desc;
+    remote_query_desc.description =
+        "Internal: run a statement on an attached ADBC database as sent by CONNECT; returns the result rows, or "
+        "a single 'success' column for statements without a result. Prefer adbc_scan / adbc_execute.";
+    remote_query_desc.examples = {"SELECT * FROM adbc_remote_query('pg', 'SELECT 1 AS x')"};
+    remote_query_desc.categories = {"adbc"};
+    remote_query_info.descriptions.push_back(std::move(remote_query_desc));
+    loader.RegisterFunction(remote_query_info);
 
     // ========================================================================
     // adbc_scan_table - Scan an entire table from an attached ADBC database

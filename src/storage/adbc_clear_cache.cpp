@@ -2,6 +2,7 @@
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 
 namespace adbc_scanner {
 using namespace duckdb;
@@ -41,6 +42,13 @@ static void ClearCache(ClientContext &context, TableFunctionInput &input, DataCh
 
 void RegisterAdbcClearCacheFunction(DatabaseInstance &db) {
     ExtensionLoader loader(db, "adbc");
-    loader.RegisterFunction(TableFunction("adbc_clear_cache", {}, ClearCache, BindClear, InitClear));
+    CreateTableFunctionInfo info(TableFunction("adbc_clear_cache", {}, ClearCache, BindClear, InitClear));
+    FunctionDescription desc;
+    desc.description = "Clear the cached remote schema (schemas, tables and columns) of every attached ADBC "
+                       "database so it is fetched again on next use; returns whether any ADBC database was attached";
+    desc.examples = {"CALL adbc_clear_cache()", "SELECT * FROM adbc_clear_cache()"};
+    desc.categories = {"adbc"};
+    info.descriptions.push_back(std::move(desc));
+    loader.RegisterFunction(info);
 }
 } // namespace adbc_scanner

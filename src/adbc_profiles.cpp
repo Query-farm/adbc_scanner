@@ -127,8 +127,10 @@ struct AdbcProfilesGlobalState : public GlobalTableFunctionState {
 	}
 };
 
-unique_ptr<FunctionData> AdbcProfilesBind(ClientContext &, TableFunctionBindInput &input,
+unique_ptr<FunctionData> AdbcProfilesBind(ClientContext &context, TableFunctionBindInput &input,
                                           vector<LogicalType> &return_types, vector<Identifier> &names) {
+	// Reads the filesystem and environment variables
+	RequireExternalAccess(context, "adbc_profiles()");
 	auto bind_data = make_uniq<AdbcProfilesBindData>();
 
 	string extra_search_paths;

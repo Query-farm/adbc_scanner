@@ -19,6 +19,7 @@
 #include <thread>
 #include <mutex>
 #include <condition_variable>
+#include <chrono>
 #include <cstdlib>
 
 namespace adbc_scanner {
@@ -196,14 +197,22 @@ struct AdbcInsertStream {
     }
 
     // Producer side. Blocks while the queue is full to apply backpressure.
-    // Returns false if the consumer has stopped/aborted and the batch could not
-    // be handed off (the batch is released in that case).
-    bool AddBatch(ArrowArray *batch) {
+    // Returns false if the consumer has stopped/aborted, or the query behind
+    // `context` was interrupted while waiting, and the batch could not be handed
+    // off (the batch is released in that case).
+    bool AddBatch(ArrowArray *batch, const ClientContext *context = nullptr) {
         std::unique_lock<std::mutex> l(lock);
-        cv_not_full.wait(l, [&] {
+        auto ready = [&] {
             return pending_batches.size() < max_batches || consumer_stopped || aborted;
-        });
-        if (consumer_stopped || aborted) {
+        };
+        bool interrupted = false;
+        while (!cv_not_full.wait_for(l, std::chrono::milliseconds(50), ready)) {
+            if (context && AdbcInterruptWatcher::QueryStopped(*context)) {
+                interrupted = true;
+                break;
+            }
+        }
+        if (interrupted || consumer_stopped || aborted) {
             if (batch->release) {
                 batch->release(batch);
             }
@@ -353,9 +362,31 @@ struct AdbcStreamingInsertConsumer {
     }
 
     // Producer side: hand a batch to the consumer (blocks for backpressure).
-    // Returns false if the consumer already stopped (error/cancellation).
-    bool AddBatch(ArrowArray *batch) {
-        return insert_stream->AddBatch(batch);
+    // Returns false if the consumer already stopped (error/cancellation). When
+    // the query is interrupted, aborts the ingestion, cancels the statement and
+    // throws InterruptException.
+    bool AddBatch(ArrowArray *batch, ClientContext &context) {
+        if (insert_stream->AddBatch(batch, &context)) {
+            return true;
+        }
+        if (AdbcInterruptWatcher::QueryStopped(context)) {
+            insert_stream->Abort("adbc_insert: query interrupted");
+            if (statement) {
+                statement->Cancel();
+            }
+            ThrowIfInterrupted(context);
+        }
+        return false;
+    }
+
+    // Producer side: hand a batch to the consumer, throwing an IOException
+    // prefixed with `what` when the consumer already stopped.
+    void PushBatch(ArrowArray *batch, ClientContext &context, const string &what) {
+        if (!AddBatch(batch, context)) {
+            string err = GetConsumerError();
+            throw IOException(what + ": ingestion stopped early: " +
+                              (err.empty() ? string("consumer terminated") : err));
+        }
     }
 
     string GetConsumerError() {
@@ -369,11 +400,16 @@ struct AdbcStreamingInsertConsumer {
     }
 
     // Signal end of input and wait for ExecuteUpdate to finish draining. Throws
-    // an IOException if the consumer reported an error.
-    void FinishAndJoin() {
+    // an IOException if the consumer reported an error, or InterruptException
+    // when the query was interrupted (which cancels the statement).
+    void FinishAndJoin(ClientContext &context) {
         insert_stream->Finish();
-        JoinConsumer();
+        {
+            AdbcInterruptWatcher watcher(context, statement);
+            JoinConsumer();
+        }
         if (!exec_ok) {
+            ThrowIfInterrupted(context);
             throw IOException("adbc_insert: Failed to execute insert: " + exec_error);
         }
     }

@@ -1,4 +1,5 @@
 #include "adbc_secrets.hpp"
+#include "adbc_utils.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/common/string_util.hpp"
 
@@ -27,7 +28,17 @@ unique_ptr<SecretEntry> AdbcGetSecretByName(ClientContext &context, const string
 SecretMatch AdbcGetSecretByUri(ClientContext &context, const string &uri) {
 	auto &secret_manager = SecretManager::Get(context);
 	auto transaction = CatalogTransaction::GetSystemCatalogTransaction(context);
-	return secret_manager.LookupSecret(transaction, uri, "adbc");
+	auto match = secret_manager.LookupSecret(transaction, uri, "adbc");
+	if (match.HasMatch()) {
+		return match;
+	}
+	// A secret whose scope was derived from a credential-bearing URI stores the
+	// scrubbed form (see CreateAdbcSecretFunction); match that too.
+	auto scrubbed = ScrubCredentials(uri);
+	if (scrubbed != uri) {
+		return secret_manager.LookupSecret(transaction, scrubbed, "adbc");
+	}
+	return match;
 }
 
 AdbcOptions MergeSecretOptions(ClientContext &context, const AdbcOptions &explicit_options) {
@@ -137,6 +148,11 @@ static unique_ptr<BaseSecret> CreateAdbcSecretFunction(ClientContext &context, C
 		}
 		scope.push_back(uri->second.GetValue<string>());
 	}
+	// Never store credentials in the scope: it is shown in duckdb_secrets()
+	// unredacted. Lookups try the scrubbed URI as well (AdbcGetSecretByUri).
+	for (auto &entry : scope) {
+		entry = ScrubCredentials(entry);
+	}
 
 	auto result = make_uniq<KeyValueSecret>(scope, "adbc", "config", input.name);
 
@@ -147,7 +163,12 @@ static unique_ptr<BaseSecret> CreateAdbcSecretFunction(ClientContext &context, C
 		if (lower_name == "driver") {
 			result->secret_map[Identifier("driver")] = named_param.second.ToString();
 		} else if (lower_name == "uri") {
-			result->secret_map[Identifier("uri")] = named_param.second.ToString();
+			auto uri = named_param.second.ToString();
+			result->secret_map[Identifier("uri")] = uri;
+			if (ScrubCredentials(uri) != uri) {
+				// postgresql://user:pass@host or ...?password=... : hide the whole URI
+				result->redact_keys.insert(Identifier("uri"));
+			}
 		} else if (lower_name == "username") {
 			result->secret_map[Identifier("username")] = named_param.second.ToString();
 		} else if (lower_name == "password") {

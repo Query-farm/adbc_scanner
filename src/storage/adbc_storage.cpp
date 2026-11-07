@@ -22,6 +22,10 @@ static unique_ptr<Catalog> AdbcAttach(optional_ptr<StorageExtensionInfo> storage
 	// Parse the connection options from the attach info
 	// Format: ATTACH 'connection_string' AS name (TYPE adbc, driver 'path')
 
+	// Attaching loads a native ADBC driver library and connects to an external
+	// system, so it requires external access.
+	RequireExternalAccess(context, "Attaching an ADBC database (TYPE adbc)");
+
 	// First, collect explicit options into a vector for secret merging
 	AdbcOptions explicit_options;
 	idx_t batch_size = 0;
@@ -88,11 +92,15 @@ static unique_ptr<Catalog> AdbcAttach(optional_ptr<StorageExtensionInfo> storage
 	// Merge with secrets (this looks up secrets by name or URI scope)
 	auto options = MergeSecretOptions(context, explicit_options);
 
+	// The driver may come from a secret, so check the allowlist after merging
+	CheckDriverAllowed(context, options);
+
 	// Create the connection using the shared helper
 	auto connection = CreateConnectionFromOptions(options);
 
-	// Create and return the catalog
-	auto catalog = make_uniq<AdbcCatalog>(db, connection, info.path, attach_options.access_mode);
+	// Create and return the catalog. The path is shown in duckdb_databases(),
+	// so never keep credentials in it.
+	auto catalog = make_uniq<AdbcCatalog>(db, connection, ScrubCredentials(info.path), attach_options.access_mode);
 	catalog->batch_size = batch_size;
 	catalog->query_pushdown = query_pushdown;
 	if (!default_schema.empty()) {

@@ -57,56 +57,16 @@ static vector<pair<string, string>> ExtractStatementOptions(const Value &value) 
 
 struct AdbcInsertGlobalState : public GlobalTableFunctionState {
     mutex lock;
-    shared_ptr<AdbcStatementWrapper> statement;
-    unique_ptr<AdbcInsertStream> insert_stream;
+    // Statement, bounded stream and the background BindStream/ExecuteUpdate
+    // thread (shared with the ATTACH write path, see adbc_insert_stream.hpp)
+    unique_ptr<AdbcStreamingInsertConsumer> consumer;
     int64_t rows_inserted = 0;
     ClientProperties client_properties;
     // Per input column: the existing target table declares it NOT NULL (append mode)
     vector<bool> not_null_columns;
 
-    // Drivers may pull input during BindStream or ExecuteUpdate. Both calls
-    // must overlap the producer so an eager binder cannot deadlock startup.
-    std::thread exec_thread;
-    bool exec_ok = false;
-    string exec_error;
-    int64_t exec_rows_affected = -1;
-
     idx_t MaxThreads() const override {
         return 1;  // single producer — keep AddBatch ordering simple
-    }
-
-    void StartConsumer() {
-        exec_thread = std::thread([this]() {
-            try {
-                statement->BindStream(&insert_stream->stream);
-                statement->ExecuteUpdate(&exec_rows_affected);
-                exec_ok = true;
-                insert_stream->MarkConsumerStopped(string());
-            } catch (std::exception &e) {
-                exec_ok = false;
-                exec_error = e.what();
-                insert_stream->MarkConsumerStopped(exec_error);
-            } catch (...) {
-                exec_ok = false;
-                exec_error = "unknown error during bulk ingestion";
-                insert_stream->MarkConsumerStopped(exec_error);
-            }
-        });
-    }
-
-    void JoinConsumer() {
-        if (exec_thread.joinable()) {
-            exec_thread.join();
-        }
-    }
-
-    ~AdbcInsertGlobalState() override {
-        // Abnormal teardown (producer threw, query cancelled): make sure the
-        // consumer thread can never block forever, then join it.
-        if (insert_stream && exec_thread.joinable()) {
-            insert_stream->Abort("adbc_insert: aborted before completion");
-        }
-        JoinConsumer();
     }
 };
 
@@ -194,9 +154,11 @@ static unique_ptr<GlobalTableFunctionState> AdbcInsertInitGlobal(ClientContext &
         global_state->not_null_columns =
             GetTargetNotNullColumns(*connection, db_schema, bind_data.target_table, bind_data.input_names);
     }
-    global_state->statement = make_shared_ptr<AdbcStatementWrapper>(connection);
-    global_state->statement->Init();
-    global_state->statement->SetOption("adbc.ingest.target_table", bind_data.target_table);
+    global_state->consumer = make_uniq<AdbcStreamingInsertConsumer>(ResolveMaxPendingBatches(bind_data.max_batches));
+    auto &statement = global_state->consumer->statement;
+    statement = make_shared_ptr<AdbcStatementWrapper>(connection);
+    statement->Init();
+    statement->SetOption("adbc.ingest.target_table", bind_data.target_table);
 
     // Set mode
     string mode_value;
@@ -209,25 +171,22 @@ static unique_ptr<GlobalTableFunctionState> AdbcInsertInitGlobal(ClientContext &
     } else if (bind_data.mode == "create_append") {
         mode_value = "adbc.ingest.mode.create_append";
     }
-    global_state->statement->SetOption("adbc.ingest.mode", mode_value);
+    statement->SetOption("adbc.ingest.mode", mode_value);
 
     for (auto &option : bind_data.statement_options) {
-        global_state->statement->SetOption(option.first, option.second);
+        statement->SetOption(option.first, option.second);
     }
-
-    // Create the bounded insert stream
-    global_state->insert_stream = make_uniq<AdbcInsertStream>(ResolveMaxPendingBatches(bind_data.max_batches));
 
     // Set up the schema from the input types
     ArrowSchema schema;
     ArrowConverter::ToArrowSchema(&schema, bind_data.input_types, bind_data.input_names,
                                    global_state->client_properties);
     ApplyNotNullColumns(schema, global_state->not_null_columns);
-    global_state->insert_stream->SetSchema(&schema);
+    global_state->consumer->SetSchema(&schema);
 
     // Start binding and execution concurrently with the producer. A driver can
     // consume the stream in either call; neither may run on the producer thread.
-    global_state->StartConsumer();
+    global_state->consumer->StartConsumer();
 
     return std::move(global_state);
 }
@@ -256,11 +215,7 @@ static OperatorResultType AdbcInsertInOut(ExecutionContext &context, TableFuncti
     // Hand the batch to the consumer; blocks for backpressure when the queue is
     // full. Returns false only if the consumer thread already stopped (error /
     // cancellation) — surface that as a query error.
-    if (!global_state.insert_stream->AddBatch(&arr)) {
-        string err = global_state.insert_stream->GetConsumerError();
-        throw IOException("adbc_insert: ingestion stopped early: " +
-                          (err.empty() ? string("consumer terminated") : err));
-    }
+    global_state.consumer->PushBatch(&arr, context.client, "adbc_insert");
     global_state.rows_inserted += input.size();
 
     // Don't output anything during processing - we output the total at the end
@@ -270,17 +225,11 @@ static OperatorResultType AdbcInsertInOut(ExecutionContext &context, TableFuncti
 
 static OperatorFinalizeResultType AdbcInsertFinalize(ExecutionContext &context, TableFunctionInput &data_p,
                                                       DataChunk &output) {
-    (void)context;
     auto &global_state = data_p.global_state->Cast<AdbcInsertGlobalState>();
     lock_guard<mutex> l(global_state.lock);
 
     // Signal end of input, then wait for ExecuteUpdate to finish draining.
-    global_state.insert_stream->Finish();
-    global_state.JoinConsumer();
-
-    if (!global_state.exec_ok) {
-        throw IOException("adbc_insert: Failed to execute insert: " + global_state.exec_error);
-    }
+    global_state.consumer->FinishAndJoin(context.client);
 
     // Output the total rows inserted (producer-side count is reliable across all
     // drivers; the driver's rows_affected is advisory).

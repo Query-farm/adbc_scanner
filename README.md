@@ -20,4 +20,7 @@ Full documentation, including installation, usage, the function reference, and c
 
 **[https://query.farm/products/extensions/adbc_scanner/](https://query.farm/products/extensions/adbc_scanner/)**
 
+For Redis driver installation, reads, local joins, and autocommit writes, see
+the [Redis ADBC integration guide](docs/redis.md).
+
 [Repository notes](docs/REPOSITORY_NOTES.md) · [Build and test](docs/BUILDING.md)

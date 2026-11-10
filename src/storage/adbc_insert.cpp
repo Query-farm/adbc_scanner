@@ -8,6 +8,7 @@
 #include "duckdb/planner/parsed_data/bound_create_table_info.hpp"
 #include "duckdb/common/arrow/arrow_converter.hpp"
 #include "duckdb/common/arrow/arrow_appender.hpp"
+#include "duckdb/function/table/arrow/arrow_duck_schema.hpp"
 #include <nanoarrow/nanoarrow.h>
 #include <atomic>
 
@@ -55,6 +56,9 @@ public:
 	ClientProperties client_properties;
 	vector<LogicalType> column_types;
 	vector<string> column_names;
+	string target_table;
+	//! Per column: the target table declares it NOT NULL (INSERT into an existing table only)
+	vector<bool> not_null_columns;
 };
 
 unique_ptr<GlobalSinkState> AdbcInsert::GetGlobalSinkState(ClientContext &context) const {
@@ -71,8 +75,8 @@ unique_ptr<GlobalSinkState> AdbcInsert::GetGlobalSinkState(ClientContext &contex
 	if (table) {
 		// INSERT INTO existing table
 		auto &adbc_table = table->Cast<AdbcTableEntry>();
-		target_table = adbc_table.name;
-		target_schema = adbc_table.schema.name;
+		target_table = adbc_table.name.GetIdentifierName();
+		target_schema = adbc_table.schema.name.GetIdentifierName();
 		ingest_mode = "adbc.ingest.mode.append";
 
 		auto &catalog = adbc_table.catalog.Cast<AdbcCatalog>();
@@ -86,7 +90,7 @@ unique_ptr<GlobalSinkState> AdbcInsert::GetGlobalSinkState(ClientContext &contex
 		for (idx_t i = 0; i < columns.LogicalColumnCount(); i++) {
 			auto &col = columns.GetColumn(LogicalIndex(i));
 			state->column_types.push_back(col.GetType());
-			state->column_names.push_back(col.GetName());
+			state->column_names.push_back(col.GetName().GetIdentifierName());
 		}
 	} else {
 		// CREATE TABLE AS
@@ -94,15 +98,25 @@ unique_ptr<GlobalSinkState> AdbcInsert::GetGlobalSinkState(ClientContext &contex
 		auto &catalog = const_cast<AdbcCatalog &>(schema_ref.ParentCatalog().Cast<AdbcCatalog>());
 		connection = AdbcTransaction::Get(context, catalog).GetWriteConnection();
 		adbc_catalog = catalog;
-		target_schema = schema_ref.name;
-		target_table = info->Base().table;
+		target_schema = schema_ref.name.GetIdentifierName();
+		target_table = info->Base().GetTableName().GetIdentifierName();
 		ingest_mode = "adbc.ingest.mode.create";
 
 		// Get types from the bound create info
 		for (auto &col : info->Base().columns.Logical()) {
 			state->column_types.push_back(col.GetType());
-			state->column_names.push_back(col.GetName());
+			state->column_names.push_back(col.GetName().GetIdentifierName());
 		}
+	}
+
+	if (table) {
+		// Appending to an existing table: match its NOT NULL columns, which drivers
+		// that compare schemas strictly (DataFusion) require. Ask before creating the
+		// statement, which holds the connection.
+		state->target_table = target_table;
+		state->not_null_columns =
+		    GetTargetNotNullColumns(*connection, target_schema == "main" ? nullptr : target_schema.c_str(),
+		                            target_table, state->column_names);
 	}
 
 	// Create ADBC statement for bulk ingestion
@@ -117,7 +131,7 @@ unique_ptr<GlobalSinkState> AdbcInsert::GetGlobalSinkState(ClientContext &contex
 			state->consumer.statement->SetOption(ADBC_INGEST_OPTION_TARGET_DB_SCHEMA, target_schema);
 		} catch (NotImplementedException &) {
 			// A driver that cannot target a schema can still write to its default one.
-			if (target_schema != adbc_catalog->GetDefaultSchema()) {
+			if (target_schema != adbc_catalog->GetDefaultSchemaName()) {
 				throw;
 			}
 		}
@@ -128,6 +142,7 @@ unique_ptr<GlobalSinkState> AdbcInsert::GetGlobalSinkState(ClientContext &contex
 	ArrowSchema arrow_schema;
 	ArrowConverter::ToArrowSchema(&arrow_schema, state->column_types, state->column_names,
 	                               state->client_properties);
+	ApplyNotNullColumns(arrow_schema, state->not_null_columns);
 	state->consumer.SetSchema(&arrow_schema);
 
 	// Bind and drain on the background consumer, concurrently with the producer:
@@ -149,6 +164,8 @@ SinkResultType AdbcInsert::Sink(ExecutionContext &context, DataChunk &chunk, Ope
 		return SinkResultType::NEED_MORE_INPUT;
 	}
 
+	CheckNotNullColumns(chunk, state.not_null_columns, state.column_names, state.target_table);
+
 	// Convert DuckDB DataChunk to Arrow batch
 	ArrowAppender appender(state.column_types, chunk.size(), state.client_properties,
 	                       ArrowTypeExtensionData::GetExtensionTypes(context.client, state.column_types));
@@ -158,11 +175,7 @@ SinkResultType AdbcInsert::Sink(ExecutionContext &context, DataChunk &chunk, Ope
 	// Hand the batch to the consumer; blocks for backpressure when the queue is
 	// full. Returns false only if the consumer thread already stopped (driver
 	// error / cancellation) — surface that as a query error.
-	if (!state.consumer.AddBatch(&arr)) {
-		string err = state.consumer.GetConsumerError();
-		throw IOException("ADBC insert: ingestion stopped early: " +
-		                  (err.empty() ? string("consumer terminated") : err));
-	}
+	state.consumer.PushBatch(&arr, context.client, "ADBC insert");
 	state.insert_count += chunk.size();
 
 	return SinkResultType::NEED_MORE_INPUT;
@@ -178,7 +191,7 @@ SinkFinalizeType AdbcInsert::Finalize(Pipeline &pipeline, Event &event, ClientCo
 
 	// Signal end of input and wait for the background ExecuteUpdate to finish
 	// draining the stream. Rethrows as IOException if the consumer errored.
-	state.consumer.FinishAndJoin();
+	state.consumer.FinishAndJoin(context);
 
 	// CREATE TABLE AS creates a new remote table that the attached catalog's
 	// cached table set does not yet know about. Invalidate the cache so the new
@@ -211,7 +224,8 @@ string AdbcInsert::GetName() const {
 
 InsertionOrderPreservingMap<string> AdbcInsert::ParamsToString() const {
 	InsertionOrderPreservingMap<string> result;
-	result["Table Name"] = table ? table->name : info->Base().table;
+	result["Table Name"] = table ? table->name.GetIdentifierName()
+	                             : info->Base().GetTableName().GetIdentifierName();
 	return result;
 }
 

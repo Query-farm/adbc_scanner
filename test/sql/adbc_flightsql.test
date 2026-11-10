@@ -37,6 +37,17 @@ SELECT COUNT(*) AS n FROM adbc_scan_table('f', 'region');
 5
 
 # ATTACH storage path (read-only)
+statement ok
+CONNECT f;
+
+query I
+SELECT COUNT(*) FROM nation;
+----
+25
+
+statement ok
+DISCONNECT;
+
 query I
 SELECT COUNT(*) FROM f.main.nation;
 ----

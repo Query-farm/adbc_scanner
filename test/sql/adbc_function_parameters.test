@@ -7,7 +7,7 @@ require adbc_scanner
 # Named parameters must be labelled with their own names, not shifted by
 # position: 'columns' is the only ANY-typed named parameter of adbc_scan_table.
 query II
-SELECT function_name, list_sort(list_filter(list_zip(parameters, parameter_types), p -> p[2] = 'ANY'))
+SELECT function_name, list_sort(list_filter(list_zip(parameters, parameter_types), lambda p: p[2] = 'ANY'))
 FROM duckdb_functions()
 WHERE function_name IN ('adbc_scan', 'adbc_scan_table', 'adbc_insert')
 ORDER BY function_name;

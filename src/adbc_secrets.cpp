@@ -1,4 +1,5 @@
 #include "adbc_secrets.hpp"
+#include "adbc_utils.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/common/string_util.hpp"
 
@@ -27,7 +28,17 @@ unique_ptr<SecretEntry> AdbcGetSecretByName(ClientContext &context, const string
 SecretMatch AdbcGetSecretByUri(ClientContext &context, const string &uri) {
 	auto &secret_manager = SecretManager::Get(context);
 	auto transaction = CatalogTransaction::GetSystemCatalogTransaction(context);
-	return secret_manager.LookupSecret(transaction, uri, "adbc");
+	auto match = secret_manager.LookupSecret(transaction, uri, "adbc");
+	if (match.HasMatch()) {
+		return match;
+	}
+	// A secret whose scope was derived from a credential-bearing URI stores the
+	// scrubbed form (see CreateAdbcSecretFunction); match that too.
+	auto scrubbed = ScrubCredentials(uri);
+	if (scrubbed != uri) {
+		return secret_manager.LookupSecret(transaction, scrubbed, "adbc");
+	}
+	return match;
 }
 
 AdbcOptions MergeSecretOptions(ClientContext &context, const AdbcOptions &explicit_options) {
@@ -58,7 +69,7 @@ AdbcOptions MergeSecretOptions(ClientContext &context, const AdbcOptions &explic
 		// Add all secret options first
 		for (const auto &entry : kv_secret.secret_map) {
 			if (!entry.second.IsNull()) {
-				merged_options.emplace_back(entry.first, entry.second);
+				merged_options.emplace_back(entry.first.GetIdentifierName(), entry.second);
 			}
 		}
 		found_secret = true;
@@ -72,7 +83,7 @@ AdbcOptions MergeSecretOptions(ClientContext &context, const AdbcOptions &explic
 			// Add all secret options first
 			for (const auto &entry : kv_secret.secret_map) {
 				if (!entry.second.IsNull()) {
-					merged_options.emplace_back(entry.first, entry.second);
+					merged_options.emplace_back(entry.first.GetIdentifierName(), entry.second);
 				}
 			}
 			found_secret = true;
@@ -137,6 +148,11 @@ static unique_ptr<BaseSecret> CreateAdbcSecretFunction(ClientContext &context, C
 		}
 		scope.push_back(uri->second.GetValue<string>());
 	}
+	// Never store credentials in the scope: it is shown in duckdb_secrets()
+	// unredacted. Lookups try the scrubbed URI as well (AdbcGetSecretByUri).
+	for (auto &entry : scope) {
+		entry = ScrubCredentials(entry);
+	}
 
 	auto result = make_uniq<KeyValueSecret>(scope, "adbc", "config", input.name);
 
@@ -145,17 +161,22 @@ static unique_ptr<BaseSecret> CreateAdbcSecretFunction(ClientContext &context, C
 		auto lower_name = StringUtil::Lower(named_param.first);
 
 		if (lower_name == "driver") {
-			result->secret_map["driver"] = named_param.second.ToString();
+			result->secret_map[Identifier("driver")] = named_param.second.ToString();
 		} else if (lower_name == "uri") {
-			result->secret_map["uri"] = named_param.second.ToString();
+			auto uri = named_param.second.ToString();
+			result->secret_map[Identifier("uri")] = uri;
+			if (ScrubCredentials(uri) != uri) {
+				// postgresql://user:pass@host or ...?password=... : hide the whole URI
+				result->redact_keys.insert(Identifier("uri"));
+			}
 		} else if (lower_name == "username") {
-			result->secret_map["username"] = named_param.second.ToString();
+			result->secret_map[Identifier("username")] = named_param.second.ToString();
 		} else if (lower_name == "password") {
-			result->secret_map["password"] = named_param.second.ToString();
+			result->secret_map[Identifier("password")] = named_param.second.ToString();
 		} else if (lower_name == "database") {
-			result->secret_map["database"] = named_param.second.ToString();
+			result->secret_map[Identifier("database")] = named_param.second.ToString();
 		} else if (lower_name == "entrypoint") {
-			result->secret_map["entrypoint"] = named_param.second.ToString();
+			result->secret_map[Identifier("entrypoint")] = named_param.second.ToString();
 		} else if (lower_name == "extra_options") {
 			// extra_options is a MAP of string -> string for driver-specific options
 			auto &map_value = named_param.second;
@@ -166,8 +187,8 @@ static unique_ptr<BaseSecret> CreateAdbcSecretFunction(ClientContext &context, C
 					if (entry_children.size() == 2 && !entry_children[0].IsNull()) {
 						auto key = entry_children[0].ToString();
 						auto val = entry_children[1].IsNull() ? "" : entry_children[1].ToString();
-						result->secret_map[key] = val;
-						result->redact_keys.insert(key);
+						result->secret_map[Identifier(key)] = val;
+						result->redact_keys.insert(Identifier(key));
 					}
 				}
 			}
@@ -176,10 +197,10 @@ static unique_ptr<BaseSecret> CreateAdbcSecretFunction(ClientContext &context, C
 
 	// Redact sensitive keys by default
 	for (auto key : {"password", "auth_token", "token", "secret", "api_key", "apikey", "credential"}) {
-		result->redact_keys.insert(key);
+		result->redact_keys.insert(Identifier(key));
 	}
 
-	return result;
+	return std::move(result);
 }
 
 void RegisterAdbcSecrets(ExtensionLoader &loader) {

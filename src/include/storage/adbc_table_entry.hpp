@@ -20,16 +20,17 @@ struct AdbcTableInfo {
 		create_info->columns.SetAllowDuplicates(true);
 	}
 	AdbcTableInfo(const string &schema, const string &table) {
-		create_info = make_uniq<CreateTableInfo>(string(), schema, table);
+		create_info = make_uniq<CreateTableInfo>(
+		    QualifiedName(Identifier(), Identifier(schema), Identifier(table)));
 		create_info->columns.SetAllowDuplicates(true);
 	}
 	AdbcTableInfo(const SchemaCatalogEntry &schema, const string &table) {
-		create_info = make_uniq<CreateTableInfo>((SchemaCatalogEntry &)schema, table);
+		create_info = make_uniq<CreateTableInfo>((SchemaCatalogEntry &)schema, Identifier(table));
 		create_info->columns.SetAllowDuplicates(true);
 	}
 
 	const string &GetTableName() const {
-		return create_info->table;
+		return create_info->GetTableName().GetIdentifierName();
 	}
 
 	unique_ptr<CreateTableInfo> create_info;
@@ -43,16 +44,23 @@ public:
 	AdbcTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, AdbcTableInfo &info);
 
 public:
+	const ColumnList &GetColumns() const override;
+
 	unique_ptr<BaseStatistics> GetStatistics(ClientContext &context, column_t column_id) override;
 
 	TableFunction GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data) override;
 
 	TableStorageInfo GetStorageInfo(ClientContext &context) override;
 
+	//! Remote tables have no DuckDB rowid (see AdbcScanGetVirtualColumns).
+	virtual_column_map_t GetVirtualColumns() const override;
+	vector<column_t> GetRowIdColumns() const override;
+
 	void BindUpdateConstraints(Binder &binder, LogicalGet &get, LogicalProjection &proj, LogicalUpdate &update,
 	                           ClientContext &context) override;
 
 public:
+	ColumnList columns;
 	//! Column names as they are within the remote database
 	vector<string> column_names;
 };

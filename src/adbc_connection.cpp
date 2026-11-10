@@ -1,6 +1,8 @@
 #include "adbc_connection.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/database_manager.hpp"
+#include "duckdb/main/config.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/transaction/transaction_context.hpp"
 #include "storage/adbc_catalog.hpp"
 #include "storage/adbc_transaction.hpp"
@@ -14,7 +16,7 @@ shared_ptr<AdbcConnectionWrapper> GetAttachedConnection(ClientContext &context, 
 		throw InvalidInputException("%s: database name must not be NULL", function_name);
 	}
 	auto name = database.GetValue<string>();
-	auto attached = DatabaseManager::Get(context).GetDatabase(context, name);
+	auto attached = DatabaseManager::Get(context).GetDatabase(context, Identifier(name));
 	if (!attached) {
 		throw BinderException("%s: no attached database named \"%s\"; attach one with "
 		                      "ATTACH '<uri>' AS %s (TYPE adbc, driver '...')",
@@ -40,6 +42,65 @@ shared_ptr<AdbcConnectionWrapper> GetAttachedConnection(ClientContext &context, 
 		throw InvalidInputException("%s: the connection for \"%s\" has been closed", function_name, name);
 	}
 	return connection;
+}
+
+void RegisterAdbcSettings(DatabaseInstance &db) {
+	auto &config = DBConfig::GetConfig(db);
+	config.AddExtensionOption(
+	    ADBC_ALLOWED_DRIVERS_SETTING,
+	    "Comma-separated list of ADBC drivers (names or paths, matched exactly against the 'driver' option) that "
+	    "ATTACH may load. Empty allows any driver. While set, connection profiles and search_paths are refused.",
+	    LogicalType::VARCHAR, Value(""), nullptr, SetScope::GLOBAL);
+}
+
+void RequireExternalAccess(ClientContext &context, const string &what) {
+	if (!Settings::Get<EnableExternalAccessSetting>(context)) {
+		throw PermissionException("%s is disabled because enable_external_access is false", what);
+	}
+}
+
+static vector<string> AllowedDrivers(ClientContext &context) {
+	vector<string> result;
+	Value value;
+	if (!context.TryGetCurrentSetting(ADBC_ALLOWED_DRIVERS_SETTING, value) || value.IsNull()) {
+		return result;
+	}
+	for (auto &entry : StringUtil::Split(value.ToString(), ',')) {
+		StringUtil::Trim(entry);
+		if (!entry.empty()) {
+			result.push_back(entry);
+		}
+	}
+	return result;
+}
+
+void CheckDriverAllowed(ClientContext &context, const AdbcOptions &options) {
+	auto allowed = AllowedDrivers(context);
+	if (allowed.empty()) {
+		return;
+	}
+	string driver;
+	for (const auto &opt : options) {
+		if (opt.first == "driver") {
+			driver = opt.second.ToString();
+		} else if (opt.first == "profile" && !opt.second.ToString().empty()) {
+			throw PermissionException("ADBC connection profiles cannot be used while %s is set",
+			                          ADBC_ALLOWED_DRIVERS_SETTING);
+		} else if (opt.first == "uri" && StringUtil::StartsWith(opt.second.ToString(), "profile://")) {
+			throw PermissionException("ADBC connection profiles cannot be used while %s is set",
+			                          ADBC_ALLOWED_DRIVERS_SETTING);
+		} else if (opt.first == "search_paths" && !opt.second.ToString().empty()) {
+			throw PermissionException("The 'search_paths' option cannot be used while %s is set",
+			                          ADBC_ALLOWED_DRIVERS_SETTING);
+		}
+	}
+	for (auto &entry : allowed) {
+		if (entry == driver) {
+			return;
+		}
+	}
+	throw PermissionException("ADBC driver '%s' is not in %s ('%s')", driver, ADBC_ALLOWED_DRIVERS_SETTING,
+	                          StringUtil::Join(allowed, ","));
 }
 
 struct DatabaseSettings {

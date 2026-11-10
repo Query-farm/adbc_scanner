@@ -26,6 +26,8 @@ public:
 	AdbcCatalogSet(Catalog &catalog, bool is_loaded);
 
 	optional_ptr<CatalogEntry> GetEntry(AdbcTransaction &transaction, const string &name);
+	//! The entry if it has already been loaded, without loading anything (no transaction needed).
+	optional_ptr<CatalogEntry> GetLoadedEntry(const string &name);
 	void DropEntry(AdbcTransaction &transaction, DropInfo &info);
 	void Scan(AdbcTransaction &transaction, const std::function<void(CatalogEntry &)> &callback);
 	virtual optional_ptr<CatalogEntry> CreateEntry(AdbcTransaction &transaction, shared_ptr<CatalogEntry> entry);

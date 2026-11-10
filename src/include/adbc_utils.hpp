@@ -42,6 +42,92 @@ inline string CopyDriverBytes(const uint8_t *data, size_t len) {
     return out;
 }
 
+// Mask credentials in text that is shown to users (error messages, the
+// attach path in duckdb_databases()). Two forms are masked:
+//   - the password in a URI's userinfo: scheme://user:secret@host -> scheme://user:***@host
+//   - the value of credential-like key=value pairs (password=..., token=...,
+//     in URI query strings or 'k=v;k=v' option strings)
+// Best effort: it never fails and leaves everything else unchanged.
+inline string ScrubCredentials(const string &text) {
+    string result = text;
+    auto is_value_end = [](char c) {
+        return c == ';' || c == '&' || c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '"' || c == '\'' ||
+               c == ',' || c == ')';
+    };
+
+    // 1. URI userinfo passwords
+    size_t search = 0;
+    while (true) {
+        auto scheme_end = result.find("://", search);
+        if (scheme_end == string::npos) {
+            break;
+        }
+        auto start = scheme_end + 3;
+        auto end = start;
+        while (end < result.size()) {
+            char c = result[end];
+            if (c == '/' || c == '?' || c == '#' || c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '"' ||
+                c == '\'' || c == '<' || c == '>') {
+                break;
+            }
+            end++;
+        }
+        auto at = result.rfind('@', end == 0 ? 0 : end - 1);
+        if (at != string::npos && at >= start && at < end) {
+            auto colon = result.find(':', start);
+            if (colon != string::npos && colon < at) {
+                result.replace(colon + 1, at - colon - 1, "***");
+                end = colon + 1 + 3 + (end - at);
+            }
+        }
+        search = end > start ? end : start;
+    }
+
+    // 2. credential-like key=value pairs
+    static const char *const keys[] = {"password", "passwd", "pwd", "token", "secret", "api_key", "apikey"};
+    for (auto key : keys) {
+        string lower = StringUtil::Lower(result);
+        string needle(key);
+        size_t pos = 0;
+        while ((pos = lower.find(needle, pos)) != string::npos) {
+            auto key_end = pos + needle.size();
+            // A key ends a word: password=, access_token=, client_secret=
+            auto eq = key_end;
+            while (eq < lower.size() && lower[eq] == ' ') {
+                eq++;
+            }
+            if (eq >= lower.size() || lower[eq] != '=') {
+                pos = key_end;
+                continue;
+            }
+            auto value_start = eq + 1;
+            while (value_start < lower.size() && lower[value_start] == ' ') {
+                value_start++;
+            }
+            auto value_end = value_start;
+            if (value_start < lower.size() && (lower[value_start] == '\'' || lower[value_start] == '"')) {
+                // Quoted value: mask up to the closing quote
+                char quote = lower[value_start];
+                value_start++;
+                value_end = lower.find(quote, value_start);
+                if (value_end == string::npos) {
+                    value_end = lower.size();
+                }
+            } else {
+                while (value_end < lower.size() && !is_value_end(lower[value_end])) {
+                    value_end++;
+                }
+            }
+            if (value_end > value_start && result.compare(value_start, value_end - value_start, "***") != 0) {
+                result.replace(value_start, value_end - value_start, "***");
+                lower.replace(value_start, value_end - value_start, "***");
+            }
+            pos = value_start + 3;
+        }
+    }
+    return result;
+}
+
 // Check ADBC status and throw DuckDB exception on error
 // Optional driver_name parameter to include in error messages for better debugging
 inline void CheckAdbc(AdbcStatusCode status, AdbcError *error, const string &context,
@@ -119,6 +205,10 @@ inline void CheckAdbc(AdbcStatusCode status, AdbcError *error, const string &con
         error->release(error);
         error->release = nullptr;
     }
+
+    // Drivers may echo the connection URI (which can carry userinfo credentials,
+    // e.g. after FoldCredentialsIntoUri) in their error text.
+    message = ScrubCredentials(message);
 
     // Throw appropriate exception based on status code
     switch (status) {
@@ -213,24 +303,15 @@ private:
     AdbcError error;
 };
 
-// Name a registered table function's parameters in its FunctionDescription.
-// duckdb_functions() pairs description names by index with the positional
-// arguments followed by named_parameters in the map's iteration order, and the
-// copies made while registering can change that order. duckdb_functions()
-// reads a copy of the stored function, so take the same copy rather than
-// hand-ordering a list.
-inline void DescribeParameters(ExtensionLoader &loader, const string &function_name,
-                               vector<string> positional_names) {
-    auto &entry = loader.GetTableFunction(function_name);
-    D_ASSERT(entry.functions.Size() == 1 && entry.descriptions.size() == 1);
-    auto function = entry.functions.GetFunctionByOffset(0);
-    auto &desc = entry.descriptions[0];
-    D_ASSERT(positional_names.size() == function.arguments.size());
-    desc.parameter_names = std::move(positional_names);
-    desc.parameter_types = function.arguments;
-    for (auto &param : function.named_parameters) {
-        desc.parameter_names.push_back(param.first);
-        desc.parameter_types.push_back(param.second);
+// Name a table function's positional parameters before it is registered, so
+// duckdb_functions() lists them by name instead of a generated colN. In DuckDB
+// 2.0 parameter names live in the function's signature; named (keyword-only)
+// parameters are declared with GetSignature().AddKeywordOnly(...).
+inline void NameParameters(TableFunction &function, const vector<string> &positional_names) {
+    auto &signature = function.GetSignature();
+    D_ASSERT(positional_names.size() <= signature.GetParameterCount());
+    for (idx_t i = 0; i < positional_names.size(); i++) {
+        signature.GetParameter(i).SetName(Identifier(positional_names[i]));
     }
 }
 

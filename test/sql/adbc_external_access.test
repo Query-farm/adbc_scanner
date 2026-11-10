@@ -1,0 +1,35 @@
+# name: test/sql/adbc_external_access.test
+# description: loading ADBC drivers and reading profiles require enable_external_access
+# group: [adbc]
+
+require adbc_scanner
+
+statement ok
+SET enable_external_access = false;
+
+# ATTACH would load a native driver library
+statement error
+ATTACH ':memory:' AS blocked (TYPE adbc, driver 'sqlite');
+----
+enable_external_access is false
+
+statement error
+ATTACH 'driver=sqlite;uri=:memory:' AS blocked (TYPE adbc);
+----
+enable_external_access is false
+
+statement error
+ATTACH 'profile://anything' AS blocked (TYPE adbc);
+----
+enable_external_access is false
+
+# adbc_profiles reads the filesystem and environment
+statement error
+SELECT * FROM adbc_profiles();
+----
+enable_external_access is false
+
+statement error
+SELECT * FROM adbc_profiles(search_paths := '/tmp');
+----
+enable_external_access is false

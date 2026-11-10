@@ -15,15 +15,20 @@ namespace adbc_scanner {
 using namespace duckdb;
 
 AdbcTableEntry::AdbcTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info)
-    : TableCatalogEntry(catalog, schema, info) {
+    : TableCatalogEntry(catalog, schema, info), columns(info.columns.Copy()) {
 	for (idx_t c = 0; c < columns.LogicalColumnCount(); c++) {
 		auto &col = columns.GetColumnMutable(LogicalIndex(c));
-		column_names.push_back(col.GetName());
+		column_names.push_back(col.GetName().GetIdentifierName());
 	}
 }
 
 AdbcTableEntry::AdbcTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, AdbcTableInfo &info)
-    : TableCatalogEntry(catalog, schema, *info.create_info), column_names(std::move(info.column_names)) {
+    : TableCatalogEntry(catalog, schema, *info.create_info), columns(info.create_info->columns.Copy()),
+      column_names(std::move(info.column_names)) {
+}
+
+const ColumnList &AdbcTableEntry::GetColumns() const {
+	return columns;
 }
 
 unique_ptr<BaseStatistics> AdbcTableEntry::GetStatistics(ClientContext &context, column_t column_id) {
@@ -41,8 +46,8 @@ void AdbcTableEntry::BindUpdateConstraints(Binder &binder, LogicalGet &, Logical
 static TableFunctionCatalogEntry &GetTableFunction(DatabaseInstance &db, const string &name) {
 	auto &system_catalog = Catalog::GetSystemCatalog(db);
 	auto data = CatalogTransaction::GetSystemTransaction(db);
-	auto &schema = system_catalog.GetSchema(data, DEFAULT_SCHEMA);
-	auto entry = schema.GetEntry(data, CatalogType::TABLE_FUNCTION_ENTRY, name);
+	auto &schema = system_catalog.GetSchema(data, Identifier::DefaultSchema());
+	auto entry = schema.GetEntry(data, CatalogType::TABLE_FUNCTION_ENTRY, Identifier(name));
 	if (!entry) {
 		throw InvalidInputException("Function with name \"%s\" not found", name);
 	}
@@ -65,8 +70,9 @@ TableFunction AdbcTableEntry::GetScanFunction(ClientContext &context, unique_ptr
 	auto scan_connection = adbc_catalog.GetPool().GetConnectionShared();
 
 	auto &adbc_scan_table_function_set = GetTableFunction(db, "adbc_scan_table");
-	auto adbc_scan_table_function = adbc_scan_table_function_set.functions.GetFunctionByArguments(
+	auto adbc_scan_table_function_ptr = adbc_scan_table_function_set.functions.GetFunctionByArguments(
 	    context, {LogicalType::VARCHAR, LogicalType::VARCHAR});
+	TableFunction adbc_scan_table_function = *adbc_scan_table_function_ptr;
 
 	// Inputs: the attached database's name (informational here) and table_name.
 	// NOTE: use the Value(string) VARCHAR constructor, NOT Value::CreateValue(name):
@@ -76,22 +82,33 @@ TableFunction AdbcTableEntry::GetScanFunction(ClientContext &context, unique_ptr
 	vector<Value> inputs = {Value(catalog.GetName()), Value(name)};
 
 	// Set up named parameters for schema (if not "main") and batch_size (if set)
-	named_parameter_map_t param_map;
+	named_argument_map_t param_map;
 	if (schema.name != "main") {
-		param_map["schema"] = Value(schema.name);
+		param_map[Identifier("schema")] = Value(schema.name);
 	}
 	if (adbc_catalog.batch_size > 0) {
-		param_map["batch_size"] = Value::BIGINT(static_cast<int64_t>(adbc_catalog.batch_size));
+		param_map[Identifier("batch_size")] = Value::BIGINT(static_cast<int64_t>(adbc_catalog.batch_size));
 	}
 
 	vector<LogicalType> return_types;
-	vector<string> names;
+	vector<Identifier> names;
 	TableFunctionRef empty_ref;
-	TableFunctionBindInput bind_input(inputs, param_map, return_types, names, nullptr, nullptr,
-	                                  adbc_scan_table_function, empty_ref);
+	vector<LogicalType> input_table_types;
+	vector<Identifier> input_table_names;
+	BoundTableFunction bound_function(adbc_scan_table_function_ptr);
+	TableFunctionBindInput bind_input(inputs, param_map, input_table_types, input_table_names, nullptr, nullptr,
+	                                  bound_function, empty_ref);
 	bind_data = AdbcScanTableBindWithConnection(context, bind_input, std::move(scan_connection), return_types, names);
 
 	return adbc_scan_table_function;
+}
+
+virtual_column_map_t AdbcTableEntry::GetVirtualColumns() const {
+	return virtual_column_map_t();
+}
+
+vector<column_t> AdbcTableEntry::GetRowIdColumns() const {
+	return vector<column_t>();
 }
 
 TableStorageInfo AdbcTableEntry::GetStorageInfo(ClientContext &context) {

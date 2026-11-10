@@ -22,10 +22,270 @@ statement ok
 CALL adbc_execute('pg', 'DROP TABLE IF EXISTS adbc_pg_big');
 
 statement ok
+CALL adbc_execute('pg', 'DROP TABLE IF EXISTS adbc_pg_connected');
+
+statement ok
 CALL adbc_execute('pg', 'CREATE TABLE adbc_pg_events (id INTEGER PRIMARY KEY, name TEXT, ts TIMESTAMPTZ, amount NUMERIC(10,2), tags TEXT[], active BOOLEAN)');
 
 statement ok
 CALL adbc_execute('pg', 'INSERT INTO adbc_pg_events VALUES (1,''alpha'',''2024-01-01 10:00:00+00'',12.50,ARRAY[''a'',''b''],true),(2,''beta'',''2024-06-15 08:30:00+00'',99.99,ARRAY[''c''],false),(3,''gamma'',''2024-12-31 23:59:59+00'',0.01,ARRAY[]::text[],true)');
+
+# CONNECT forwards complete statements through the PostgreSQL ADBC driver. In
+# particular, result queries must not retain their terminal semicolon because
+# the driver wraps them in COPY (...).
+statement ok
+ATTACH 'postgresql://postgres:postgres@localhost:5432/postgres' AS pg_connected (TYPE adbc, driver 'postgresql');
+
+statement ok
+CONNECT pg_connected;
+
+# No IF NOT EXISTS: this also proves CREATE executes exactly once.
+statement ok
+CREATE TABLE adbc_pg_connected (id INTEGER, name TEXT);
+
+statement ok
+INSERT INTO adbc_pg_connected VALUES (1, 'postgres remote'), (2, 'still remote');
+
+query IT
+SELECT id, name FROM adbc_pg_connected ORDER BY id;
+----
+1	postgres remote
+2	still remote
+
+query IT
+SELECT COUNT(*), MIN(name) FROM adbc_pg_connected;
+----
+2	postgres remote
+
+statement ok
+DISCONNECT;
+
+statement ok
+DETACH pg_connected;
+
+# PostgreSQL supports whole-query pushdown through DuckDB 2.0's structured
+# QueryNode interface. The remote side receives one SELECT rather than a local
+# plan composed from one or more table scans.
+query II
+EXPLAIN SELECT id, name FROM pg.public.adbc_pg_events WHERE id > 1 ORDER BY id;
+----
+physical_plan	<REGEX>:(?is).*ADBC.REMOTE.QUERY.*Remote SQL:.*SELECT.*adbc_pg_events.*
+
+query II
+EXPLAIN SELECT COUNT(*), SUM(id) FROM pg.public.adbc_pg_events WHERE active;
+----
+physical_plan	<REGEX>:(?is).*ADBC.REMOTE.QUERY.*
+
+query II
+SELECT COUNT(*), SUM(id) FROM pg.public.adbc_pg_events WHERE active;
+----
+2	4
+
+query II
+EXPLAIN SELECT active, COUNT(*)
+FROM pg.public.adbc_pg_events
+GROUP BY active
+HAVING COUNT(*) > 1;
+----
+physical_plan	<REGEX>:(?is).*ADBC.REMOTE.QUERY.*
+
+query II
+SELECT active, COUNT(*)
+FROM pg.public.adbc_pg_events
+GROUP BY active
+HAVING COUNT(*) > 1;
+----
+true	2
+
+query II
+EXPLAIN SELECT COUNT(*) FILTER (WHERE active), SUM(id) FILTER (WHERE NOT active)
+FROM pg.public.adbc_pg_events;
+----
+physical_plan	<REGEX>:(?is).*ADBC.REMOTE.QUERY.*
+
+query II
+SELECT COUNT(*) FILTER (WHERE active), SUM(id) FILTER (WHERE NOT active)
+FROM pg.public.adbc_pg_events;
+----
+2	2
+
+# PostgreSQL-compatible casts and typed temporal literals remain structured.
+query II
+EXPLAIN SELECT CAST(id AS BIGINT), CAST(amount AS DECIMAL(12, 2))
+FROM pg.public.adbc_pg_events
+WHERE ts >= TIMESTAMPTZ '2024-06-01 00:00:00+00';
+----
+physical_plan	<REGEX>:(?is).*ADBC.REMOTE.QUERY.*
+
+query IR
+SELECT CAST(id AS BIGINT), CAST(amount AS DECIMAL(12, 2))
+FROM pg.public.adbc_pg_events
+WHERE ts >= TIMESTAMPTZ '2024-06-01 00:00:00+00'
+ORDER BY id;
+----
+2	99.99
+3	0.01
+
+# Explicit NULL ordering, LIMIT/OFFSET, DISTINCT, and set operations use syntax
+# shared by DuckDB and PostgreSQL.
+query II
+EXPLAIN SELECT id, amount FROM pg.public.adbc_pg_events
+ORDER BY amount DESC NULLS LAST LIMIT 2 OFFSET 1;
+----
+physical_plan	<REGEX>:(?is).*ADBC.REMOTE.QUERY.*
+
+query IR
+SELECT id, amount FROM pg.public.adbc_pg_events
+ORDER BY amount DESC NULLS LAST LIMIT 2 OFFSET 1;
+----
+1	12.50
+3	0.01
+
+query I rowsort
+SELECT DISTINCT active FROM pg.public.adbc_pg_events;
+----
+false
+true
+
+query II
+EXPLAIN SELECT DISTINCT ON (active) active, id
+FROM pg.public.adbc_pg_events
+ORDER BY active, id DESC;
+----
+physical_plan	<REGEX>:(?is).*ADBC.REMOTE.QUERY.*
+
+query II
+SELECT DISTINCT ON (active) active, id
+FROM pg.public.adbc_pg_events
+ORDER BY active, id DESC;
+----
+false	2
+true	3
+
+query I
+SELECT id FROM pg.public.adbc_pg_events WHERE id = 1
+UNION
+SELECT id FROM pg.public.adbc_pg_events WHERE id = 3
+ORDER BY id;
+----
+1
+3
+
+query II
+EXPLAIN SELECT lhs.id, rhs.name
+FROM pg.public.adbc_pg_events lhs
+JOIN pg.public.adbc_pg_events rhs ON lhs.id = rhs.id
+WHERE lhs.id = 2;
+----
+physical_plan	<REGEX>:(?is).*ADBC.REMOTE.QUERY.*
+
+query II
+SELECT lhs.id, rhs.name
+FROM pg.public.adbc_pg_events lhs
+JOIN pg.public.adbc_pg_events rhs ON lhs.id = rhs.id
+WHERE lhs.id = 2;
+----
+2	beta
+
+query II
+EXPLAIN SELECT lhs.id, rhs.name
+FROM pg.public.adbc_pg_events lhs
+RIGHT JOIN pg.public.adbc_pg_events rhs ON lhs.id = rhs.id
+WHERE rhs.id = 3;
+----
+physical_plan	<REGEX>:(?is).*ADBC.REMOTE.QUERY.*
+
+query II
+SELECT lhs.id, rhs.name
+FROM pg.public.adbc_pg_events lhs
+RIGHT JOIN pg.public.adbc_pg_events rhs ON lhs.id = rhs.id
+WHERE rhs.id = 3;
+----
+3	gamma
+
+query II
+EXPLAIN SELECT id,
+       (SELECT COUNT(*) FROM pg.public.adbc_pg_events inner_events WHERE inner_events.id <= outer_events.id)
+FROM pg.public.adbc_pg_events outer_events
+WHERE id = 2;
+----
+physical_plan	<REGEX>:(?is).*ADBC.REMOTE.QUERY.*
+
+query II
+SELECT id,
+       (SELECT COUNT(*) FROM pg.public.adbc_pg_events inner_events WHERE inner_events.id <= outer_events.id)
+FROM pg.public.adbc_pg_events outer_events
+WHERE id = 2;
+----
+2	2
+
+# DuckDB-only expressions veto whole-query pushdown and continue to use the
+# regular ADBC scan path.
+query II
+EXPLAIN SELECT regexp_extract(name, 'a') FROM pg.public.adbc_pg_events;
+----
+physical_plan	<!REGEX>:(?is).*ADBC.REMOTE.QUERY.*
+
+query T
+SELECT regexp_extract(name, 'a') FROM pg.public.adbc_pg_events WHERE id = 2;
+----
+a
+
+# A column the remote table does not have is never pushed down: DuckDB's rowid
+# (remote tables expose none) and PostgreSQL system columns such as ctid fail
+# to bind, as they do on the scan path, instead of PostgreSQL answering them.
+query II
+EXPLAIN SELECT count(*) FROM pg.public.adbc_pg_events WHERE id > 1;
+----
+physical_plan	<REGEX>:(?is).*ADBC.REMOTE.QUERY.*
+
+query I
+SELECT count(*) FROM pg.public.adbc_pg_events WHERE id > 1;
+----
+2
+
+statement error
+SELECT rowid FROM pg.public.adbc_pg_events;
+----
+rowid
+
+statement error
+SELECT id FROM pg.public.adbc_pg_events WHERE rowid = 1;
+----
+rowid
+
+statement error
+SELECT count(*) FROM pg.public.adbc_pg_events WHERE rowid >= 0;
+----
+rowid
+
+statement error
+SELECT ctid FROM pg.public.adbc_pg_events;
+----
+ctid
+
+statement error
+SELECT e.xmin FROM pg.public.adbc_pg_events e;
+----
+xmin
+
+# TINYINT has no PostgreSQL equivalent, so this cast is deliberately local.
+query II
+EXPLAIN SELECT CAST(id AS TINYINT) FROM pg.public.adbc_pg_events;
+----
+physical_plan	<!REGEX>:(?is).*ADBC.REMOTE.QUERY.*
+
+# PostgreSQL has no MIN(boolean) overload. The type-conservative function gate
+# keeps this valid DuckDB expression local instead of failing during remote bind.
+query II
+EXPLAIN SELECT MIN(active) FROM pg.public.adbc_pg_events;
+----
+physical_plan	<!REGEX>:(?is).*ADBC.REMOTE.QUERY.*
+
+query I
+SELECT MIN(active) FROM pg.public.adbc_pg_events;
+----
+false
 
 # Type mapping: timestamptz and arrays map to real DuckDB types (not VARCHAR)
 query I
@@ -104,6 +364,9 @@ CALL adbc_execute('pg', 'DROP TABLE IF EXISTS adbc_pg_big');
 statement ok
 CALL adbc_execute('pg', 'DROP TABLE IF EXISTS adbc_pg_events');
 
+statement ok
+CALL adbc_execute('pg', 'DROP TABLE IF EXISTS adbc_pg_connected');
+
 # ============================================================================
 # Regression: ANALYZE'd tables must not corrupt query results
 #
@@ -141,7 +404,7 @@ statement ok
 CALL adbc_execute('pg', 'ANALYZE adbc_pg_stats_null');
 
 statement ok
-ATTACH 'postgresql://postgres:postgres@localhost:5432/postgres' AS pgs (TYPE adbc, driver 'postgresql', READ_ONLY);
+ATTACH 'postgresql://postgres:postgres@localhost:5432/postgres' AS pgs (TYPE adbc, driver 'postgresql', query_pushdown false, READ_ONLY);
 
 query II
 SELECT id, s FROM pgs.public.adbc_pg_stats ORDER BY id;
@@ -162,6 +425,11 @@ query II
 EXPLAIN SELECT id FROM pgs.public.adbc_pg_stats;
 ----
 physical_plan	<REGEX>:.*~2 rows.*
+
+query II
+EXPLAIN SELECT id FROM pgs.public.adbc_pg_stats WHERE id > 0;
+----
+physical_plan	<!REGEX>:(?is).*ADBC.REMOTE.QUERY.*
 
 # The column has no NULLs: statistics must not turn this into "everything matches"
 query I

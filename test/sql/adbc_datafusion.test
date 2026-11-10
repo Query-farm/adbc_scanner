@@ -96,12 +96,31 @@ SELECT id, name FROM df.items_copy ORDER BY id;
 4	fig
 5	kiwi
 
+# The CREATE TABLE AS at the top made both columns of items NOT NULL, and
+# DataFusion rejects an append whose Arrow schema differs, nullability included.
+# Writes match the target table's NOT NULL columns; a NULL for one fails before
+# it is sent.
+statement error
+INSERT INTO df.items VALUES (6, NULL);
+----
+NOT NULL constraint failed: items.name
+
+query I
+SELECT * FROM adbc_insert('df', 'items', (SELECT 6::BIGINT AS id, 'lime' AS name), mode := 'append');
+----
+1
+
+statement error
+SELECT * FROM adbc_insert('df', 'items', (SELECT NULL::BIGINT AS id, 'lime' AS name), mode := 'append');
+----
+NOT NULL constraint failed: items.id
+
 # Inside BEGIN the write still fails loud, and nothing is written
 statement ok
 BEGIN;
 
 statement error
-INSERT INTO df.items VALUES (6, 'lime');
+INSERT INTO df.items VALUES (8, 'lime');
 ----
 does not support multi-statement transactions
 
@@ -122,7 +141,30 @@ ROLLBACK;
 query I
 SELECT count(*) FROM df.items;
 ----
-5
+6
 
 statement ok
 DETACH df;
+
+# DuckDB 2.0 CONNECT routes both commands and queries through the same ADBC
+# connection. CREATE has no IF NOT EXISTS, guarding against double execution.
+statement ok
+ATTACH '' AS datafusion_connected (TYPE adbc, driver 'datafusion');
+
+statement ok
+CONNECT datafusion_connected;
+
+statement ok
+CREATE TABLE connected_items AS SELECT 1 AS id, 'one' AS name UNION ALL SELECT 2, 'two';
+
+query IT
+SELECT id, name FROM connected_items ORDER BY id;
+----
+1	one
+2	two
+
+statement ok
+DISCONNECT;
+
+statement ok
+DETACH datafusion_connected;

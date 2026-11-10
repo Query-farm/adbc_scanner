@@ -1,0 +1,45 @@
+# name: test/sql/adbc_postgres_cancel.test
+# description: interrupting a query cancels the running PostgreSQL statement (AdbcStatementCancel)
+# group: [adbc]
+#
+# Requires the postgresql ADBC driver and a PostgreSQL server at
+# postgresql://postgres:postgres@localhost:5432/postgres (ADBC_POSTGRES_TEST_AVAILABLE=1).
+
+require adbc_scanner
+
+require-env ADBC_POSTGRES_TEST_AVAILABLE
+
+statement ok
+ATTACH 'postgresql://postgres:postgres@localhost:5432/postgres' AS pg (TYPE adbc, driver 'postgresql');
+
+statement ok
+SET max_execution_time = 500;
+
+# pg_sleep blocks inside the driver; only cancelling the statement ends it early
+statement error
+SELECT * FROM adbc_scan('pg', 'SELECT pg_sleep(30)::text AS slept', columns := {'slept': 'VARCHAR'});
+----
+Query exceeded maximum execution time
+
+statement error
+CALL adbc_execute('pg', 'SELECT pg_sleep(30)');
+----
+Query exceeded maximum execution time
+
+statement ok
+RESET max_execution_time;
+
+# The server-side statements were cancelled: nothing is still sleeping
+query I
+SELECT * FROM adbc_scan('pg', 'SELECT count(*) FROM pg_stat_activity WHERE query LIKE ''%pg_sleep(30)%'' AND state = ''active'' AND pid <> pg_backend_pid()', columns := {'count': 'BIGINT'});
+----
+0
+
+# The connection is still usable afterwards
+query I
+SELECT * FROM adbc_scan('pg', 'SELECT 42::bigint AS answer', columns := {'answer': 'BIGINT'});
+----
+42
+
+statement ok
+DETACH pg;

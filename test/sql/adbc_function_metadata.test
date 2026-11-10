@@ -1,0 +1,42 @@
+# name: test/sql/adbc_function_metadata.test
+# description: every adbc_* function documents itself in duckdb_functions()
+# group: [adbc]
+
+require adbc_scanner
+
+# The functions this extension registers
+query I
+SELECT DISTINCT function_name FROM duckdb_functions()
+WHERE function_name LIKE 'adbc%'
+ORDER BY function_name;
+----
+adbc_clear_cache
+adbc_columns
+adbc_execute
+adbc_info
+adbc_insert
+adbc_profiles
+adbc_remote_query
+adbc_scan
+adbc_scan_table
+adbc_schema
+adbc_table_types
+adbc_tables
+
+# Each has a description, at least one example and a category
+query I
+SELECT list_sort(list(DISTINCT function_name)) FROM duckdb_functions()
+WHERE function_name LIKE 'adbc%'
+  AND (description IS NULL OR description = ''
+       OR examples IS NULL OR len(examples) = 0
+       OR categories IS NULL OR len(categories) = 0);
+----
+NULL
+
+# Every example names its own function
+query I
+SELECT count(*) FROM (
+    SELECT function_name, unnest(examples) AS example FROM duckdb_functions() WHERE function_name LIKE 'adbc%'
+) WHERE NOT contains(example, function_name);
+----
+0

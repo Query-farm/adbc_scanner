@@ -109,7 +109,7 @@ void AdbcSchemaSet::LoadEntries(AdbcTransaction &transaction) {
 	// Create schema entries for each discovered schema
 	for (const auto &schema_name : schema_names) {
 		CreateSchemaInfo info;
-		info.schema = schema_name;
+		info.SetSchema(Identifier(schema_name));
 		info.internal = false;
 		auto schema = make_shared_ptr<AdbcSchemaEntry>(catalog, info);
 		CreateEntry(transaction, std::move(schema));
@@ -125,7 +125,7 @@ optional_ptr<CatalogEntry> AdbcSchemaSet::CreateSchema(AdbcTransaction &transact
 	if (info.on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT) {
 		sql += "IF NOT EXISTS ";
 	}
-	sql += KeywordHelper::WriteQuoted(info.schema, '"');
+	sql += KeywordHelper::WriteQuotedAndEscaped(info.SchemaName().GetIdentifierName(), '"');
 
 	// Execute on remote database
 	auto statement = make_uniq<AdbcStatementWrapper>(connection);

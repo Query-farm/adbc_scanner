@@ -3,6 +3,7 @@
 #include "adbc_scanner_extension.hpp"
 #include "adbc_functions.hpp"
 #include "adbc_secrets.hpp"
+#include "adbc_connection.hpp"
 #include "storage/adbc_storage.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
@@ -11,7 +12,12 @@
 
 namespace adbc_scanner {
 
+static constexpr const char *ADBC_EXTENSION_VERSION = "2026110701";
+
 static void LoadInternal(duckdb::ExtensionLoader &loader) {
+	// Extension settings (adbc_allowed_drivers)
+	RegisterAdbcSettings(loader.GetDatabaseInstance());
+
 	// Register ADBC secret type and create secret function
 	RegisterAdbcSecrets(loader);
 
@@ -37,7 +43,7 @@ static void LoadInternal(duckdb::ExtensionLoader &loader) {
 	auto &config = duckdb::DBConfig::GetConfig(loader.GetDatabaseInstance());
 	StorageExtension::Register(config, "adbc", make_shared_ptr<AdbcStorageExtension>());
 
-	duckdb::QueryFarmSendTelemetry(loader, "adbc", "2026102001");
+	duckdb::QueryFarmSendTelemetry(loader, "adbc", ADBC_EXTENSION_VERSION);
 }
 
 } // namespace adbc_scanner
@@ -53,7 +59,7 @@ std::string AdbcScannerExtension::Name() {
 }
 
 std::string AdbcScannerExtension::Version() const {
-	return "2026102001";
+	return adbc_scanner::ADBC_EXTENSION_VERSION;
 }
 
 } // namespace duckdb

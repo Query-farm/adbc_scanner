@@ -1,0 +1,72 @@
+# name: test/sql/adbc_security_sqlite.test
+# description: allowlist, credential scrubbing and cancellation against the SQLite driver
+# group: [adbc]
+
+require adbc_scanner
+
+require-env HAS_ADBC_SQLITE_DRIVER
+
+# An allowlisted driver attaches normally
+statement ok
+SET adbc_allowed_drivers = 'sqlite';
+
+statement ok
+ATTACH ':memory:' AS allowed (TYPE adbc, driver 'sqlite');
+
+query I
+SELECT * FROM adbc_scan('allowed', 'SELECT 42 AS x', columns := {'x': 'BIGINT'});
+----
+42
+
+statement ok
+DETACH allowed;
+
+statement ok
+RESET adbc_allowed_drivers;
+
+# The attach path shown in duckdb_databases() never carries credentials
+# (SQLite ignores URI parameters it does not know)
+statement ok
+ATTACH 'file:__TEST_DIR__/scrub.db?password=hunter2' AS scrubbed (TYPE adbc, driver 'sqlite');
+
+query II
+SELECT contains(path, 'hunter2'), contains(path, 'password=***') FROM duckdb_databases() WHERE database_name = 'scrubbed';
+----
+false	true
+
+statement ok
+DETACH scrubbed;
+
+# ============================================
+# Cancellation: max_execution_time stops an endless remote result. The SQLite
+# driver cannot cancel a running statement, so this checks the interrupt check
+# between batches; adbc_cancel_duckdb.test covers AdbcStatementCancel.
+# ============================================
+
+statement ok
+ATTACH ':memory:' AS slow (TYPE adbc, driver 'sqlite');
+
+statement ok
+SET max_execution_time = 300;
+
+statement error
+SELECT sum(x) FROM adbc_scan('slow', 'WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) SELECT x FROM c', columns := {'x': 'BIGINT'});
+----
+Query exceeded maximum execution time
+
+statement error
+SELECT sum(x) FROM adbc_scan_table('slow', 'endless');
+----
+<REGEX>:.*(no such table|endless).*
+
+statement ok
+RESET max_execution_time;
+
+# The connection is still usable afterwards
+query I
+SELECT * FROM adbc_scan('slow', 'SELECT 1 AS one', columns := {'one': 'BIGINT'});
+----
+1
+
+statement ok
+DETACH slow;

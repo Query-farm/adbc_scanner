@@ -9,6 +9,9 @@
 #include <mutex>
 #include <unordered_set>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <thread>
 
 namespace adbc_scanner {
 using namespace duckdb;
@@ -492,6 +495,97 @@ private:
     unique_ptr<AdbcOperationLease> operation;
 };
 
+// Cancels a running ADBC statement when the DuckDB query is interrupted
+// (Ctrl-C, Connection::Interrupt, a client cancelling the query) or runs past
+// max_execution_time.
+//
+// Blocking driver calls (ExecuteQuery, ArrowArrayStream::get_next) cannot check
+// ClientContext themselves, so a small background thread polls the interrupt
+// flag and calls AdbcStatementCancel, which ADBC allows from another thread.
+// The blocked call then fails, and the caller rethrows it as the interrupt
+// (see ThrowIfInterrupted). Stop() (or the destructor) joins the thread; call
+// it before the statement or its stream is released.
+class AdbcInterruptWatcher {
+public:
+    AdbcInterruptWatcher(ClientContext &context, shared_ptr<AdbcStatementWrapper> statement_p)
+        : statement(std::move(statement_p)) {
+        thread = std::thread([this, &context]() {
+            std::unique_lock<std::mutex> l(lock);
+            while (!stopping) {
+                if (QueryStopped(context)) {
+                    if (statement) {
+                        statement->Cancel();
+                    }
+                    cancelled = true;
+                    return;
+                }
+                cv.wait_for(l, std::chrono::milliseconds(50));
+            }
+        });
+    }
+    ~AdbcInterruptWatcher() {
+        Stop();
+    }
+    void Stop() {
+        {
+            std::lock_guard<std::mutex> l(lock);
+            stopping = true;
+        }
+        cv.notify_all();
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+    bool Cancelled() const {
+        return cancelled.load();
+    }
+    // The query was interrupted or ran past max_execution_time
+    static bool QueryStopped(const ClientContext &context) {
+        try {
+            context.BlockingInterruptCheck();
+            return false;
+        } catch (InterruptException &) {
+            return true;
+        }
+    }
+    AdbcInterruptWatcher(const AdbcInterruptWatcher &) = delete;
+    AdbcInterruptWatcher &operator=(const AdbcInterruptWatcher &) = delete;
+
+private:
+    shared_ptr<AdbcStatementWrapper> statement;
+    std::thread thread;
+    std::mutex lock;
+    std::condition_variable cv;
+    bool stopping = false;
+    std::atomic<bool> cancelled {false};
+};
+
+// Call from a catch block around a blocking driver call: when the query was
+// interrupted (or hit max_execution_time), report that instead of the driver's
+// cancellation error.
+inline void ThrowIfInterrupted(ClientContext &context) {
+    context.BlockingInterruptCheck();
+}
+
+// Setting that limits which drivers ATTACH may load (comma-separated list of
+// driver names or paths, matched exactly against the 'driver' option). Empty
+// means any driver may be loaded.
+static constexpr const char *ADBC_ALLOWED_DRIVERS_SETTING = "adbc_allowed_drivers";
+
+// Register the extension's settings (adbc_allowed_drivers).
+void RegisterAdbcSettings(DatabaseInstance &db);
+
+// Throw a PermissionException when enable_external_access is false. Loading an
+// ADBC driver runs arbitrary native code and connects to external systems;
+// listing profiles reads the filesystem and environment.
+void RequireExternalAccess(ClientContext &context, const string &what);
+
+// Throw a PermissionException when adbc_allowed_drivers is set and the options
+// would load a driver outside the allowlist. Options that can redirect driver
+// resolution (connection profiles, extra search paths) are refused while an
+// allowlist is in effect, since the loaded library could not be verified.
+void CheckDriverAllowed(ClientContext &context, const AdbcOptions &options);
+
 // Helper to create a connection from a vector of options
 // Extracts driver, entrypoint, uri, search_paths, use_manifests and configures the connection
 // Returns the initialized connection wrapper
@@ -522,7 +616,7 @@ void ForEachArrowBatch(ArrowArrayStream &stream, const string &function_name, Ca
 			string msg = function_name + ": Failed to get next batch";
 			if (error_msg) {
 				msg += ": ";
-				msg += error_msg;
+				msg += ScrubCredentials(error_msg);
 			}
 			throw IOException(msg);
 		}

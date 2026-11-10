@@ -127,8 +127,10 @@ struct AdbcProfilesGlobalState : public GlobalTableFunctionState {
 	}
 };
 
-unique_ptr<FunctionData> AdbcProfilesBind(ClientContext &, TableFunctionBindInput &input,
-                                          vector<LogicalType> &return_types, vector<string> &names) {
+unique_ptr<FunctionData> AdbcProfilesBind(ClientContext &context, TableFunctionBindInput &input,
+                                          vector<LogicalType> &return_types, vector<Identifier> &names) {
+	// Reads the filesystem and environment variables
+	RequireExternalAccess(context, "adbc_profiles()");
 	auto bind_data = make_uniq<AdbcProfilesBindData>();
 
 	string extra_search_paths;
@@ -208,7 +210,10 @@ void RegisterAdbcProfilesFunction(DatabaseInstance &db) {
 	ExtensionLoader loader(db, "adbc");
 
 	TableFunction profiles("adbc_profiles", {}, AdbcProfilesFunction, AdbcProfilesBind, AdbcProfilesInit);
-	profiles.named_parameters["search_paths"] = LogicalType::VARCHAR;
+	// Optional named parameters: a call that leaves one out does not pass it.
+	profiles.GetSignature().WithTypedKwargs("kwargs", [](TypedKwargs &options) {
+	    options.Add("search_paths", LogicalType::VARCHAR);
+	});
 
 	CreateTableFunctionInfo info(profiles);
 	FunctionDescription desc;

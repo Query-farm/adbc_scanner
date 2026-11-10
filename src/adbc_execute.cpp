@@ -15,7 +15,7 @@ struct AdbcExecuteState : public GlobalTableFunctionState {
 };
 
 static unique_ptr<FunctionData> AdbcExecuteBind(ClientContext &, TableFunctionBindInput &input,
-                                              vector<LogicalType> &types, vector<string> &names) {
+                                              vector<LogicalType> &types, vector<Identifier> &names) {
     if (input.inputs[0].IsNull()) {
         throw InvalidInputException("adbc_execute: database name cannot be NULL");
     }
@@ -43,11 +43,18 @@ static void AdbcExecute(ClientContext &context, TableFunctionInput &input, DataC
     state.finished = true;
     auto &data = input.bind_data->Cast<AdbcExecuteBindData>();
     auto connection = GetAttachedConnection(context, Value(data.database), "adbc_execute", true);
-    AdbcStatementWrapper statement(connection);
-    statement.Init();
-    statement.SetSqlQuery(data.query);
+    auto statement = make_shared_ptr<AdbcStatementWrapper>(connection);
+    statement->Init();
+    statement->SetSqlQuery(data.query);
     int64_t affected = -1;
-    statement.ExecuteUpdate(&affected);
+    try {
+        // Cancel the statement if the query is interrupted while it runs
+        AdbcInterruptWatcher watcher(context, statement);
+        statement->ExecuteUpdate(&affected);
+    } catch (Exception &) {
+        ThrowIfInterrupted(context);
+        throw;
+    }
     output.SetCardinality(1);
     output.SetValue(0, 0, affected < 0 ? Value(LogicalType::BIGINT) : Value::BIGINT(affected));
 }
@@ -56,6 +63,7 @@ void RegisterAdbcExecuteFunction(DatabaseInstance &db) {
     ExtensionLoader loader(db, "adbc");
     TableFunction function("adbc_execute", {LogicalType::VARCHAR, LogicalType::VARCHAR},
                            AdbcExecute, AdbcExecuteBind, AdbcExecuteInit);
+    NameParameters(function, {"database", "query"});
     CreateTableFunctionInfo info(function);
     FunctionDescription description;
     description.description = "Execute a remote command at runtime; return NULL when the affected-row count is unknown";
@@ -63,6 +71,5 @@ void RegisterAdbcExecuteFunction(DatabaseInstance &db) {
     description.categories = {"adbc"};
     info.descriptions.push_back(std::move(description));
     loader.RegisterFunction(info);
-    DescribeParameters(loader, "adbc_execute", {"database", "query"});
 }
 } // namespace adbc_scanner

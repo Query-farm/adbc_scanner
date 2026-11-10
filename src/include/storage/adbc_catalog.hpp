@@ -9,6 +9,8 @@
 #pragma once
 
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/parser/qualified_name.hpp"
 #include "duckdb/common/enums/access_mode.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
@@ -19,6 +21,7 @@
 #include "duckdb/planner/operator/logical_update.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
 #include "adbc_connection.hpp"
+#include "adbc_sql_dialect.hpp"
 #include "storage/adbc_schema_set.hpp"
 #include "storage/adbc_connection_pool.hpp"
 
@@ -27,8 +30,8 @@ using namespace duckdb;
 
 class AdbcCatalog : public Catalog {
 public:
-	explicit AdbcCatalog(AttachedDatabase &db_p, shared_ptr<AdbcConnectionWrapper> connection,
-	                     const string &path, AccessMode access_mode);
+	explicit AdbcCatalog(AttachedDatabase &db_p, shared_ptr<AdbcConnectionWrapper> connection, const string &path,
+	                     AccessMode access_mode);
 	~AdbcCatalog();
 
 	//! The ADBC connection (shared ownership with the catalog). The primary
@@ -43,6 +46,8 @@ public:
 	AccessMode access_mode;
 	//! Optional batch size for scan operations (0 means use driver default)
 	idx_t batch_size = 0;
+	//! Whether complete queries may be pushed into the remote database
+	bool query_pushdown = true;
 	//! SQLite ':memory:' gives each ADBC connection its own empty database, so
 	//! the transaction's write connection cannot see this attachment's tables.
 	bool per_connection_memory = false;
@@ -55,7 +60,9 @@ public:
 	//! The schema an unqualified name (db.table, USE db) resolves to: the
 	//! default_schema ATTACH option if given, otherwise worked out from the
 	//! driver on first use (see ResolveDefaultSchema).
-	string GetDefaultSchema() const override;
+	optional<Identifier> GetDefaultSchema() const override;
+	//! The default schema as a plain string.
+	string GetDefaultSchemaName() const;
 	//! Pin the default schema (the default_schema ATTACH option).
 	void SetDefaultSchema(const string &schema);
 
@@ -80,6 +87,12 @@ public:
 	//! Whether or not this is an in-memory database
 	bool InMemory() override;
 	string GetDBPath() override;
+	bool Supports(RemoteCapability capability) const override;
+	unique_ptr<TableRef> RemoteExecute(ClientContext &context, unique_ptr<QueryNode> node) override;
+	unique_ptr<TableRef> RemoteExecute(ClientContext &context, const string &sql) override;
+	bool SupportsPushdown(const ParsedExpression &expression) override;
+	bool SupportsPushdown(const TableRef &ref) override;
+	bool SupportsPushdown(const QueryNode &node) override;
 
 	shared_ptr<AdbcConnectionWrapper> GetConnection() const {
 		return connection;
@@ -93,6 +106,11 @@ public:
 	}
 
 	void ClearCache();
+
+	//! The already-loaded table a pushed-down base table reference names, or nullptr. Never loads
+	//! anything: RemotePushdownOptimizer has looked every referenced table up before asking whether
+	//! a query node can be pushed down.
+	optional_ptr<TableCatalogEntry> GetLoadedTable(const QualifiedName &name);
 
 	//! Whether or not this catalog should search a specific type with the standard priority
 	CatalogLookupBehavior CatalogTypeLookupRule(CatalogType type) const override {
@@ -115,6 +133,7 @@ private:
 
 private:
 	AdbcSchemaSet schemas;
+	AdbcSQLDialect dialect;
 	mutable mutex default_schema_lock;
 	//! Empty until resolved.
 	mutable string default_schema;

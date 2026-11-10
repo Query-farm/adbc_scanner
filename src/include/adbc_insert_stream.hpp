@@ -19,6 +19,7 @@
 #include <thread>
 #include <mutex>
 #include <condition_variable>
+#include <chrono>
 #include <cstdlib>
 
 namespace adbc_scanner {
@@ -45,6 +46,91 @@ inline size_t ResolveMaxPendingBatches(int64_t override_value) {
         }
     }
     return DEFAULT_MAX_PENDING_BATCHES;
+}
+
+// NOT NULL columns of an existing ingest target, as the driver reports them
+// through AdbcConnectionGetTableSchema.
+//
+// ArrowConverter marks every field nullable, but drivers that compare schemas
+// strictly on append reject a nullable field for a NOT NULL column (DataFusion:
+// "table 'items' exists with a different schema"; `CREATE TABLE t AS SELECT 1 AS
+// id` there makes `id` NOT NULL). Returns, per outgoing column name, whether the
+// target declares it NOT NULL, matching names exactly first, then
+// case-insensitively. Apply the result with ApplyNotNullColumns, and reject
+// rows that violate it with CheckNotNullColumns rather than send data that
+// contradicts the schema.
+//
+// Call this before creating the ingest statement: a statement holds the
+// connection, and no other call may use it until the statement is released.
+// Best effort: when the driver cannot report the schema (no such table,
+// NOT_IMPLEMENTED, ...) the result is all false and nothing changes.
+inline vector<bool> GetTargetNotNullColumns(AdbcConnectionWrapper &connection, const char *db_schema,
+                                            const string &table_name, const vector<string> &names) {
+    vector<bool> not_null(names.size(), false);
+    ArrowSchema target;
+    memset(&target, 0, sizeof(target));
+    try {
+        connection.GetTableSchema(nullptr, db_schema, table_name.c_str(), &target);
+    } catch (std::exception &) {
+        if (target.release) {
+            target.release(&target);
+        }
+        return not_null;
+    }
+
+    for (idx_t i = 0; i < names.size(); i++) {
+        ArrowSchema *match = nullptr;
+        for (int64_t j = 0; j < target.n_children; j++) {
+            auto *field = target.children[j];
+            if (!field || !field->name) {
+                continue;
+            }
+            if (names[i] == field->name) {
+                match = field;
+                break;
+            }
+            if (!match && StringUtil::CIEquals(names[i], field->name)) {
+                match = field;
+            }
+        }
+        not_null[i] = match && !(match->flags & ARROW_FLAG_NULLABLE);
+    }
+    if (target.release) {
+        target.release(&target);
+    }
+    return not_null;
+}
+
+// Clear the nullable flag of the outgoing fields the target declares NOT NULL.
+inline void ApplyNotNullColumns(ArrowSchema &outgoing, const vector<bool> &not_null) {
+    for (idx_t i = 0; i < not_null.size() && i < static_cast<idx_t>(outgoing.n_children); i++) {
+        if (not_null[i] && outgoing.children[i]) {
+            outgoing.children[i]->flags &= ~ARROW_FLAG_NULLABLE;
+        }
+    }
+}
+
+// Reject a chunk holding a NULL in a column the target table declares NOT NULL
+// (flags from GetTargetNotNullColumns). The outgoing Arrow schema marks those
+// fields non-nullable, so such a batch must never reach the driver.
+inline void CheckNotNullColumns(DataChunk &chunk, const vector<bool> &not_null, const vector<string> &names,
+                                const string &table_name) {
+    for (idx_t col = 0; col < not_null.size() && col < chunk.ColumnCount(); col++) {
+        if (!not_null[col]) {
+            continue;
+        }
+        UnifiedVectorFormat format;
+        chunk.data[col].ToUnifiedFormat(chunk.size(), format);
+        if (format.validity.CannotHaveNull()) {
+            continue;
+        }
+        for (idx_t row = 0; row < chunk.size(); row++) {
+            if (!format.validity.RowIsValid(format.sel->get_index(row))) {
+                throw ConstraintException("NOT NULL constraint failed: %s.%s", table_name,
+                                          col < names.size() ? names[col] : to_string(col));
+            }
+        }
+    }
 }
 
 // Bounded, blocking ArrowArrayStream bridging the DuckDB producer and the ADBC
@@ -111,14 +197,22 @@ struct AdbcInsertStream {
     }
 
     // Producer side. Blocks while the queue is full to apply backpressure.
-    // Returns false if the consumer has stopped/aborted and the batch could not
-    // be handed off (the batch is released in that case).
-    bool AddBatch(ArrowArray *batch) {
+    // Returns false if the consumer has stopped/aborted, or the query behind
+    // `context` was interrupted while waiting, and the batch could not be handed
+    // off (the batch is released in that case).
+    bool AddBatch(ArrowArray *batch, const ClientContext *context = nullptr) {
         std::unique_lock<std::mutex> l(lock);
-        cv_not_full.wait(l, [&] {
+        auto ready = [&] {
             return pending_batches.size() < max_batches || consumer_stopped || aborted;
-        });
-        if (consumer_stopped || aborted) {
+        };
+        bool interrupted = false;
+        while (!cv_not_full.wait_for(l, std::chrono::milliseconds(50), ready)) {
+            if (context && AdbcInterruptWatcher::QueryStopped(*context)) {
+                interrupted = true;
+                break;
+            }
+        }
+        if (interrupted || consumer_stopped || aborted) {
             if (batch->release) {
                 batch->release(batch);
             }
@@ -268,9 +362,31 @@ struct AdbcStreamingInsertConsumer {
     }
 
     // Producer side: hand a batch to the consumer (blocks for backpressure).
-    // Returns false if the consumer already stopped (error/cancellation).
-    bool AddBatch(ArrowArray *batch) {
-        return insert_stream->AddBatch(batch);
+    // Returns false if the consumer already stopped (error/cancellation). When
+    // the query is interrupted, aborts the ingestion, cancels the statement and
+    // throws InterruptException.
+    bool AddBatch(ArrowArray *batch, ClientContext &context) {
+        if (insert_stream->AddBatch(batch, &context)) {
+            return true;
+        }
+        if (AdbcInterruptWatcher::QueryStopped(context)) {
+            insert_stream->Abort("adbc_insert: query interrupted");
+            if (statement) {
+                statement->Cancel();
+            }
+            ThrowIfInterrupted(context);
+        }
+        return false;
+    }
+
+    // Producer side: hand a batch to the consumer, throwing an IOException
+    // prefixed with `what` when the consumer already stopped.
+    void PushBatch(ArrowArray *batch, ClientContext &context, const string &what) {
+        if (!AddBatch(batch, context)) {
+            string err = GetConsumerError();
+            throw IOException(what + ": ingestion stopped early: " +
+                              (err.empty() ? string("consumer terminated") : err));
+        }
     }
 
     string GetConsumerError() {
@@ -284,11 +400,16 @@ struct AdbcStreamingInsertConsumer {
     }
 
     // Signal end of input and wait for ExecuteUpdate to finish draining. Throws
-    // an IOException if the consumer reported an error.
-    void FinishAndJoin() {
+    // an IOException if the consumer reported an error, or InterruptException
+    // when the query was interrupted (which cancels the statement).
+    void FinishAndJoin(ClientContext &context) {
         insert_stream->Finish();
-        JoinConsumer();
+        {
+            AdbcInterruptWatcher watcher(context, statement);
+            JoinConsumer();
+        }
         if (!exec_ok) {
+            ThrowIfInterrupted(context);
             throw IOException("adbc_insert: Failed to execute insert: " + exec_error);
         }
     }

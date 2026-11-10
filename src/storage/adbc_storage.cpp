@@ -22,9 +22,14 @@ static unique_ptr<Catalog> AdbcAttach(optional_ptr<StorageExtensionInfo> storage
 	// Parse the connection options from the attach info
 	// Format: ATTACH 'connection_string' AS name (TYPE adbc, driver 'path')
 
+	// Attaching loads a native ADBC driver library and connects to an external
+	// system, so it requires external access.
+	RequireExternalAccess(context, "Attaching an ADBC database (TYPE adbc)");
+
 	// First, collect explicit options into a vector for secret merging
 	AdbcOptions explicit_options;
 	idx_t batch_size = 0;
+	bool query_pushdown = true;
 	string default_schema;
 
 	for (auto &entry : attach_options.options) {
@@ -32,6 +37,8 @@ static unique_ptr<Catalog> AdbcAttach(optional_ptr<StorageExtensionInfo> storage
 		if (lower_name == "batch_size") {
 			// batch_size is handled separately as it's DuckDB-specific, not passed to ADBC
 			batch_size = entry.second.GetValue<idx_t>();
+		} else if (lower_name == "query_pushdown") {
+			query_pushdown = entry.second.DefaultCastAs(LogicalType::BOOLEAN).GetValue<bool>();
 		} else if (lower_name == "default_schema") {
 			// Also DuckDB-specific: the schema that unqualified names resolve to
 			default_schema = entry.second.ToString();
@@ -85,12 +92,17 @@ static unique_ptr<Catalog> AdbcAttach(optional_ptr<StorageExtensionInfo> storage
 	// Merge with secrets (this looks up secrets by name or URI scope)
 	auto options = MergeSecretOptions(context, explicit_options);
 
+	// The driver may come from a secret, so check the allowlist after merging
+	CheckDriverAllowed(context, options);
+
 	// Create the connection using the shared helper
 	auto connection = CreateConnectionFromOptions(options);
 
-	// Create and return the catalog
-	auto catalog = make_uniq<AdbcCatalog>(db, connection, info.path, attach_options.access_mode);
+	// Create and return the catalog. The path is shown in duckdb_databases(),
+	// so never keep credentials in it.
+	auto catalog = make_uniq<AdbcCatalog>(db, connection, ScrubCredentials(info.path), attach_options.access_mode);
 	catalog->batch_size = batch_size;
+	catalog->query_pushdown = query_pushdown;
 	if (!default_schema.empty()) {
 		catalog->SetDefaultSchema(default_schema);
 	}
@@ -103,11 +115,11 @@ static unique_ptr<Catalog> AdbcAttach(optional_ptr<StorageExtensionInfo> storage
 		}
 	}
 	catalog->per_connection_memory = driver.find("sqlite") != string::npos && uri == ":memory:";
-	return catalog;
+	return std::move(catalog);
 }
 
 static unique_ptr<TransactionManager> AdbcCreateTransactionManager(optional_ptr<StorageExtensionInfo> storage_info,
-                                                                    AttachedDatabase &db, Catalog &catalog) {
+                                                                   AttachedDatabase &db, Catalog &catalog) {
 	auto &adbc_catalog = catalog.Cast<AdbcCatalog>();
 	return make_uniq<AdbcTransactionManager>(db, adbc_catalog);
 }

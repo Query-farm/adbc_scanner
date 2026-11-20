@@ -1,9 +1,19 @@
-vcpkg_from_github(
-    OUT_SOURCE_PATH SOURCE_PATH
-    REPO apache/arrow-adbc
-    REF apache-arrow-adbc-${VERSION}
-    SHA512 ba073648460c71c1abd4413364afebbcb2215402eb7e3d5e857197ac5e040d9a0abdfe4248b3990e0ad84b3f0cd6559a4c8660145c1f001ce19e14c6192f2b58
-    HEAD_REF main
+# Use Apache's signed source release, not GitHub's tag archive. The GitHub archive
+# embeds the refs pointing at the release commit (export-subst in _static_version.py),
+# so its hash changes whenever upstream adds another tag there (go/adbc/v1.13.0 did,
+# breaking the build). The release tarball is immutable; its SHA512 matches
+# apache-arrow-adbc-${VERSION}.tar.gz.sha512 and the .asc signature on dist.apache.org.
+# downloads.apache.org only keeps current releases; archive.apache.org keeps all of them.
+vcpkg_download_distfile(ARCHIVE
+    URLS
+        "https://downloads.apache.org/arrow/apache-arrow-adbc-${VERSION}/apache-arrow-adbc-${VERSION}.tar.gz"
+        "https://archive.apache.org/dist/arrow/apache-arrow-adbc-${VERSION}/apache-arrow-adbc-${VERSION}.tar.gz"
+    FILENAME "apache-arrow-adbc-${VERSION}.tar.gz"
+    SHA512 45f0672c082ac3437dbaf07039e0b36052faaa7c960886ce5745dc398369ca7be038fe45dbe67c45b3c6ba6eebc47541c77c02065a3ff8bb7480adf5baf524d0
+)
+vcpkg_extract_source_archive(
+    SOURCE_PATH
+    ARCHIVE "${ARCHIVE}"
     PATCHES
         toml.patch
 #    PATCHES

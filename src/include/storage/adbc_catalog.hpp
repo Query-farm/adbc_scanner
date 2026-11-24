@@ -46,6 +46,8 @@ public:
 	AccessMode access_mode;
 	//! Optional batch size for scan operations (0 means use driver default)
 	idx_t batch_size = 0;
+	//! Opt-in generated table partition reads; one preserves the serial path.
+	idx_t scan_threads = 1;
 	//! Whether complete queries may be pushed into the remote database
 	bool query_pushdown = true;
 	//! SQLite ':memory:' gives each ADBC connection its own empty database, so

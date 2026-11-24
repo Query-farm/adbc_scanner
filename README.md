@@ -21,3 +21,7 @@ Full documentation, including installation, usage, the function reference, and c
 **[https://query.farm/products/extensions/adbc_scanner/](https://query.farm/products/extensions/adbc_scanner/)**
 
 [Repository notes](docs/REPOSITORY_NOTES.md) · [Build and test](docs/BUILDING.md)
+
+## Experimental development
+
+[Opt-in parallel ADBC partition scans](docs/partitioned-scans.md) describes the implementation candidate, conservative scope and pending validation.

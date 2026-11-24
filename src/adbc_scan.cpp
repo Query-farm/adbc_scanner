@@ -15,11 +15,14 @@
 #include "duckdb/common/insertion_order_preserving_map.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/parallel/task_scheduler.hpp"
+#include "duckdb/parallel/pipeline.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
 #include <nanoarrow/nanoarrow.h>
 #include <optional>
 #include <variant>
+#include <exception>
 
 namespace adbc_scanner {
 using namespace duckdb;
@@ -93,8 +96,9 @@ struct AdbcScanBindData : public TableFunctionData {
     vector<LogicalType> param_types;
     // Batch size hint for the driver (0 = use driver default)
     idx_t batch_size = 0;
-    // For adbc_scan_table: store catalog, schema, table name and column names for projection pushdown
-    string catalog_name;  // Optional catalog (empty = default)
+	idx_t scan_threads = 1; // ATTACH generated table scans only
+	// For adbc_scan_table: store catalog, schema, table name and column names for projection pushdown
+	string catalog_name;  // Optional catalog (empty = default)
     string schema_name;   // Optional schema (empty = default)
     string table_name;    // Empty for adbc_scan, set for adbc_scan_table
     vector<string> all_column_names;  // All columns in the table (for building projected query)
@@ -117,6 +121,34 @@ struct AdbcScanBindData : public TableFunctionData {
     bool HasParams() const { return !params.empty(); }
 };
 
+// Local reader teardown also retains producer ownership and its failure signal.
+// Do not rely on executor destruction order for background cancellation threads.
+struct AdbcPartitionLifetime {
+	shared_ptr<AdbcStatementWrapper> producer;
+	std::atomic<bool> failed {false};
+	mutex failure_mutex;
+	std::exception_ptr first_failure;
+
+	void Fail(std::exception_ptr cause) {
+		lock_guard<mutex> guard(failure_mutex);
+		if (!first_failure)
+			first_failure = std::move(cause);
+		failed.store(true);
+	}
+	void RethrowIfFailed() {
+		if (!failed.load())
+			return;
+		std::exception_ptr cause;
+		{
+			lock_guard<mutex> guard(failure_mutex);
+			cause = first_failure;
+		}
+		if (cause)
+			std::rethrow_exception(cause);
+		throw IOException("An ADBC partition reader failed");
+	}
+};
+
 // Global state for adbc_scan - holds the Arrow stream and statement
 struct AdbcScanGlobalState : public GlobalTableFunctionState {
     // The prepared statement (owned by global state for proper lifecycle)
@@ -126,8 +158,15 @@ struct AdbcScanGlobalState : public GlobalTableFunctionState {
     // Whether the stream is initialized
     bool stream_initialized = false;
     // Whether we're done reading
-    bool done = false;
-    // Mutex for thread safety
+	atomic<bool> done {false};
+	bool partitioned = false;
+	idx_t scan_threads = 1;
+	vector<string> partition_tokens;
+	atomic<idx_t> next_partition {0};
+	atomic<bool> early_reader_claimed {false};
+	atomic<idx_t> completed_partitions {0};
+	shared_ptr<AdbcPartitionLifetime> partition_lifetime;
+	// Mutex for thread safety
     mutex main_mutex;
     // Current batch index
     idx_t batch_index = 0;
@@ -174,14 +213,40 @@ struct AdbcScanGlobalState : public GlobalTableFunctionState {
     }
 
     idx_t MaxThreads() const override {
-        return 1; // ADBC streams are typically single-threaded
-    }
+		return partitioned ? scan_threads : 1; // Never share one stream across workers
+	}
 };
 
 // Local state for adbc_scan - extends DuckDB's ArrowScanLocalState
 struct AdbcScanLocalState : public ArrowScanLocalState {
     explicit AdbcScanLocalState(unique_ptr<ArrowArrayWrapper> current_chunk, ClientContext &ctx)
         : ArrowScanLocalState(std::move(current_chunk), ctx) {}
+
+	ArrowArrayStream partition_stream {};
+	ArrowSchemaWrapper partition_schema;
+	unique_ptr<ArrowTableSchema> partition_table;
+	shared_ptr<AdbcPartitionLifetime> partition_lifetime;
+	shared_ptr<AdbcConnectionWrapper> partition_connection;
+	unique_ptr<AdbcPartitionInterruptWatcher> partition_watcher;
+	bool has_partition = false;
+	bool partition_reader_enabled = true;
+
+	void ClosePartition() {
+		// Stop concurrent Cancel calls before releasing stream/lease/connection.
+		partition_watcher.reset();
+		chunk.reset();
+		if (partition_stream.release)
+			partition_stream.release(&partition_stream);
+		memset(&partition_stream, 0, sizeof(partition_stream));
+		if (partition_schema.arrow_schema.release)
+			partition_schema.arrow_schema.release(&partition_schema.arrow_schema);
+		memset(&partition_schema.arrow_schema, 0, sizeof(partition_schema.arrow_schema));
+		partition_table.reset();
+		has_partition = false;
+	}
+	~AdbcScanLocalState() override {
+		ClosePartition();
+	}
 };
 
 // ============================================================================
@@ -868,9 +933,113 @@ static unique_ptr<LocalTableFunctionState> AdbcScanInitLocal(ExecutionContext &c
 }
 
 // Get the next batch from the Arrow stream
+// Descriptors are sensitive opaque capabilities, not SQL to parse or diagnostics.
+struct AdbcPartitionDescriptors {
+	AdbcPartitions value {};
+	~AdbcPartitionDescriptors() {
+		if (value.release)
+			value.release(&value);
+	}
+};
+
+static bool EqualPartitionSchema(const ArrowSchema &a, const ArrowSchema &b) {
+	auto text_equal = [](const char *x, const char *y) {
+		return (!x && !y) || (x && y && strcmp(x, y) == 0);
+	};
+	if (!text_equal(a.format, b.format) || !text_equal(a.name, b.name) || a.flags != b.flags ||
+	    a.n_children != b.n_children || bool(a.dictionary) != bool(b.dictionary))
+		return false;
+	auto am = ArrowMetadataSizeOf(a.metadata), bm = ArrowMetadataSizeOf(b.metadata);
+	if (am != bm || (am && memcmp(a.metadata, b.metadata, am) != 0))
+		return false;
+	for (int64_t i = 0; i < a.n_children; i++) {
+		if (!a.children || !b.children || !a.children[i] || !b.children[i] ||
+		    !EqualPartitionSchema(*a.children[i], *b.children[i]))
+			return false;
+	}
+	return !a.dictionary || EqualPartitionSchema(*a.dictionary, *b.dictionary);
+}
+
+static bool GetNextPartitionBatch(ClientContext &context, AdbcScanGlobalState &global, AdbcScanLocalState &local) {
+	if (!local.partition_reader_enabled)
+		return false;
+	local.partition_lifetime = global.partition_lifetime;
+	try {
+		for (;;) {
+			context.BlockingInterruptCheck();
+			local.partition_lifetime->RethrowIfFailed();
+			if (!local.has_partition) {
+				auto partition = global.next_partition.fetch_add(1);
+				if (partition >= global.partition_tokens.size())
+					return false;
+				if (!local.partition_connection) {
+					// Same initialized database preserves driver configuration/caches.
+					local.partition_connection =
+					    make_shared_ptr<AdbcConnectionWrapper>(global.statement->GetConnection()->GetDatabase());
+					local.partition_connection->Init();
+					local.partition_connection->Initialize();
+				}
+				local.partition_watcher = make_uniq<AdbcPartitionInterruptWatcher>(context, local.partition_connection,
+				                                                                   local.partition_lifetime->failed);
+				local.partition_connection->ReadPartition(global.partition_tokens[partition], &local.partition_stream);
+				local.has_partition = true;
+				if (!local.partition_stream.get_schema || !local.partition_stream.get_next ||
+				    !local.partition_stream.release ||
+				    local.partition_stream.get_schema(&local.partition_stream, &local.partition_schema.arrow_schema) !=
+				        0) {
+					throw IOException("ADBC partition did not return a valid stream/schema");
+				}
+				if (!EqualPartitionSchema(global.projected_schema.arrow_schema, local.partition_schema.arrow_schema)) {
+					throw IOException("ADBC partition schema differs from ExecutePartitions schema");
+				}
+				local.partition_table = make_uniq<ArrowTableSchema>();
+				AdbcPopulateArrowTableSchema(context, *local.partition_table, local.partition_schema.arrow_schema);
+				ValidateStreamSchema(*local.partition_table, global.expected_types, false);
+				local.Reset();
+			}
+			auto chunk = make_uniq<ArrowArrayWrapper>();
+			auto &stream = local.partition_stream;
+			int ret = stream.get_next(&stream, &chunk->arrow_array);
+			if (ret != 0 || (!chunk->arrow_array.release && stream.get_last_error && stream.get_last_error(&stream))) {
+				ThrowIfInterrupted(context);
+				auto msg = stream.get_last_error ? stream.get_last_error(&stream) : nullptr;
+				throw IOException("ADBC partition read failed: " + ScrubCredentials(msg ? msg : "driver error"));
+			}
+			if (!chunk->arrow_array.release) {
+				local.ClosePartition();
+				auto completed = global.completed_partitions.fetch_add(1) + 1;
+				if (completed == global.partition_tokens.size())
+					global.done = true;
+				continue;
+			}
+			if (chunk->arrow_array.length == 0)
+				continue;
+			ValidateStreamSchema(*local.partition_table, global.expected_types);
+			global.total_rows_read += chunk->arrow_array.length;
+			local.chunk = shared_ptr<ArrowArrayWrapper>(chunk.release());
+			local.chunk_offset = 0;
+			local.Reset();
+			{
+				lock_guard<mutex> guard(global.main_mutex);
+				local.batch_index = global.batch_index++;
+			}
+			return true;
+		}
+	} catch (...) {
+		// Peer watchers cancel their connection-scoped reads; no descriptor replay.
+		local.partition_lifetime->Fail(std::current_exception());
+		local.ClosePartition();
+		ThrowIfInterrupted(context);
+		local.partition_lifetime->RethrowIfFailed();
+		throw;
+	}
+}
+
 static bool GetNextBatch(ClientContext &context, AdbcScanGlobalState &global_state,
                          AdbcScanLocalState &local_state) {
-    lock_guard<mutex> lock(global_state.main_mutex);
+	if (global_state.partitioned)
+		return GetNextPartitionBatch(context, global_state, local_state);
+	lock_guard<mutex> lock(global_state.main_mutex);
 
     if (global_state.done) {
         return false;
@@ -1058,10 +1227,12 @@ static string BuildQualifiedTableName(const string &catalog, const string &schem
 // through this directly; inputs[0] is then just the attached database's name.
 unique_ptr<FunctionData> AdbcScanTableBindWithConnection(ClientContext &context, TableFunctionBindInput &input,
                                                          shared_ptr<AdbcConnectionWrapper> connection,
-                                                         vector<LogicalType> &return_types, vector<Identifier> &names) {
-    auto bind_data = make_uniq<AdbcScanBindData>();
+                                                         vector<LogicalType> &return_types, vector<Identifier> &names,
+                                                         idx_t scan_threads) {
+	auto bind_data = make_uniq<AdbcScanBindData>();
+	bind_data->scan_threads = scan_threads;
 
-    // Check for NULL database name first
+	// Check for NULL database name first
     if (input.inputs[0].IsNull()) {
         throw InvalidInputException("adbc_scan_table: database name cannot be NULL");
     }
@@ -1130,17 +1301,56 @@ static unique_ptr<FunctionData> AdbcScanTableBind(ClientContext &context, TableF
         throw InvalidInputException("adbc_scan_table: Table name cannot be NULL");
     }
     auto connection = GetAttachedConnection(context, input.inputs[0], "adbc_scan_table", false);
-    auto result = AdbcScanTableBindWithConnection(context, input, std::move(connection), return_types, names);
-    result->Cast<AdbcScanBindData>().resolve_at_runtime = true;
+	auto result = AdbcScanTableBindWithConnection(context, input, std::move(connection), return_types, names, 1);
+	result->Cast<AdbcScanBindData>().resolve_at_runtime = true;
     return result;
 }
 
 // Global init for adbc_scan_table - builds projected query based on column_ids and filters
+static bool TryExecuteTablePartitions(ClientContext &context, AdbcScanGlobalState &state, idx_t requested,
+                                      int64_t &rows_affected) {
+	AdbcPartitionDescriptors descriptors;
+	memset(&state.projected_schema.arrow_schema, 0, sizeof(state.projected_schema.arrow_schema));
+	if (!state.statement->ExecutePartitions(&state.projected_schema.arrow_schema, &descriptors.value, &rows_affected)) {
+		return false;
+	}
+	// Success is an irreversible execution boundary, including a valid empty set.
+	constexpr idx_t MAX_PARTITIONS = 65536;
+	constexpr size_t MAX_TOKEN_BYTES = 64 * 1024 * 1024;
+	auto &parts = descriptors.value;
+	if (!state.projected_schema.arrow_schema.release || parts.num_partitions > MAX_PARTITIONS ||
+	    (parts.num_partitions && (!parts.release || !parts.partitions || !parts.partition_lengths)) ||
+	    (!parts.release && (parts.private_data || parts.partitions || parts.partition_lengths))) {
+		throw IOException("Invalid or over-budget ADBC partition descriptors");
+	}
+	size_t bytes = 0;
+	for (idx_t i = 0; i < parts.num_partitions; i++) {
+		auto size = parts.partition_lengths[i];
+		if ((size && !parts.partitions[i]) || size > MAX_TOKEN_BYTES - bytes) {
+			throw IOException("Invalid or over-budget ADBC partition descriptor bytes");
+		}
+		bytes += size;
+		state.partition_tokens.emplace_back(size ? string(reinterpret_cast<const char *>(parts.partitions[i]), size)
+		                                         : string());
+	}
+	state.partition_lifetime = make_shared_ptr<AdbcPartitionLifetime>();
+	state.partition_lifetime->producer = state.statement;
+	state.partitioned = true;
+	auto scheduler_threads = MaxValue<idx_t>(1, TaskScheduler::GetScheduler(context).NumberOfThreads());
+	state.scan_threads = MaxValue<idx_t>(
+	    1, MinValue<idx_t>(requested, MinValue<idx_t>(scheduler_threads, state.partition_tokens.size())));
+	state.done = state.partition_tokens.empty();
+	return true;
+}
+
 static unique_ptr<GlobalTableFunctionState> AdbcScanTableInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
     auto &bind_data = input.bind_data->Cast<AdbcScanBindData>();
     auto global_state = make_uniq<AdbcScanGlobalState>();
 
-    auto connection = ScanConnection(context, bind_data, "adbc_scan_table");
+	if (bind_data.scan_threads > 1 && !context.transaction.IsAutoCommit()) {
+		throw InvalidInputException("Parallel ADBC partition scans require autocommit");
+	}
+	auto connection = ScanConnection(context, bind_data, "adbc_scan_table");
 
     // Build the query with projection pushdown
     // SQL dialect for the target driver (identifier quote char + placeholder style).
@@ -1248,20 +1458,26 @@ static unique_ptr<GlobalTableFunctionState> AdbcScanTableInitGlobal(ClientContex
     int64_t rows_affected = -1;
     global_state->WatchForInterrupt(context);
     try {
-        global_state->statement->ExecuteQuery(&global_state->stream, &rows_affected);
-    } catch (Exception &e) {
+		if (bind_data.scan_threads <= 1 ||
+		    !TryExecuteTablePartitions(context, *global_state, bind_data.scan_threads, rows_affected)) {
+			global_state->statement->ExecuteQuery(&global_state->stream, &rows_affected);
+			global_state->stream_initialized = true;
+		}
+	} catch (Exception &e) {
         ThrowIfInterrupted(context);
         throw IOException("adbc_scan_table: Failed to execute query: " + string(e.what()));
     }
-    global_state->stream_initialized = true;
 
     // Always get the stream schema and use it for ArrowToDuckDB conversion.
     // This ensures the ArrowTableType used for reading Arrow buffers always matches the
     // actual data format in the stream. This is critical because some drivers (e.g.,
     // Snowflake) may report different types at schema-discovery time vs execution time.
     {
-        int ret = global_state->stream.get_schema(&global_state->stream, &global_state->projected_schema.arrow_schema);
-        if (ret != 0) {
+		int ret =
+		    global_state->partitioned
+		        ? 0
+		        : global_state->stream.get_schema(&global_state->stream, &global_state->projected_schema.arrow_schema);
+		if (ret != 0) {
             const char *error_msg = global_state->stream.get_last_error(&global_state->stream);
             string msg = "adbc_scan_table: Failed to get schema from query stream";
             if (error_msg) {
@@ -1300,7 +1516,15 @@ static unique_ptr<LocalTableFunctionState> AdbcScanTableInitLocal(ExecutionConte
     auto current_chunk = make_uniq<ArrowArrayWrapper>();
     auto local_state = make_uniq<AdbcScanLocalState>(std::move(current_chunk), context.client);
 
-    // With projection pushdown, the Arrow stream returns exactly the columns we need
+	auto &global = global_state_p->Cast<AdbcScanGlobalState>();
+	// Normal LIMIT completion need not interrupt the ClientContext. Do not start
+	// a peer that could block forever after an early-finishing consumer stops.
+	if (global.partitioned && (!context.pipeline || context.pipeline->CanStopSourceEarly())) {
+		bool expected = false;
+		local_state->partition_reader_enabled = global.early_reader_claimed.compare_exchange_strong(expected, true);
+	}
+
+	// With projection pushdown, the Arrow stream returns exactly the columns we need
     // So column_ids should be 0, 1, 2, ... matching the projected query columns
     for (idx_t i = 0; i < input.column_ids.size(); i++) {
         local_state->column_ids.push_back(i);
@@ -1331,9 +1555,10 @@ static void AdbcScanTableFunction(ClientContext &context, TableFunctionInput &da
     output.SetCardinality(output_size);
 
     if (output_size > 0) {
-        auto &stream_columns = global_state.projected_arrow_table.GetColumns();
+		auto &stream_columns = local_state.partition_table ? local_state.partition_table->GetColumns()
+		                                                   : global_state.projected_arrow_table.GetColumns();
 
-        // Check if stream schema types differ from output types.
+		// Check if stream schema types differ from output types.
         // This can happen when the ATTACH path creates table columns using GetTableSchema
         // (which may return int64/double) while the actual data stream uses different types
         // (e.g., Decimal128). ArrowToDuckDB dispatches on the output vector type, so a

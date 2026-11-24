@@ -279,7 +279,26 @@ public:
         AdbcMetadataStream::Export(std::move(state), out);
     }
 
-    // Get database objects (catalogs, schemas, tables, columns)
+	// Each partition stream owns exclusive use of its own connection until release.
+	void ReadPartition(const string &descriptor, ArrowArrayStream *out) {
+		auto state = make_uniq<AdbcMetadataStream>(AcquireOperation());
+		AdbcErrorGuard error;
+		auto status = AdbcConnectionReadPartition(&connection, reinterpret_cast<const uint8_t *>(descriptor.data()),
+		                                          descriptor.size(), &state->stream, error.Get());
+		CheckAdbc(status, error.Get(), "Failed to read ADBC partition", GetDriverName());
+		if (!state->stream.get_schema || !state->stream.get_next || !state->stream.release) {
+			throw IOException("ADBC partition returned an invalid Arrow stream");
+		}
+		AdbcMetadataStream::Export(std::move(state), out);
+	}
+
+	// ADBC explicitly permits cancellation concurrently with a connection operation.
+	void Cancel() {
+		AdbcErrorGuard error;
+		AdbcConnectionCancel(&connection, error.Get());
+	}
+
+	// Get database objects (catalogs, schemas, tables, columns)
     // depth: 0=all, 1=catalogs, 2=schemas, 3=tables
     // Other parameters can be NULL for no filtering, or search patterns
     void GetObjects(int depth, const char *catalog, const char *db_schema,
@@ -448,7 +467,21 @@ public:
         CheckAdbc(status, error.Get(), "Failed to execute query", GetDriverName());
     }
 
-    // Execute without expecting a result set (for bulk ingestion)
+	// Only an unsupported, entirely unexposed attempt may take the serial path.
+	bool ExecutePartitions(ArrowSchema *schema, AdbcPartitions *partitions, int64_t *rows_affected) {
+		AdbcErrorGuard error;
+		auto status = AdbcStatementExecutePartitions(&statement, schema, partitions, rows_affected, error.Get());
+		if (status == ADBC_STATUS_NOT_IMPLEMENTED && !schema->release && !schema->format && !schema->name &&
+		    !schema->metadata && !schema->children && !schema->dictionary && !schema->private_data &&
+		    schema->n_children == 0 && schema->flags == 0 && !partitions->release && partitions->num_partitions == 0 &&
+		    !partitions->partitions && !partitions->partition_lengths && !partitions->private_data) {
+			return false;
+		}
+		CheckAdbc(status, error.Get(), "Failed to execute partitioned query", GetDriverName());
+		return true;
+	}
+
+	// Execute without expecting a result set (for bulk ingestion)
     void ExecuteUpdate(int64_t *rows_affected = nullptr) {
         AdbcErrorGuard error;
         auto status = AdbcStatementExecuteQuery(&statement, nullptr, rows_affected, error.Get());
@@ -558,6 +591,45 @@ private:
     std::condition_variable cv;
     bool stopping = false;
     std::atomic<bool> cancelled {false};
+};
+
+// Reader cancellation is connection-scoped: ReadPartition has no statement.
+// The watcher retains the connection, and must stop before its stream releases.
+class AdbcPartitionInterruptWatcher {
+public:
+	AdbcPartitionInterruptWatcher(ClientContext &context, shared_ptr<AdbcConnectionWrapper> connection,
+	                              std::atomic<bool> &failed)
+	    : connection(std::move(connection)) {
+		thread = std::thread([this, &context, &failed]() {
+			std::unique_lock<std::mutex> l(lock);
+			while (!stopping) {
+				if (failed.load() || AdbcInterruptWatcher::QueryStopped(context)) {
+					this->connection->Cancel();
+					return;
+				}
+				cv.wait_for(l, std::chrono::milliseconds(50));
+			}
+		});
+	}
+	~AdbcPartitionInterruptWatcher() {
+		Stop();
+	}
+	void Stop() {
+		{
+			std::lock_guard<std::mutex> l(lock);
+			stopping = true;
+		}
+		cv.notify_all();
+		if (thread.joinable())
+			thread.join();
+	}
+
+private:
+	shared_ptr<AdbcConnectionWrapper> connection;
+	std::thread thread;
+	std::mutex lock;
+	std::condition_variable cv;
+	bool stopping = false;
 };
 
 // Call from a catch block around a blocking driver call: when the query was

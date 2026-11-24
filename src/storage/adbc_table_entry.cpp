@@ -98,7 +98,8 @@ TableFunction AdbcTableEntry::GetScanFunction(ClientContext &context, unique_ptr
 	BoundTableFunction bound_function(adbc_scan_table_function_ptr);
 	TableFunctionBindInput bind_input(inputs, param_map, input_table_types, input_table_names, nullptr, nullptr,
 	                                  bound_function, empty_ref);
-	bind_data = AdbcScanTableBindWithConnection(context, bind_input, std::move(scan_connection), return_types, names);
+	bind_data = AdbcScanTableBindWithConnection(context, bind_input, std::move(scan_connection), return_types, names,
+	                                            adbc_catalog.scan_threads);
 
 	return adbc_scan_table_function;
 }

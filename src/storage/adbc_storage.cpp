@@ -29,6 +29,7 @@ static unique_ptr<Catalog> AdbcAttach(optional_ptr<StorageExtensionInfo> storage
 	// First, collect explicit options into a vector for secret merging
 	AdbcOptions explicit_options;
 	idx_t batch_size = 0;
+	idx_t scan_threads = 1;
 	bool query_pushdown = true;
 	string default_schema;
 
@@ -37,6 +38,15 @@ static unique_ptr<Catalog> AdbcAttach(optional_ptr<StorageExtensionInfo> storage
 		if (lower_name == "batch_size") {
 			// batch_size is handled separately as it's DuckDB-specific, not passed to ADBC
 			batch_size = entry.second.GetValue<idx_t>();
+		} else if (lower_name == "scan_threads") {
+			if (entry.second.IsNull() || !entry.second.type().IsIntegral()) {
+				throw InvalidInputException("scan_threads must be an integer from 1 to 1024");
+			}
+			auto requested = entry.second.GetValue<int64_t>();
+			if (requested < 1 || requested > 1024) {
+				throw InvalidInputException("scan_threads must be an integer from 1 to 1024");
+			}
+			scan_threads = static_cast<idx_t>(requested);
 		} else if (lower_name == "query_pushdown") {
 			query_pushdown = entry.second.DefaultCastAs(LogicalType::BOOLEAN).GetValue<bool>();
 		} else if (lower_name == "default_schema") {
@@ -45,6 +55,10 @@ static unique_ptr<Catalog> AdbcAttach(optional_ptr<StorageExtensionInfo> storage
 		} else {
 			explicit_options.emplace_back(lower_name, entry.second);
 		}
+	}
+
+	if (scan_threads > 1 && (query_pushdown || attach_options.access_mode != AccessMode::READ_ONLY)) {
+		throw InvalidInputException("scan_threads > 1 requires READ_ONLY and query_pushdown false");
 	}
 
 	// The path is either a URI or 'key=value;key=value' options. Decide by the
@@ -102,6 +116,7 @@ static unique_ptr<Catalog> AdbcAttach(optional_ptr<StorageExtensionInfo> storage
 	// so never keep credentials in it.
 	auto catalog = make_uniq<AdbcCatalog>(db, connection, ScrubCredentials(info.path), attach_options.access_mode);
 	catalog->batch_size = batch_size;
+	catalog->scan_threads = scan_threads;
 	catalog->query_pushdown = query_pushdown;
 	if (!default_schema.empty()) {
 		catalog->SetDefaultSchema(default_schema);
